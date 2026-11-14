@@ -6,6 +6,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{data, TestApp};
+use manager::store::exec;
 
 async fn create_pipeline(app: &TestApp, jwt: &str, environments: &[&str]) -> String {
     let (status, body) = app
@@ -43,11 +44,13 @@ async fn trigger(app: &TestApp, jwt: &str, pipeline: &str, body: serde_json::Val
 }
 
 async fn force_terminal(app: &TestApp, job: &str, status: &str) {
-    sqlx::query(&format!(
-        "UPDATE jobs SET status = '{status}', end_time = datetime('now') WHERE id = ?"
-    ))
-    .bind(job)
-    .execute(&app.pool)
+    // Status values are the test's own literals (never caller text), so the
+    // interpolation stays literal-safe; the job id stays bound.
+    exec::execute(
+        &app.pool,
+        &format!("UPDATE jobs SET status = '{status}', end_time = datetime('now') WHERE id = ?"),
+        &[job.into()],
+    )
     .await
     .expect("force terminal status");
 }

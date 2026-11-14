@@ -1,5 +1,7 @@
+mod common;
+
+use manager::store::exec;
 use shared::rbac::TeamRole;
-use sqlx::SqlitePool;
 
 use manager::rbac::AuthUser;
 use manager::rbac::TeamMembership;
@@ -34,74 +36,17 @@ fn policy(
     }
 }
 
-async fn pool_with_default_team() -> SqlitePool {
-    let pool = SqlitePool::connect("sqlite::memory:")
-        .await
-        .expect("memory sqlite");
-    sqlx::query(
-        "CREATE TABLE teams (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            slug TEXT NOT NULL UNIQUE
-        )",
+async fn pool_with_default_team() -> exec::DbPool {
+    // The real migrated schema replaces the hand-built mini-DDL fixture.
+    let pool = common::test_db(2).await;
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('t1', 'Default', 'default')",
+        &[],
     )
-    .execute(&pool)
     .await
-    .expect("teams");
-    sqlx::query(
-        "CREATE TABLE environments (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            slug TEXT NOT NULL UNIQUE
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("environments");
-    sqlx::query(
-        "CREATE TABLE plugin_pool (
-            namespace TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL,
-            sha256 TEXT NOT NULL, source_id TEXT NOT NULL, file_path TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 0, reviewed INTEGER NOT NULL DEFAULT 0,
-            added_by TEXT, added_at TEXT, requires_buz TEXT, buz_compatible INTEGER,
-            compat_error TEXT, compat_checked_against TEXT, meta_json TEXT,
-            updated_by TEXT, updated_at TEXT,
-            UNIQUE(namespace, plugin_id, version)
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("plugin_pool");
-    sqlx::query(
-        "CREATE TABLE secrets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            value TEXT NOT NULL,
-            team_id TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'generic'
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("secrets");
-    sqlx::query(
-        "CREATE TABLE platform_vars (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            value TEXT NOT NULL
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("platform_vars");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('t1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed default team");
-    sqlx::query("INSERT INTO environments (id, name, slug) VALUES ('e1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed default environment");
+    .expect("seed default team");
+    // `env-default` (slug 'default') already exists via seed_default_rows.
     pool
 }
 
@@ -115,7 +60,7 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -131,10 +76,13 @@ steps:
 #[tokio::test]
 async fn existing_environment_slug_is_valid() {
     let pool = pool_with_default_team().await;
-    sqlx::query("INSERT INTO environments (id, name, slug) VALUES ('e2', 'Staging', 'staging')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO environments (id, name, slug) VALUES ('e2', 'Staging', 'staging')",
+        &[],
+    )
+    .await
+    .unwrap();
     let yaml = r#"
 name: demo
 environments: [default, staging]
@@ -142,7 +90,7 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(r.valid, "errors: {:?}", r.errors);
@@ -158,7 +106,7 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -181,7 +129,7 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(r.valid, "errors: {:?}", r.errors);
@@ -200,7 +148,7 @@ steps:
       ACR_TOKEN: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -227,7 +175,7 @@ steps:
     registry_secret: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -251,7 +199,7 @@ steps:
   - name: a
     run: echo $BUILD_CACHE_DIR
 "#;
-    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let r = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -267,15 +215,19 @@ steps:
 #[tokio::test]
 async fn viewer_without_team_access_gets_generic_error_no_secret_oracle() {
     let pool = pool_with_default_team().await;
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('t2', 'Victim', 'victim')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('t2', 'Victim', 'victim')",
+        &[],
+    )
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
         "INSERT INTO secrets (id, name, value, team_id, kind)
          VALUES ('s1', 'REAL_SECRET', 'x', 't2', 'generic')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -306,7 +258,7 @@ steps:
 "#;
     let empty_index = tempfile::tempdir().unwrap();
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &outsider,
         &policy(empty_index.path(), false),
@@ -357,7 +309,7 @@ steps:
 "#;
     let empty_index = tempfile::tempdir().unwrap();
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &member,
         &policy(empty_index.path(), false),
@@ -380,11 +332,12 @@ steps:
 #[tokio::test]
 async fn referential_checks_stay_fresh_for_cached_content() {
     let pool = pool_with_default_team().await;
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO secrets (id, name, value, team_id, kind)
          VALUES ('s1', 'DEP_KEY', 'x', 't1', 'generic')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -399,7 +352,7 @@ steps:
     run: echo hi
 "#;
 
-    let first = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let first = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(
@@ -409,17 +362,16 @@ steps:
     );
 
     // Same content again — now served from the parse cache.
-    let second = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let second = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(second.valid);
 
-    sqlx::query("DELETE FROM secrets WHERE name = 'DEP_KEY'")
-        .execute(&pool)
+    exec::execute(&pool, "DELETE FROM secrets WHERE name = 'DEP_KEY'", &[])
         .await
         .unwrap();
 
-    let third = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+    let third = validate_pipeline_yaml(&pool.clone(), yaml)
         .await
         .expect("validate");
     assert!(!third.valid, "secret deletion must fail unchanged content");
@@ -443,7 +395,7 @@ steps:
     uses: alice/typo-plugin@1.0.0
 "#;
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &member,
         &policy(index.path(), false),
@@ -485,14 +437,10 @@ steps:
   - name: run
     uses: alice/hello@1.2.0
 "#;
-    let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        ok,
-        &member,
-        &policy(index.path(), false),
-    )
-    .await
-    .expect("validate");
+    let r =
+        validate_pipeline_yaml_for_viewer(&pool.clone(), ok, &member, &policy(index.path(), false))
+            .await
+            .expect("validate");
     assert!(
         !r.errors.iter().any(|e| e.field.starts_with("steps.")),
         "available plugin must pass: {:?}",
@@ -502,7 +450,7 @@ steps:
     // Major pin matches the local 1.2.0 …
     let major = ok.replace("@1.2.0", "@1");
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &major,
         &member,
         &policy(index.path(), false),
@@ -514,7 +462,7 @@ steps:
     // … while a version nobody has must name what IS available.
     let miss = ok.replace("@1.2.0", "@9.9.9");
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &miss,
         &member,
         &policy(index.path(), false),
@@ -553,7 +501,7 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
         "name: demo\nenvironments: [default]\nsteps:\n  - name: run\n    uses: alice/hello@1.0.0\n";
 
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &member,
         &policy(index.path(), false),
@@ -577,7 +525,7 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
 
     // Same content with the strict switch on → error.
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &member,
         &policy(index.path(), true),
@@ -604,7 +552,7 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
     )
     .unwrap();
     let r = validate_pipeline_yaml_for_viewer(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         yaml,
         &member,
         &policy(index.path(), true),

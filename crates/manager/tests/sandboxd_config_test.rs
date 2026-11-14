@@ -2,14 +2,16 @@
 //! version mismatch, long-poll that wakes on an ops change, status reporting,
 //! and the database-restore reconciliation guard.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use std::time::{Duration, Instant};
 use tower::ServiceExt;
 
@@ -17,7 +19,6 @@ use manager::api;
 use manager::config::{
     AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, StandaloneConfig,
 };
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -58,22 +59,17 @@ fn test_config() -> Config {
 }
 
 /// App + pool with an ops user and one enrolled host; returns the sandboxd token.
-async fn app_with_host() -> (Router, sqlx::SqlitePool, String) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
-    sqlx::query(
+async fn app_with_host() -> (Router, exec::DbPool, String) {
+    let pool = common::test_db(4).await;
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
          VALUES ('ops-1', 'opsone', 'hash', 'opsone', 0, 0, 1, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -286,12 +282,10 @@ async fn status_report_updates_applied_state() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (applied, host_status, err): (i64, String, Option<String>) = sqlx::query_as(
-        "SELECT applied_version, status, last_fetch_error FROM sandbox_hosts WHERE host_id = 'host-a'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (applied, host_status, err) = {
+        let r = exec::fetch_optional(&pool, "SELECT applied_version, status, last_fetch_error FROM sandbox_hosts WHERE host_id = 'host-a'", &[]).await.unwrap().expect("row");
+        (r.i64(0), r.text(1), r.opt_text(2))
+    };
     assert_eq!(applied, 1);
     assert_eq!(host_status, "insync");
     assert!(err.is_none());
@@ -312,12 +306,10 @@ async fn status_report_updates_applied_state() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (host_status, err, failures): (String, Option<String>, i64) = sqlx::query_as(
-        "SELECT status, last_fetch_error, consecutive_fetch_failures FROM sandbox_hosts WHERE host_id = 'host-a'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (host_status, err, failures) = {
+        let r = exec::fetch_optional(&pool, "SELECT status, last_fetch_error, consecutive_fetch_failures FROM sandbox_hosts WHERE host_id = 'host-a'", &[]).await.unwrap().expect("row");
+        (r.text(0), r.opt_text(1), r.i64(2))
+    };
     assert_eq!(host_status, "pending");
     assert_eq!(err.as_deref(), Some("docker: image not found"));
     assert_eq!(failures, 3);
@@ -339,11 +331,15 @@ async fn applied_at_is_the_push_date_and_survives_heartbeats() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let pushed_at: String =
-        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let pushed_at: String = exec::fetch_optional(
+        &pool,
+        "SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
 
     // Heartbeats of the SAME version must never rewrite when it landed.
     // datetime('now') has 1s resolution, hence the sleep.
@@ -358,11 +354,15 @@ async fn applied_at_is_the_push_date_and_survives_heartbeats() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let same: String =
-        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let same: String = exec::fetch_optional(
+        &pool,
+        "SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(same, pushed_at, "same-version reports keep the push date");
 
     // The ops API marks the host pushed once applied == desired, with the
@@ -406,11 +406,15 @@ async fn applied_at_is_the_push_date_and_survives_heartbeats() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let next: String =
-        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let next: String = exec::fetch_optional(
+        &pool,
+        "SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_ne!(next, pushed_at, "a new version records a new push date");
 }
 
@@ -436,20 +440,28 @@ async fn db_restore_bumps_desired_past_a_higher_applied_version() {
     assert_eq!(resp["data"]["changed"], true);
     assert!(resp["data"]["config"]["profiles"]["default"].is_object());
 
-    let (desired, applied): (i64, i64) = sqlx::query_as(
-        "SELECT desired_version, applied_version FROM sandbox_hosts WHERE host_id = 'host-a'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (desired, applied) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT desired_version, applied_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.i64(0), r.i64(1))
+    };
     assert_eq!(desired, 8);
     assert_eq!(applied, 7);
-    let history: i64 = sqlx::query_scalar(
+    let history: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM sandbox_host_configs WHERE host_id = 'host-a' AND version = 8",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(history, 1, "reconciled version is recorded in history");
 }
 
@@ -501,11 +513,15 @@ const DEFAULT_IMAGE: &str =
 async fn platform_default_tiers_fill_undefined_tiers_and_propagate() {
     let (app, pool, token) = app_with_host().await;
     put_config(&app).await;
-    let before: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let before: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
 
     let (status, resp) = call(
         &app,
@@ -530,11 +546,15 @@ async fn platform_default_tiers_fill_undefined_tiers_and_propagate() {
     );
 
     // The desired version moved, which is what wakes the long-poll.
-    let after: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let after: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert!(after > before, "desired version must advance");
 
     // sandboxd is served the effective document with the inherited tier.
@@ -571,11 +591,15 @@ async fn host_defined_tiers_win_and_skip_the_bump() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{put:?}", put = resp);
-    let before: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let before: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
 
     let (status, resp) = call(
         &app,
@@ -599,11 +623,15 @@ async fn host_defined_tiers_win_and_skip_the_bump() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert!(resp["data"]["bumped_hosts"].as_array().unwrap().is_empty());
 
-    let after: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let after: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(before, after, "no bump when the host defines the tier");
 
     // The host's own definition is delivered, not the default.

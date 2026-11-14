@@ -8,6 +8,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{data, TestApp, MEMBER, RUNNER, TEAM};
+use manager::store::exec;
 use serde_json::{json, Value};
 use shared::auth::Role;
 
@@ -42,12 +43,13 @@ async fn pipeline_with_profile(app: &TestApp, name: &str, profile: &str) -> Stri
         .await;
     assert_eq!(status, StatusCode::OK, "create pipeline: {created}");
     let id = data(&created)["id"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE pipelines SET resource_profile = ? WHERE id = ?")
-        .bind(profile)
-        .bind(&id)
-        .execute(&app.pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &app.pool,
+        "UPDATE pipelines SET resource_profile = ? WHERE id = ?",
+        &[profile.into(), id.as_str().into()],
+    )
+    .await
+    .unwrap();
     id
 }
 
@@ -88,11 +90,24 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         device_token.starts_with("buzsd_"),
         "token prefix: {device_token}"
     );
-    let (stored_hash, hosts): (String, i64) =
-        sqlx::query_as("SELECT token_hash, COUNT(*) FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&app.pool)
-            .await
-            .unwrap();
+    // Two plain reads: SQLite tolerates a non-aggregated column next to
+    // COUNT(*), Postgres (correctly) demands GROUP BY.
+    let stored_hash = exec::fetch_optional(
+        &app.pool,
+        "SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .expect("enrolled host row")
+    .text(0);
+    let hosts = exec::fetch_scalar_i64(
+        &app.pool,
+        "SELECT COUNT(*) FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap();
     assert_eq!(hosts, 1);
     assert_ne!(stored_hash, device_token, "only the hash may be stored");
     assert_eq!(stored_hash, shared::api_token::hash_token(&device_token));
@@ -162,11 +177,15 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let host_status: String =
-        sqlx::query_scalar("SELECT status FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&app.pool)
-            .await
-            .unwrap();
+    let host_status = exec::fetch_optional(
+        &app.pool,
+        "SELECT status FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .expect("enrolled host row")
+    .text(0);
     assert_eq!(host_status, "insync");
 
     // ── 4. Trigger gate: ungranted `medium` fails fast, no job is created. ──
@@ -180,8 +199,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
             .contains("not authorized to request resource profile 'medium'"),
         "{resp}"
     );
-    let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
-        .fetch_one(&app.pool)
+    let jobs = exec::fetch_scalar_i64(&app.pool, "SELECT COUNT(*) FROM jobs", &[])
         .await
         .unwrap();
     assert_eq!(jobs, 0, "an unauthorized request must not create a job");
@@ -199,23 +217,27 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     let (status, resp) = trigger(&app, &pipeline_id).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     let job1 = data(&resp)["job_id"].as_str().unwrap().to_string();
-    let (stored_profile, snapshot_raw): (String, String) =
-        sqlx::query_as("SELECT resource_profile, snapshot FROM jobs WHERE id = ?")
-            .bind(&job1)
-            .fetch_one(&app.pool)
-            .await
-            .unwrap();
+    let job_row = exec::fetch_optional(
+        &app.pool,
+        "SELECT resource_profile, snapshot FROM jobs WHERE id = ?",
+        &[job1.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("frozen job row");
+    let stored_profile = job_row.text(0);
+    let snapshot_raw = job_row.text(1);
     assert_eq!(stored_profile, "medium");
     let snapshot: Value = serde_json::from_str(&snapshot_raw).unwrap();
     assert_eq!(snapshot["resource_profile"], "medium");
 
     // The runner runs containerized on the enrolled host, as a sandbox job must.
-    sqlx::query(
+    exec::execute(
+        &app.pool,
         "UPDATE runners SET execution_mode = 'container', host_id = 'host-a',
          sandbox_instance_id = 'sandboxd-01' WHERE id = ?",
+        &[RUNNER.into()],
     )
-    .bind(RUNNER)
-    .execute(&app.pool)
     .await
     .unwrap();
     let (status, resp) = poll(&app).await;
@@ -244,18 +266,25 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         data(&resp).get("job_id").is_none(),
         "the revoked job must not dispatch: {resp}"
     );
-    let job2_status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job2)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap();
+    let job2_status = exec::fetch_optional(
+        &app.pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job2.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("revoked job row")
+    .text(0);
     assert_eq!(job2_status, "failed", "revocation is terminal");
 
     // ── 6. Audit trail records the whole journey. ──
-    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_logs ORDER BY seq")
-        .fetch_all(&app.pool)
-        .await
-        .unwrap();
+    let actions: Vec<String> =
+        exec::fetch_all(&app.pool, "SELECT action FROM audit_logs ORDER BY seq", &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.text(0))
+            .collect();
     for expected in [
         "sandbox_host.enroll",
         "sandbox_host.defaults_update",
@@ -266,13 +295,17 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
             "missing audit action '{expected}' in {actions:?}"
         );
     }
-    let grant_events: Vec<(String, String)> = sqlx::query_as(
+    let grant_events: Vec<(String, String)> = exec::fetch_all(
+        &app.pool,
         "SELECT after_json, actor_username FROM audit_logs
          WHERE action = 'resource_grant.update' ORDER BY seq",
+        &[],
     )
-    .fetch_all(&app.pool)
     .await
-    .unwrap();
+    .unwrap()
+    .iter()
+    .map(|r| (r.text(0), r.text(1)))
+    .collect();
     assert_eq!(grant_events.len(), 2, "one audit row per grant and revoke");
     let granted: Value = serde_json::from_str(&grant_events[0].0).unwrap();
     assert_eq!(granted["team_id"], TEAM);

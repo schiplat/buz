@@ -45,6 +45,31 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
         }
+        Some(Command::MigrateSqliteToPg {
+            sqlite_path,
+            pg_url,
+            apply,
+        }) => {
+            #[cfg(feature = "postgres")]
+            {
+                let config = config::load(Some(&cli.config))?;
+                return db::migrate_sqlite_to_pg::run(
+                    &config,
+                    sqlite_path.as_deref(),
+                    &pg_url,
+                    apply,
+                )
+                .await;
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                let _ = (&sqlite_path, &pg_url, &apply);
+                anyhow::bail!(
+                    "migrate-sqlite-to-pg needs a binary built with --features postgres; \
+                     the default build cannot speak Postgres"
+                );
+            }
+        }
         Some(Command::Completions { shell }) => {
             return print_completions(shell);
         }

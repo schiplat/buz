@@ -1727,13 +1727,30 @@ pub struct YamlPipelineUpdate<'a> {
 }
 
 /// Re-project one YAML definition onto its existing pipeline row.
+/// Update a YAML pipeline's projection. `expected_source` is optimistic
+/// concurrency: when set, the UPDATE is guarded by the exact text the caller
+/// observed (`AND yaml_source = ?`), so a concurrent writer between the
+/// caller's read and this write makes `affected == 0` instead of silently
+/// overwriting. SQLite relies on the caller's write lock; Postgres has no
+/// `BEGIN IMMEDIATE`, so the guarded WHERE is what carries the invariant on
+/// both backends.
 pub async fn yaml_update_tx(
     tx: &mut DbTx<'_>,
     id: &str,
+    expected_source: Option<&str>,
     p: &YamlPipelineUpdate<'_>,
-) -> Result<(), AppError> {
-    tx.execute(
-        "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
+) -> Result<bool, AppError> {
+    let sql = match expected_source {
+        Some(_) => "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
+         webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,
+         resource_profile = ?,
+         concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
+         concurrency_queue_timeout_seconds = ?,
+         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+         notify_json = ?,
+         yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
+         WHERE id = ? AND yaml_source = ?",
+        None => "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
          webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,
          resource_profile = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
@@ -1742,35 +1759,38 @@ pub async fn yaml_update_tx(
          notify_json = ?,
          yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
          WHERE id = ?",
-        &[
-            p.name.into(),
-            p.description.into(),
-            p.trigger_type.into(),
-            p.webhook_path.into(),
-            p.webhook_secret.into(),
-            p.webhook_environment.into(),
-            p.cron_expr.into(),
-            p.cron_environment.into(),
-            p.runner_labels.into(),
-            SqlValue::Int(p.timeout_seconds),
-            p.resource_profile.into(),
-            p.concurrency_group.into(),
-            p.concurrency_mode.into(),
-            SqlValue::Int(p.concurrency_max_queue),
-            SqlValue::Int(p.concurrency_queue_timeout_seconds),
-            p.owner_group.into(),
-            p.team_id.into(),
-            p.input_defs.into(),
-            p.environments.into(),
-            p.notify_json.into(),
-            p.yaml_path.into(),
-            p.yaml_sha256.into(),
-            p.yaml_source.into(),
-            id.into(),
-        ],
-    )
-    .await?;
-    Ok(())
+    };
+    let mut binds = vec![
+        p.name.into(),
+        p.description.into(),
+        p.trigger_type.into(),
+        p.webhook_path.into(),
+        p.webhook_secret.into(),
+        p.webhook_environment.into(),
+        p.cron_expr.into(),
+        p.cron_environment.into(),
+        p.runner_labels.into(),
+        SqlValue::Int(p.timeout_seconds),
+        p.resource_profile.into(),
+        p.concurrency_group.into(),
+        p.concurrency_mode.into(),
+        SqlValue::Int(p.concurrency_max_queue),
+        SqlValue::Int(p.concurrency_queue_timeout_seconds),
+        p.owner_group.into(),
+        p.team_id.into(),
+        p.input_defs.into(),
+        p.environments.into(),
+        p.notify_json.into(),
+        p.yaml_path.into(),
+        p.yaml_sha256.into(),
+        p.yaml_source.into(),
+        id.into(),
+    ];
+    if let Some(src) = expected_source {
+        binds.push(src.into());
+    }
+    let affected = tx.execute(sql, &binds).await?;
+    Ok(affected > 0)
 }
 
 /// Everything the YAML create path inserts.
@@ -1802,13 +1822,21 @@ pub struct YamlPipelineInsert<'a> {
 }
 
 /// Insert one fully-projected YAML pipeline row (`source = 'yaml'`, active).
-pub async fn yaml_insert_tx(tx: &mut DbTx<'_>, p: &YamlPipelineInsert<'_>) -> Result<(), AppError> {
-    tx.execute(
+/// `ON CONFLICT DO NOTHING` (any unique key — id or yaml_path) makes a
+/// concurrent create of the same definition return `false` instead of a
+/// unique-violation error; the caller maps that to a 409 and rolls the tx
+/// back. Portable on SQLite and Postgres.
+pub async fn yaml_insert_tx(
+    tx: &mut DbTx<'_>,
+    p: &YamlPipelineInsert<'_>,
+) -> Result<bool, AppError> {
+    let affected = tx.execute(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
          webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
         owner_group, team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)
+         ON CONFLICT DO NOTHING",
         &[
             p.id.into(),
             p.name.into(),
@@ -1837,7 +1865,7 @@ pub async fn yaml_insert_tx(tx: &mut DbTx<'_>, p: &YamlPipelineInsert<'_>) -> Re
         ],
     )
     .await?;
-    Ok(())
+    Ok(affected > 0)
 }
 
 /// Same-team secret ids for the given names, inside the caller's transaction.

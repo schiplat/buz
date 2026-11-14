@@ -192,8 +192,11 @@ pub async fn upsert_from_yaml(
             ))));
         }
         let mut tx = pool.begin_immediate().await?;
-        // Optimistic concurrency, evaluated under the write lock so a stale
-        // token cannot slip between the check and the UPDATE.
+        // Optimistic concurrency. The etag comparison plus the guarded
+        // UPDATE (yaml_update_tx re-verifies the observed source in its
+        // WHERE) close the check-to-write window on both backends — SQLite
+        // via the write lock, Postgres via the guarded WHERE.
+        let mut observed_source: Option<String> = None;
         if let Some(expected) = expected_etag {
             let current = crate::store::pipelines::yaml_source_tx(&mut tx, &id)
                 .await
@@ -205,6 +208,7 @@ pub async fn upsert_from_yaml(
                     "definition was modified by another writer — reload and retry".into(),
                 )));
             }
+            observed_source = Some(current);
         }
         if team_changed {
             let active_jobs = crate::store::pipelines::active_job_count_tx(&mut tx, &id)
@@ -217,9 +221,10 @@ pub async fn upsert_from_yaml(
                 );
             }
         }
-        crate::store::pipelines::yaml_update_tx(
+        let updated = crate::store::pipelines::yaml_update_tx(
             &mut tx,
             &id,
+            observed_source.as_deref(),
             &crate::store::pipelines::YamlPipelineUpdate {
                 name: pipeline_name,
                 description: &description,
@@ -250,6 +255,14 @@ pub async fn upsert_from_yaml(
         )
         .await
         .map_err(|e| anyhow!("{e}"))?;
+        if !updated {
+            // Another writer changed the definition between our etag read and
+            // this write — the guarded UPDATE caught it.
+            tx.rollback().await?;
+            return Err(anyhow::Error::new(YamlConflictError(
+                "definition was modified by another writer — reload and retry".into(),
+            )));
+        }
 
         // Replace the previously expanded step projection after resolution succeeded.
         crate::store::pipelines::clear_projection_tx(&mut tx, &id)
@@ -321,7 +334,7 @@ pub async fn upsert_from_yaml(
         let id = Uuid::new_v4().to_string();
         let mut tx = pool.begin().await?;
 
-        crate::store::pipelines::yaml_insert_tx(
+        let inserted = crate::store::pipelines::yaml_insert_tx(
             &mut tx,
             &crate::store::pipelines::YamlPipelineInsert {
                 id: &id,
@@ -354,6 +367,14 @@ pub async fn upsert_from_yaml(
         )
         .await
         .map_err(|e| anyhow!("{e}"))?;
+        if !inserted {
+            // A concurrent create won the unique index — surface 409, not a
+            // unique-violation 500.
+            tx.rollback().await?;
+            return Err(anyhow::Error::new(YamlConflictError(
+                "definition was created by another writer — reload and retry".into(),
+            )));
+        }
 
         insert_steps(&mut tx, &id, &steps).await?;
         let resolution_writes: Vec<crate::store::pipelines::StepResolutionWrite> = resolutions

@@ -4,14 +4,16 @@
 //! generic hook the Runner consumes to redact logs) stays empty for a
 //! pipeline that only used the retired purpose slot.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
@@ -21,7 +23,6 @@ use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
 use manager::crypto;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -61,55 +62,52 @@ fn test_config() -> Config {
 }
 
 async fn test_app() -> Router {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
     // Platform admin.
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     // Runner with matching label.
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     // Pipeline with one shell step that uses the config.source purpose slot.
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p1', 'dispatch-mask', 'manual', '[\"linux-x64\"]', '[]', 1, 'team-1')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed pipeline");
 
     // No step_secrets / pipeline_secrets — purpose slot alone is the allowlist (GHA-style).
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, command_template,
                             step_secrets, config_source, config_key_path)
          VALUES ('t1', 'p1', 0, 'echo', 'shell', 'echo hi', '', '${secrets.ossbox}', 'oss-cfg')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed task");
 
@@ -118,16 +116,15 @@ async fn test_app() -> Router {
     // mask registration, and the secret value must never appear.
     let oss_json = r#"{"endpoint":"oss.example.com","bucket":"buz-test","access_key_id":"akid-test","access_key_secret":"p4ssw0rd-secret"}"#;
     let sealed = crypto::encrypt(oss_json, JWT_SECRET).expect("encrypt oss secret");
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO secrets (id, name, value, team_id, kind) VALUES ('s1', 'ossbox', ?, 'team-1', 'aliyun_oss_auth')",
+        &[sealed.into()],
     )
-    .bind(sealed)
-    .execute(&pool)
     .await
     .expect("seed secret");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

@@ -12,9 +12,8 @@ use tower::ServiceExt;
 mod common;
 
 async fn metrics_app() -> Router {
-    let pool = common::migrated_pool(4).await;
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: common::test_db(4).await,
         config: common::test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

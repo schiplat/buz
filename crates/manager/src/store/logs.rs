@@ -103,6 +103,21 @@ fn log_values(rows: Vec<crate::store::exec::GenericRow>) -> Vec<serde_json::Valu
 
 /// Cursor-bounded tail read: the last `window` rows strictly before
 /// `(before_step, before_chunk)`, returned in ascending order.
+///
+/// The cursor is either fully present or fully absent — the SQL branches on
+/// that instead of a `? IS NULL OR …` clause, whose untyped NULL bind gives
+/// Postgres nothing to infer the parameter's type from (SQLite tolerates it;
+/// PG fails the parse).
+const TAIL_BEFORE_CURSOR: &str = "SELECT chunk_index, step_order, log_content, level, created_at
+     FROM job_logs WHERE job_id = ?
+     AND (step_order < ? OR (step_order = ? AND chunk_index < ?))
+     ORDER BY step_order DESC, chunk_index DESC
+     LIMIT ?";
+const TAIL_FULL: &str = "SELECT chunk_index, step_order, log_content, level, created_at
+     FROM job_logs WHERE job_id = ?
+     ORDER BY step_order DESC, chunk_index DESC
+     LIMIT ?";
+
 pub async fn read_windowed(
     pool: &DbPool,
     job_id: &str,
@@ -110,23 +125,23 @@ pub async fn read_windowed(
     before_chunk: Option<i64>,
     window: i64,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let mut rows = exec::fetch_all(
-        pool,
-        "SELECT chunk_index, step_order, log_content, level, created_at
-             FROM job_logs WHERE job_id = ?
-             AND (? IS NULL OR step_order < ? OR (step_order = ? AND chunk_index < ?))
-             ORDER BY step_order DESC, chunk_index DESC
-             LIMIT ?",
-        &[
-            job_id.into(),
-            before_step.into(),
-            before_step.unwrap_or(0).into(),
-            before_step.unwrap_or(0).into(),
-            before_chunk.unwrap_or(0).into(),
-            window.into(),
-        ],
-    )
-    .await?;
+    let mut rows = match (before_step, before_chunk) {
+        (Some(step), Some(chunk)) => {
+            exec::fetch_all(
+                pool,
+                TAIL_BEFORE_CURSOR,
+                &[
+                    job_id.into(),
+                    step.into(),
+                    step.into(),
+                    chunk.into(),
+                    window.into(),
+                ],
+            )
+            .await?
+        }
+        _ => exec::fetch_all(pool, TAIL_FULL, &[job_id.into(), window.into()]).await?,
+    };
     rows.reverse();
     Ok(log_values(rows))
 }

@@ -8,6 +8,10 @@ use crate::store::exec::DbPool;
 #[cfg(feature = "postgres")]
 pub mod migrate_pg;
 
+/// SQLite → Postgres data migration (feature-gated; see `migrate_sqlite_to_pg`).
+#[cfg(feature = "postgres")]
+pub mod migrate_sqlite_to_pg;
+
 use crate::config::ClusterMode;
 use crate::config::Config;
 use crate::config::{DatabaseConfig, StorageKind};
@@ -1334,22 +1338,6 @@ async fn apply_legacy_baseline(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::
             .await?;
     }
 
-    // ── Official plugin source (factory-preseeded, auto-enabled) ──
-    // The CF Pages mirror is the distribution endpoint chosen for
-    // China-mainland reachability (§6.3); admins can delete/re-add the row
-    // with an internal mirror URL if their network requires it.
-    sqlx::query(
-        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled, created_by) \
-         SELECT 'official', 'Official buz-plugins', \
-                'https://plugins.buz.schiplat.com/index.json', 1, 1, 'system' \
-         WHERE NOT EXISTS (SELECT 1 FROM plugin_sources WHERE id = 'official') \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM platform_settings \
-               WHERE key = 'plugin_official_source_dismissed' AND value = 'true')",
-    )
-    .execute(pool)
-    .await?;
-
     // ── Scheduler leader-lease table (multi-row: one lease per scheduler) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scheduler_lease (
@@ -1780,17 +1768,6 @@ async fn apply_legacy_baseline(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::
     .execute(pool)
     .await;
 
-    // A `default` environment (mirroring the `default` team) receives every
-    // pipeline that predates explicit bindings, so protection can gate them.
-    sqlx::query(
-        "INSERT INTO environments (id, slug, name, description) \
-         SELECT 'env-default', 'default', 'Default', \
-                'Auto-created home for pipelines without an explicit environment' \
-         WHERE NOT EXISTS (SELECT 1 FROM environments WHERE slug = 'default')",
-    )
-    .execute(pool)
-    .await?;
-
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS job_approvals (
             id TEXT PRIMARY KEY,
@@ -1839,6 +1816,47 @@ async fn apply_legacy_baseline(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::
     )
     .execute(pool)
     .await;
+
+    seed_default_rows(&DbPool::Sqlite(pool.clone())).await?;
+
+    Ok(())
+}
+
+/// The data rows a fresh backend carries beyond schema — extracted from the
+/// migration chain so every backend plants the same defaults (the Postgres
+/// fixture leg calls this after the baseline; `run_migrations` calls it on
+/// the SQLite chain). Both statements are idempotent (`WHERE NOT EXISTS`).
+pub async fn seed_default_rows(pool: &DbPool) -> anyhow::Result<()> {
+    use crate::store::exec;
+
+    // Official plugin source (factory-preseeded, auto-enabled). The CF Pages
+    // mirror is the distribution endpoint chosen for China-mainland
+    // reachability (§6.3); admins can delete/re-add the row with an internal
+    // mirror URL if their network requires it.
+    exec::execute(
+        pool,
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled, created_by) \
+         SELECT 'official', 'Official buz-plugins', \
+                'https://plugins.buz.schiplat.com/index.json', 1, 1, 'system' \
+         WHERE NOT EXISTS (SELECT 1 FROM plugin_sources WHERE id = 'official') \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM platform_settings \
+               WHERE key = 'plugin_official_source_dismissed' AND value = 'true')",
+        &[],
+    )
+    .await?;
+
+    // A `default` environment (mirroring the `default` team) receives every
+    // pipeline that predates explicit bindings, so protection can gate them.
+    exec::execute(
+        pool,
+        "INSERT INTO environments (id, slug, name, description) \
+         SELECT 'env-default', 'default', 'Default', \
+                'Auto-created home for pipelines without an explicit environment' \
+         WHERE NOT EXISTS (SELECT 1 FROM environments WHERE slug = 'default')",
+        &[],
+    )
+    .await?;
 
     Ok(())
 }

@@ -1,22 +1,14 @@
 //! Integration tests for the pre-retirement deprecated-key scan
 //! (`services::deprecated_scan`) — Phase 3 precondition ①.
 
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
+mod common;
+
+use manager::store::exec;
 
 use manager::services::deprecated_scan::scan_pool;
 
-const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
-
-async fn test_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    manager::db::run_migrations(&pool, JWT_SECRET)
-        .await
-        .expect("migrate db");
+async fn test_pool() -> exec::DbPool {
+    let pool = common::test_db(4).await;
     pool
 }
 
@@ -33,22 +25,26 @@ fn unique_tmp_dir(label: &str) -> std::path::PathBuf {
 async fn scan_reports_tasks_secrets_and_files() {
     let pool = test_pool().await;
 
-    sqlx::query("INSERT INTO pipelines (id, name, source) VALUES ('p1', 'demo-app', 'form')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO tasks (id, pipeline_id, step_order, name, command_template, registry_secret, config_source, config_key_path)
-         VALUES ('t1', 'p1', 1, 'deploy', 'docker compose up -d', 'ACR_PERSONAL', 'oss://example-bucket/cfg.tar.gz', 'oss-cfg')",
+    exec::execute(
+        &pool,
+        "INSERT INTO pipelines (id, name, source) VALUES ('p1', 'demo-app', 'form')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
+    exec::execute(&pool,
+        "INSERT INTO tasks (id, pipeline_id, step_order, name, command_template, registry_secret, config_source, config_key_path)
+         VALUES ('t1', 'p1', 1, 'deploy', 'docker compose up -d', 'ACR_PERSONAL', 'oss://example-bucket/cfg.tar.gz', 'oss-cfg')",
+        &[],
+    )
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
         "INSERT INTO tasks (id, pipeline_id, step_order, name, command_template)
          VALUES ('t2', 'p1', 2, 'clean', 'docker system prune -f')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -57,13 +53,11 @@ async fn scan_reports_tasks_secrets_and_files() {
         ("s2", "OSS_READONLY", "aliyun_oss_auth"),
         ("s3", "POSTGRES_PASSWORD", "generic"),
     ] {
-        sqlx::query(
+        exec::execute(
+            &pool,
             "INSERT INTO secrets (id, name, value, owner_group, kind) VALUES (?, ?, 'x', '', ?)",
+            &[id.into(), name.into(), kind.into()],
         )
-        .bind(id)
-        .bind(name)
-        .bind(kind)
-        .execute(&pool)
         .await
         .unwrap();
     }
@@ -85,11 +79,7 @@ async fn scan_reports_tasks_secrets_and_files() {
     )
     .unwrap();
 
-    let report = scan_pool(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        Some(&dir),
-    )
-    .await;
+    let report = scan_pool(&pool.clone(), Some(&dir)).await;
 
     assert_eq!(report.task_findings.len(), 1, "one affected pipeline task");
     let task = &report.task_findings[0];
@@ -160,11 +150,7 @@ async fn scan_clean_install_is_empty() {
     )
     .unwrap();
 
-    let report = scan_pool(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        Some(&dir),
-    )
-    .await;
+    let report = scan_pool(&pool.clone(), Some(&dir)).await;
     assert!(report.is_empty(), "clean install must scan empty");
 
     std::fs::remove_dir_all(&dir).ok();

@@ -3,15 +3,16 @@
 //! environment. `environment` is a reserved selector: it never leaks into the
 //! business inputs, and there is no fallback to the first declared environment.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use std::collections::HashMap;
 use tower::ServiceExt;
 
@@ -22,7 +23,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -60,32 +60,27 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -193,7 +188,7 @@ async fn json_req(
 /// unknown, so the order matters.
 async fn create_webhook_pipeline(
     app: &Router,
-    _pool: &SqlitePool,
+    _pool: &exec::DbPool,
     jwt: &str,
     environments: &[&str],
 ) -> String {
@@ -236,30 +231,31 @@ async fn create_webhook_pipeline(
         .to_string()
 }
 
-async fn set_webhook_environment(pool: &SqlitePool, pipeline_id: &str, slug: &str) {
-    sqlx::query("UPDATE pipelines SET webhook_environment = ? WHERE id = ?")
-        .bind(slug)
-        .bind(pipeline_id)
-        .execute(pool)
-        .await
-        .expect("set webhook_environment");
+async fn set_webhook_environment(pool: &exec::DbPool, pipeline_id: &str, slug: &str) {
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET webhook_environment = ? WHERE id = ?",
+        &[slug.into(), pipeline_id.into()],
+    )
+    .await
+    .expect("set webhook_environment");
 }
 
 /// Latest job of the pipeline: (environment slug, snapshot).
-async fn latest_job(pool: &SqlitePool, pipeline_id: &str) -> (Option<String>, serde_json::Value) {
-    let row = sqlx::query(
+async fn latest_job(pool: &exec::DbPool, pipeline_id: &str) -> (Option<String>, serde_json::Value) {
+    let r = exec::fetch_optional(
+        pool,
         "SELECT e.slug, j.snapshot FROM jobs j
          LEFT JOIN environments e ON e.id = j.environment_id
          WHERE j.pipeline_id = ?
          ORDER BY j.seq DESC LIMIT 1",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_optional(pool)
     .await
     .expect("load job")
     .expect("job exists");
-    let snapshot: serde_json::Value = serde_json::from_str(&row.get::<String, _>(1)).unwrap();
-    (row.get(0), snapshot)
+    let snapshot: serde_json::Value = serde_json::from_str(&r.text(1)).unwrap();
+    (r.opt_text(0), snapshot)
 }
 
 // ── Webhook handler: selector precedence ────────────────────────────────────
@@ -415,11 +411,15 @@ async fn hook_without_selector_never_falls_back_to_first_declared() {
             .contains("environment is required"),
         "unexpected error: {body}"
     );
-    let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE pipeline_id = ?")
-        .bind(&pid)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let jobs: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ?",
+        &[pid.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(jobs, 0, "no job may be created without an environment");
 }
 
@@ -474,13 +474,15 @@ async fn cron_trigger_targets_declared_environment() {
     assert_eq!(env.as_deref(), Some("nightly"));
     assert_eq!(snapshot["environment"], "nightly");
 
-    let trigger_by: String = sqlx::query_scalar(
+    let trigger_by: String = exec::fetch_optional(
+        &pool,
         "SELECT trigger_by FROM jobs WHERE pipeline_id = ? ORDER BY seq DESC LIMIT 1",
+        &[pid.into()],
     )
-    .bind(&pid)
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(trigger_by, "cron");
 }
 

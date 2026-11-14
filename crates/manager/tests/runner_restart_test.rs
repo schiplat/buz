@@ -3,14 +3,17 @@
 //!   POST /runners/heartbeat     → serves the flag once, then clears it
 //!   GET  /runners/poll         → blocks dispatch while restart_requested
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +22,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -60,50 +62,39 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
     // Platform admin.
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
     // Regular platform user (not admin).
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 0, 0, 1)",
+        &[MEMBER_ID.into(), "dev".into(), "dev".into()],
     )
-    .bind(MEMBER_ID)
-    .bind("dev")
-    .bind("dev")
-    .execute(&pool)
     .await
     .expect("seed member");
 
     // Runner with matching label.
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES (?, 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[RUNNER_ID.into()],
     )
-    .bind(RUNNER_ID)
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -222,11 +213,15 @@ async fn heartbeat_serves_restart_once_then_clears() {
     // Request restart → flag set in DB.
     let (status, _) = request_restart(&app, &admin_jwt()).await;
     assert_eq!(status, StatusCode::OK);
-    let flag: i64 = sqlx::query_scalar("SELECT restart_requested FROM runners WHERE id = ?")
-        .bind(RUNNER_ID)
-        .fetch_one(&pool)
-        .await
-        .expect("read flag");
+    let flag: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT restart_requested FROM runners WHERE id = ?",
+        &[RUNNER_ID.into()],
+    )
+    .await
+    .unwrap()
+    .expect("read flag")
+    .i64(0);
     assert_eq!(flag, 1, "flag persisted after restart request");
 
     // First heartbeat serves the command and clears it.
@@ -235,11 +230,15 @@ async fn heartbeat_serves_restart_once_then_clears() {
         body["data"]["restart"], true,
         "first heartbeat serves restart"
     );
-    let flag: i64 = sqlx::query_scalar("SELECT restart_requested FROM runners WHERE id = ?")
-        .bind(RUNNER_ID)
-        .fetch_one(&pool)
-        .await
-        .expect("read flag");
+    let flag: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT restart_requested FROM runners WHERE id = ?",
+        &[RUNNER_ID.into()],
+    )
+    .await
+    .unwrap()
+    .expect("read flag")
+    .i64(0);
     assert_eq!(flag, 0, "flag cleared after being served");
 
     // Second heartbeat → no longer restarting.
@@ -255,20 +254,21 @@ async fn restart_refused_while_running_jobs() {
     let (app, pool) = test_app().await;
 
     // Seed a running job on this runner.
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active)
          VALUES ('p1', 'restart-block', 'manual', '[\"linux-x64\"]', '[]', 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed pipeline");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO jobs (id, pipeline_id, runner_id, status)
          VALUES ('job-1', 'p1', ?, 'running')",
+        &[RUNNER_ID.into()],
     )
-    .bind(RUNNER_ID)
-    .execute(&pool)
     .await
     .expect("seed running job");
 
@@ -284,11 +284,15 @@ async fn restart_refused_while_running_jobs() {
     );
 
     // No flag was set.
-    let flag: i64 = sqlx::query_scalar("SELECT restart_requested FROM runners WHERE id = ?")
-        .bind(RUNNER_ID)
-        .fetch_one(&pool)
-        .await
-        .expect("read flag");
+    let flag: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT restart_requested FROM runners WHERE id = ?",
+        &[RUNNER_ID.into()],
+    )
+    .await
+    .unwrap()
+    .expect("read flag")
+    .i64(0);
     assert_eq!(flag, 0, "flag must not be set when restart is refused");
 }
 

@@ -214,3 +214,28 @@ variant needs a host-side cleanup guarantee on cancellation. The
 "compute locally, transfer the artifact" pattern (Runner-side
 render/prep + `buz/scp`) avoids the channel entirely and is the recommended
 authoring style today.
+
+## Slot-budget gate: write skew under Postgres (multi-phase fix)
+
+- **Found by**: the BUZ_TEST_DB=pg fixture matrix (`slot_scheduling_test`, 8/8 failures,
+  2026-11-14). Not reachable on SQLite.
+- **Symptom**: two concurrent pollers each claim a 4-slot job on a 4-slot host
+  (budget oversold to 8); `fifo`/`backfill` runners claim jobs the gate should
+  have skipped; starvation aging does not suspend backfill.
+- **Root cause**: the claim transaction re-reads
+  `SELECT COALESCE(SUM(resource_slots),0) FROM jobs WHERE status='running'`
+  inside `begin_immediate()`. On SQLite `BEGIN IMMEDIATE` takes the writer
+  lock, serialising the read-then-claim. On Postgres the same call opens a
+  plain deferred transaction (READ COMMITTED), so two claimants both observe
+  the pre-claim SUM and both pass the gate — a classic write skew.
+- **Why not fixed here**: the Postgres-native fixes are design work reserved
+  for the multi-enablement slice (see `transaction-boundaries.md`): either a
+  guarded per-host counter row (`UPDATE … SET running_slots = running_slots + ?
+  WHERE running_slots + ? <= max_resource_slots`, carried as schema + recovery
+  bookkeeping) or `SELECT … FOR UPDATE` on the host row inside the claim
+  transaction (Postgres-only syntax; needs a per-backend branch in
+  `begin_immediate` sites).
+- **Interim status**: `slot_scheduling_test` is excluded from the CI fixture
+  matrix; it remains the executable spec for that fix and passes on SQLite.
+  `single` + Postgres deployments can hit the same skew via concurrent
+  in-process polls until the multi-phase fix lands.

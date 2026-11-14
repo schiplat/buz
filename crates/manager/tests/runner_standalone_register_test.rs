@@ -1,5 +1,7 @@
 //! Standalone mode register: loopback tokenless for authorized names only.
 
+mod common;
+
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -7,7 +9,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
-use sqlx::sqlite::SqlitePoolOptions;
+use manager::store::exec;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
@@ -20,7 +22,6 @@ use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
 use manager::config::StandaloneConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 use shared::protocol::CreateRunnerRequest;
@@ -62,20 +63,15 @@ fn base_config(standalone: bool) -> Config {
 }
 
 async fn test_app(standalone: bool) -> Router {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
     let config = base_config(standalone);
-    ensure_standalone_auto_approve(&manager::store::exec::DbPool::from_sqlite(&pool), &config)
+    ensure_standalone_auto_approve(&pool.clone(), &config)
         .await
         .expect("auto_approve");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
     };
@@ -122,14 +118,9 @@ async fn register(
 
 #[tokio::test]
 async fn production_mode_rejects_empty_token() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
+    let pool = common::test_db(4).await;
     create_runner_record(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &CreateRunnerRequest {
             name: "prod-runner".into(),
             labels: None,
@@ -149,7 +140,7 @@ async fn production_mode_rejects_empty_token() {
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: base_config(false),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -170,23 +161,22 @@ async fn standalone_loopback_tokenless_succeeds_when_authorized() {
 
 #[tokio::test]
 async fn standalone_rejects_non_loopback_even_with_token() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
+    let pool = common::test_db(4).await;
     let config = base_config(true);
-    ensure_standalone_auto_approve(&manager::store::exec::DbPool::from_sqlite(&pool), &config)
+    ensure_standalone_auto_approve(&pool.clone(), &config)
         .await
         .unwrap();
-    let token: String = sqlx::query_scalar("SELECT register_token FROM runners WHERE name = ?")
-        .bind("standalone-runner")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let token: String = exec::fetch_optional(
+        &pool,
+        "SELECT register_token FROM runners WHERE name = ?",
+        &["standalone-runner".into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
     };

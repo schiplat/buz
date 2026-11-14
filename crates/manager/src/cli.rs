@@ -107,6 +107,26 @@ pub enum Command {
         new_secret_file: Option<String>,
     },
 
+    /// Copy a migrated SQLite database into an empty Postgres target
+    /// (in-place `single`-mode backend switch). Stops the Manager first.
+    /// Without --apply the command prints the per-table plan only — zero
+    /// writes. The Postgres target must carry no rows; the copy runs in one
+    /// transaction and verifies per-table counts before committing.
+    MigrateSqliteToPg {
+        /// Override the sqlite database path (default: database.path from
+        /// the config)
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        sqlite_path: Option<String>,
+
+        /// Postgres target connection url (schema/database must exist)
+        #[arg(long)]
+        pg_url: String,
+
+        /// Perform the migration. Without this flag: plan only, zero writes.
+        #[arg(long)]
+        apply: bool,
+    },
+
     /// Print a shell completion script for `buz-manager` to stdout.
     ///
     /// Example: `buz-manager completions zsh > ~/.zfunc/_buz-manager`

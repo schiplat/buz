@@ -306,6 +306,16 @@ impl From<&str> for SqlValue {
         Self::Text(v.to_string())
     }
 }
+impl From<&&str> for SqlValue {
+    fn from(v: &&str) -> Self {
+        Self::Text((*v).to_string())
+    }
+}
+impl From<&String> for SqlValue {
+    fn from(v: &String) -> Self {
+        Self::Text(v.clone())
+    }
+}
 impl From<String> for SqlValue {
     fn from(v: String) -> Self {
         Self::Text(v)
@@ -361,6 +371,12 @@ pub struct GenericRow {
 impl GenericRow {
     fn from_parts(names: Vec<String>, values: Vec<SqlValue>) -> Self {
         Self { names, values }
+    }
+
+    /// The decoded values in column order — data-movement callers (the
+    /// SQLite→PG migration) copy them verbatim instead of re-decoding.
+    pub fn values(&self) -> &[SqlValue] {
+        &self.values
     }
 
     /// Position of a column by name; `None` when absent (callers decide

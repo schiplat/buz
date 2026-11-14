@@ -5,27 +5,30 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{data, TestApp};
+use manager::store::exec;
 
 async fn job_with_logs(count: i64) -> (TestApp, String) {
     let app = TestApp::boot().await;
-    sqlx::query("INSERT INTO pipelines (id, name, team_id) VALUES ('p-logs', 'demo', 'team-1')")
-        .execute(&app.pool)
-        .await
-        .expect("seed pipeline");
-    sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot) VALUES ('j-logs', 'p-logs', 'running', 'test', '{}')",
+    exec::execute(
+        &app.pool,
+        "INSERT INTO pipelines (id, name, team_id) VALUES ('p-logs', 'demo', 'team-1')",
+        &[],
     )
-    .execute(&app.pool)
+    .await
+    .expect("seed pipeline");
+    exec::execute(
+        &app.pool,
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot) VALUES ('j-logs', 'p-logs', 'running', 'test', '{}')",
+        &[],
+    )
     .await
     .expect("seed job");
     for chunk in 0..count {
-        sqlx::query(
+        exec::execute(
+            &app.pool,
             "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content) VALUES (?, 'j-logs', ?, 0, ?)",
+            &[format!("log-{chunk}").into(), chunk.into(), format!("line-{chunk}").into()],
         )
-        .bind(format!("log-{chunk}"))
-        .bind(chunk)
-        .bind(format!("line-{chunk}"))
-        .execute(&app.pool)
         .await
         .expect("seed log");
     }

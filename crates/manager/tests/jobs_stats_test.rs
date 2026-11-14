@@ -4,14 +4,16 @@
 //! Both must be team-scoped and must hide debug (unredacted) jobs from
 //! non-admin users, mirroring the job list/get handlers.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec::{self, SqlValue};
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
@@ -20,7 +22,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -63,63 +64,58 @@ fn test_config() -> Config {
 /// Timestamps are computed relative to "now" so the fixed-date assertions stay
 /// stable regardless of when the tests run.
 async fn test_app() -> Router {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 0, 0, 1)",
+        &[USER_ID.into(), "dev".into(), "dev".into()],
     )
-    .bind(USER_ID)
-    .bind("dev")
-    .bind("dev")
-    .execute(&pool)
     .await
     .expect("seed developer");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')")
-        .execute(&pool)
-        .await
-        .expect("seed team-1");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Beta', 'beta')")
-        .execute(&pool)
-        .await
-        .expect("seed team-2");
-    sqlx::query(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')",
+        &[],
     )
-    .bind(USER_ID)
-    .execute(&pool)
+    .await
+    .expect("seed team-1");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Beta', 'beta')",
+        &[],
+    )
+    .await
+    .expect("seed team-2");
+    exec::execute(
+        &pool,
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+        &[USER_ID.into()],
+    )
     .await
     .expect("seed membership");
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p1', 'alpha-pipe', 'manual', '[]', '[]', 1, 'team-1')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed pipeline p1");
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p2', 'beta-pipe', 'manual', '[]', '[]', 1, 'team-2')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed pipeline p2");
 
@@ -149,23 +145,25 @@ async fn test_app() -> Router {
         ),
     ];
     for (id, pipeline, status, trigger_by, created_at, debug) in jobs {
-        sqlx::query(
+        exec::execute(
+            &pool,
             "INSERT INTO jobs (id, pipeline_id, status, trigger_by, created_at, debug_unredact)
              VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                SqlValue::Text(id.to_string()),
+                SqlValue::Text(pipeline.to_string()),
+                SqlValue::Text(status.to_string()),
+                SqlValue::Text(trigger_by.to_string()),
+                SqlValue::Text(created_at.to_string()),
+                SqlValue::Int(*debug),
+            ],
         )
-        .bind(id)
-        .bind(pipeline)
-        .bind(status)
-        .bind(trigger_by)
-        .bind(created_at)
-        .bind(debug)
-        .execute(&pool)
         .await
         .expect("seed job");
     }
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -398,24 +396,16 @@ async fn recent_respects_limit_and_team_param() {
 
 #[tokio::test]
 async fn trend_with_no_jobs_is_zero_filled() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
-    sqlx::query(
+    let pool = common::test_db(4).await;
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

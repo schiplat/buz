@@ -102,8 +102,16 @@ statement that touches a timestamp.
    explicit PG bodies, the whole corpus prepares on a real server, and the CI
    Postgres job (journey, parity, compile gate) is green.
    `validate_cluster_mode` serves Postgres for binaries built with the
-   feature. Still open: the `BUZ_TEST_DB` full matrix (the wider test suite
-   holds SQLite pools directly) as an independent slice.
-4. **`multi` enablement** — per-site serialisation review
-   (`transaction-boundaries.md`), scheduler coordination, and the removal of
-   the single-instance lock on Postgres.
+   feature. The `BUZ_TEST_DB` fixture matrix runs 47 suites on Postgres in
+   CI (see KNOWN_ISSUES.md for the one deferred finding: the slot-budget
+   gate's write skew).
+5. **In-place backend switch — done.** `buz-manager migrate-sqlite-to-pg`
+   copies a migrated SQLite database into an empty Postgres target: one
+   transaction, tables in foreign-key order, per-table count verification
+   before the commit, and an occupancy guard that never overwrites. Plan
+   only without `--apply`. The operator stops the Manager, runs the command,
+   points `[database] url` at `postgres:` and starts the Manager again.
+6. **`multi` enablement** — per-site serialisation review
+   (`transaction-boundaries.md`; the first entry is the slot-budget gate's
+   write skew under Postgres, see KNOWN_ISSUES.md), scheduler coordination,
+   and the removal of the single-instance lock on Postgres.

@@ -2,22 +2,23 @@
 //! If-Match, dry-run validation, rollback, two-person approval, and
 //! resource-profile grants. Access control: admin or ops only.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
 
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
 use manager::config::{
     AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, StandaloneConfig,
 };
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -59,38 +60,31 @@ fn test_config() -> Config {
 
 /// App + pool seeded with admin-1 (platform admin), ops-1/ops-2 (ops), user-1
 /// (regular), plus one team.
-async fn test_app() -> (Router, sqlx::SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
     for (id, username, admin, ops) in [
         ("admin-1", "boss", 1, 0),
         ("ops-1", "opsone", 0, 1),
         ("ops-2", "opstwo", 0, 1),
         ("user-1", "member", 0, 0),
     ] {
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
+        exec::execute(&pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
              VALUES (?, ?, 'hash', ?, ?, 0, ?, 1)",
-        )
-        .bind(id)
-        .bind(username)
-        .bind(username)
-        .bind(admin)
-        .bind(ops)
-        .execute(&pool)
+        &[id.into(), username.into(), username.into(), admin.into(), ops.into()],
+    )
         .await
         .unwrap();
     }
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')",
+        &[],
+    )
+    .await
+    .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -181,11 +175,26 @@ async fn ops_user_can_enroll_and_receives_a_one_time_token() {
     let token = body["token"].as_str().unwrap().to_string();
     assert!(token.starts_with("buzsd_"), "token prefix: {token}");
     // Only the hash is stored.
-    let (stored, count): (String, i64) =
-        sqlx::query_as("SELECT token_hash, COUNT(*) FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
+    let (stored, count): (String, i64) = {
+        let row = exec::fetch_optional(
+            &pool,
+            "SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .expect("enrolled host");
+        (
+            row.text(0),
+            exec::fetch_scalar_i64(
+                &pool,
+                "SELECT COUNT(*) FROM sandbox_hosts WHERE host_id = 'host-a'",
+                &[],
+            )
             .await
-            .unwrap();
+            .unwrap(),
+        )
+    };
     assert_eq!(count, 1);
     assert_ne!(stored, token);
     assert_eq!(stored, shared::api_token::hash_token(&token));
@@ -269,11 +278,15 @@ async fn config_versions_bump_and_if_match_is_enforced() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let desired: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let desired: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(desired, 2);
 }
 
@@ -306,11 +319,15 @@ async fn invalid_document_is_rejected_without_bumping_the_version() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
-    let desired: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let desired: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(desired, 1, "invalid document must not bump the version");
 }
 
@@ -330,10 +347,11 @@ async fn validate_endpoint_dry_runs_without_writing() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert_eq!(data(&resp)["valid"], true);
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sandbox_host_configs")
-        .fetch_one(&pool)
+    let count: i64 = exec::fetch_optional(&pool, "SELECT COUNT(*) FROM sandbox_host_configs", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .i64(0);
     assert_eq!(count, 0, "validate must not write a version");
 }
 
@@ -386,11 +404,12 @@ async fn versions_history_and_rollback() {
 async fn approval_flow_requires_a_second_user() {
     let (app, pool) = test_app().await;
     enrolled_host(&app).await;
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO platform_settings (key, value, updated_by)
          VALUES ('sandbox_config_require_approval', 'true', 'boss')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let ops1 = jwt("ops-1", Role::Ops);
@@ -408,11 +427,15 @@ async fn approval_flow_requires_a_second_user() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert_eq!(data(&resp)["pending"], true);
     let change_id = data(&resp)["change_id"].as_str().unwrap().to_string();
-    let desired: i64 =
-        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let desired: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(desired, 0, "approval pending: no version yet");
 
     // Self-approval is refused.
@@ -514,7 +537,7 @@ async fn get_host_reports_document_and_attached_runners() {
     enrolled_host(&app).await;
     // A runner reporting host_id 'host-a' counts as attached.
     let created = manager::api::runners::create_runner_record(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &shared::protocol::CreateRunnerRequest {
             name: "attached-runner".into(),
             labels: None,
@@ -533,11 +556,13 @@ async fn get_host_reports_document_and_attached_runners() {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE runners SET host_id = 'host-a' WHERE id = ?")
-        .bind(&created.id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET host_id = 'host-a' WHERE id = ?",
+        &[created.id.into()],
+    )
+    .await
+    .unwrap();
 
     // PUT a config so the document is non-null.
     let ops = jwt("ops-1", Role::Ops);
@@ -577,11 +602,15 @@ async fn get_host_reports_document_and_attached_runners() {
 async fn token_rotate_replaces_the_hash() {
     let (app, pool) = test_app().await;
     enrolled_host(&app).await;
-    let before: String =
-        sqlx::query_scalar("SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let before: String = exec::fetch_optional(
+        &pool,
+        "SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     let (status, resp) = call(
         &app,
         "POST",
@@ -593,11 +622,15 @@ async fn token_rotate_replaces_the_hash() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert!(data(&resp)["token"].as_str().unwrap().starts_with("buzsd_"));
-    let after: String =
-        sqlx::query_scalar("SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let after: String = exec::fetch_optional(
+        &pool,
+        "SELECT token_hash FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_ne!(before, after);
 }
 
@@ -642,13 +675,16 @@ async fn delete_removes_unbound_enrollment_and_cascades_history() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let configs: i64 = sqlx::query_scalar(
+    let configs: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM sandbox_host_configs
          WHERE host_id = 'host-a' AND instance_id = 'sandboxd-01'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(configs, 0);
 }
 
@@ -658,11 +694,12 @@ async fn delete_is_refused_while_runners_are_bound() {
     enrolled_host(&app).await;
     let ops = jwt("ops-1", Role::Ops);
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, host_id, sandbox_instance_id)
          VALUES ('r-1', 'runner-a', 'tok', 'host-a', 'sandboxd-01')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -706,11 +743,15 @@ async fn ops_can_update_the_host_slot_budget() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
-    let stored: i64 =
-        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(stored, 16);
 
     // 0 = inherit the platform default budget again.
@@ -724,11 +765,15 @@ async fn ops_can_update_the_host_slot_budget() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let stored: i64 =
-        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(stored, 0);
 
     // Out of range is rejected and leaves the stored value untouched.
@@ -742,11 +787,15 @@ async fn ops_can_update_the_host_slot_budget() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
-    let stored: i64 =
-        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(stored, 0);
 
     // Unknown host pairs are 404, not silently created.
@@ -764,14 +813,14 @@ async fn ops_can_update_the_host_slot_budget() {
 
 // ── grants approval flow ────────────────────────────────────────────
 
-async fn set_grants_approval(pool: &sqlx::SqlitePool, on: bool) {
-    sqlx::query(
+async fn set_grants_approval(pool: &exec::DbPool, on: bool) {
+    exec::execute(
+        pool,
         "INSERT INTO platform_settings (key, value, updated_by)
          VALUES ('grants_require_approval', ?, 'boss')
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        &[if on { "true" } else { "false" }.into()],
     )
-    .bind(if on { "true" } else { "false" })
-    .execute(pool)
     .await
     .unwrap();
 }
@@ -799,20 +848,25 @@ async fn grants_require_approval_and_approve_applies_them() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert_eq!(resp["data"]["pending"], true, "{resp}");
     let change_id = resp["data"]["change_id"].as_str().unwrap().to_string();
-    let applied: i64 = sqlx::query_scalar(
+    let applied: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(applied, 0, "grant must not apply before approval");
-    let pending: i64 = sqlx::query_scalar(
+    let pending: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM sandbox_config_changes WHERE id = ? AND status = 'pending'",
+        &[change_id.as_str().into()],
     )
-    .bind(&change_id)
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(pending, 1);
 
     // The requester cannot self-approve; a different ops user can.
@@ -839,12 +893,15 @@ async fn grants_require_approval_and_approve_applies_them() {
     assert_eq!(status, StatusCode::OK, "approve: {resp}");
     assert_eq!(resp["data"]["granted"], true, "{resp}");
 
-    let applied: i64 = sqlx::query_scalar(
+    let applied: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(applied, 1, "approved grant must exist");
 
     // History view: the decided row carries approver + comment.
@@ -867,12 +924,16 @@ async fn grants_require_approval_and_approve_applies_them() {
     assert_eq!(row["approved_by"], "opstwo");
     assert_eq!(row["decision_comment"], "ok");
 
-    let audit_actions: Vec<String> = sqlx::query_scalar(
+    let audit_actions: Vec<String> = exec::fetch_all(
+        &pool,
         "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY seq",
+        &[],
     )
-    .fetch_all(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .iter()
+    .map(|r| r.text(0))
+    .collect();
     assert!(!audit_actions.is_empty());
 }
 
@@ -886,10 +947,10 @@ async fn revocation_applies_immediately_and_rejection_restores_the_grant() {
     let ops2 = jwt("ops-2", Role::Ops);
 
     // Seed a grant directly (approval was off when it was granted).
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO team_resource_grants (team_id, profile, granted_by) VALUES ('team-1', 'large', 'boss')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -907,12 +968,15 @@ async fn revocation_applies_immediately_and_rejection_restores_the_grant() {
     let change_id = resp["data"]["change_id"].as_str().unwrap().to_string();
 
     // Fail-closed: the revoke itself already bit.
-    let applied: i64 = sqlx::query_scalar(
+    let applied: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(applied, 0, "revocation must apply immediately");
 
     // Rejecting the paperwork restores the grant.
@@ -926,20 +990,27 @@ async fn revocation_applies_immediately_and_rejection_restores_the_grant() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let restored: i64 = sqlx::query_scalar(
+    let restored: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(restored, 1, "rejection restores the grant row");
-    let (comment, decided_by): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT decision_comment, approved_by FROM sandbox_config_changes WHERE id = ?",
-    )
-    .bind(&change_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (comment, decided_by): (Option<String>, Option<String>) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT decision_comment, approved_by FROM sandbox_config_changes WHERE id = ?",
+            &[change_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("change row");
+        (r.opt_text(0), r.opt_text(1))
+    };
     assert_eq!(comment.as_deref(), Some("was urgent, fine"));
     assert_eq!(decided_by.as_deref(), Some("opstwo"));
 }
@@ -964,11 +1035,14 @@ async fn grants_apply_directly_when_approval_is_off() {
         None,
         "no pending in direct mode"
     );
-    let applied: i64 = sqlx::query_scalar(
+    let applied: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(applied, 1);
 }

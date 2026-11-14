@@ -6,15 +6,16 @@
 //! `LIMIT 50` — blocked older jobs must not push the newest job out of the
 //! window. Other environments are never touched.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use tower::ServiceExt;
 
 use manager::api;
@@ -23,7 +24,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -61,40 +61,36 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 4)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -219,23 +215,33 @@ async fn trigger_job(app: &Router, jwt: &str, pipeline_id: &str, environment: &s
         .to_string()
 }
 
-async fn job_status(pool: &SqlitePool, job_id: &str) -> String {
-    sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("load job status")
+async fn job_status(pool: &exec::DbPool, job_id: &str) -> String {
+    exec::fetch_optional(
+        pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("load job status")
+    .expect("row")
+    .text(0)
 }
 
 /// Move an API-triggered job into an arbitrary non-terminal state, optionally
 /// marking the running step and an approval-received snapshot.
-async fn force_status(pool: &SqlitePool, job_id: &str, status: &str, step_statuses: &str) {
-    let mut snapshot: serde_json::Value =
-        sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(pool)
-            .await
-            .expect("load snapshot");
+async fn force_status(pool: &exec::DbPool, job_id: &str, status: &str, step_statuses: &str) {
+    let mut snapshot: serde_json::Value = serde_json::from_str(
+        &exec::fetch_optional(
+            pool,
+            "SELECT snapshot FROM jobs WHERE id = ?",
+            &[job_id.into()],
+        )
+        .await
+        .unwrap()
+        .expect("load snapshot")
+        .text(0),
+    )
+    .unwrap();
     if status == "waiting_approval" {
         snapshot["approval"] = serde_json::json!({ "required": true, "received": 1 });
     }
@@ -245,20 +251,24 @@ async fn force_status(pool: &SqlitePool, job_id: &str, status: &str, step_status
     } else {
         "UPDATE jobs SET status = ?, step_statuses = ? WHERE id = ?"
     };
-    sqlx::query(update)
-        .bind(status)
-        .bind(step_statuses)
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .expect("force status");
+    exec::execute(
+        pool,
+        update,
+        &[status.into(), step_statuses.into(), job_id.into()],
+    )
+    .await
+    .expect("force status");
     if status == "waiting_approval" {
-        sqlx::query("UPDATE jobs SET snapshot = ? WHERE id = ?")
-            .bind(serde_json::to_string(&snapshot).unwrap())
-            .bind(job_id)
-            .execute(pool)
-            .await
-            .expect("stamp approval metadata");
+        exec::execute(
+            pool,
+            "UPDATE jobs SET snapshot = ? WHERE id = ?",
+            &[
+                serde_json::to_string(&snapshot).unwrap().into(),
+                job_id.into(),
+            ],
+        )
+        .await
+        .expect("stamp approval metadata");
     }
 }
 
@@ -306,14 +316,17 @@ async fn cancel_in_progress_supersedes_older_jobs_and_dispatches_newest() {
     );
 
     // Newest job is now running on the runner.
-    let row = sqlx::query("SELECT status, runner_id, start_time FROM jobs WHERE id = ?")
-        .bind(&newest)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(row.get::<String, _>(0), "running");
-    assert_eq!(row.get::<Option<String>, _>(1).as_deref(), Some("runner-1"));
-    assert!(row.get::<Option<String>, _>(2).is_some(), "start_time set");
+    let row = exec::fetch_optional(
+        &pool,
+        "SELECT status, runner_id, start_time FROM jobs WHERE id = ?",
+        &[newest.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("dispatched job row");
+    assert_eq!(row.text(0), "running");
+    assert_eq!(row.opt_text(1).as_deref(), Some("runner-1"));
+    assert!(row.opt_text(2).is_some(), "start_time set");
 
     // Every older in-flight job in the environment is cancelled.
     for job_id in [&running_old, &queued_old, &waiting_old, &pending_old] {
@@ -322,43 +335,58 @@ async fn cancel_in_progress_supersedes_older_jobs_and_dispatches_newest() {
             "cancelled",
             "old job {job_id} must be cancelled"
         );
-        let end_time: Option<String> = sqlx::query_scalar("SELECT end_time FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let end_time: Option<String> = match exec::fetch_optional(
+            &pool,
+            "SELECT end_time FROM jobs WHERE id = ?",
+            &[job_id.into()],
+        )
+        .await
+        .unwrap()
+        {
+            Some(r) => r.opt_text(0),
+            None => None,
+        };
         assert!(end_time.is_some(), "cancelled job {job_id} gets end_time");
     }
 
     // Running job's in-flight step was flipped to cancelled with finished_at.
-    let step_statuses: String = sqlx::query_scalar("SELECT step_statuses FROM jobs WHERE id = ?")
-        .bind(&running_old)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let step_statuses: String = exec::fetch_optional(
+        &pool,
+        "SELECT step_statuses FROM jobs WHERE id = ?",
+        &[running_old.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     let steps: serde_json::Value = serde_json::from_str(&step_statuses).unwrap();
     assert_eq!(steps[0]["status"], "cancelled");
     assert!(steps[0]["finished_at"].is_string());
 
     // waiting_approval job: snapshot outcome/trail are correct.
-    let snapshot_raw: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(&waiting_old)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let snapshot_raw: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[waiting_old.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("snapshot row")
+    .text(0);
     let snap: serde_json::Value = serde_json::from_str(&snapshot_raw).unwrap();
     assert_eq!(snap["approval"]["outcome"], "cancelled");
     assert_eq!(snap["approval"]["received"], 1, "received count preserved");
     assert_eq!(snap["approval"]["required"], true);
-    let trail: Vec<(String, String, String)> =
-        sqlx::query("SELECT user_id, username, action FROM job_approvals WHERE job_id = ?")
-            .bind(&waiting_old)
-            .fetch_all(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|r: sqlx::sqlite::SqliteRow| (r.get(0), r.get(1), r.get(2)))
-            .collect();
+    let trail: Vec<(String, String, String)> = exec::fetch_all(
+        &pool,
+        "SELECT user_id, username, action FROM job_approvals WHERE job_id = ?",
+        &[waiting_old.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| (r.text(0), r.text(1), r.text(2)))
+    .collect();
     assert_eq!(
         trail,
         vec![(
@@ -384,23 +412,30 @@ async fn cancel_in_progress_backlog_of_50_plus_still_dispatches_newest() {
 
     create_env(&app, &admin, "backlog", "cancel_in_progress").await;
     let pid = create_pipeline(&app, &admin, "backlog-pipe", "backlog", &["linux-x64"]).await;
-    let env_id: String = sqlx::query_scalar("SELECT id FROM environments WHERE slug = 'backlog'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let env_id: String = exec::fetch_optional(
+        &pool,
+        "SELECT id FROM environments WHERE slug = 'backlog'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
 
     // 60 blocked pending jobs — more than the candidate window (LIMIT 50).
     for i in 0..60 {
-        sqlx::query(
+        exec::execute(
+            &pool,
             "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, \
              environment_id, created_at, updated_at)
              VALUES (?, ?, 'pending', 'manual', '{}', '{\"runner_labels\":[\"linux-x64\"]}', ?, \
              datetime('now'), datetime('now'))",
+            &[
+                format!("backlog-job-{i:02}").into(),
+                pid.as_str().into(),
+                env_id.as_str().into(),
+            ],
         )
-        .bind(format!("backlog-job-{i:02}"))
-        .bind(&pid)
-        .bind(&env_id)
-        .execute(&pool)
         .await
         .expect("seed backlog job");
     }
@@ -418,20 +453,24 @@ async fn cancel_in_progress_backlog_of_50_plus_still_dispatches_newest() {
     assert_eq!(job_status(&pool, &newest).await, "running");
 
     // The whole backlog was superseded by cancel_in_progress.
-    let cancelled: i64 = sqlx::query_scalar(
+    let cancelled: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM jobs WHERE environment_id = ? AND status = 'cancelled'",
+        &[env_id.as_str().into()],
     )
-    .bind(&env_id)
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(cancelled, 60, "all backlog jobs cancelled");
-    let still_pending: i64 = sqlx::query_scalar(
+    let still_pending: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COUNT(*) FROM jobs WHERE environment_id = ? AND status = 'pending'",
+        &[env_id.as_str().into()],
     )
-    .bind(&env_id)
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(still_pending, 0, "no pending stragglers left behind");
 }
