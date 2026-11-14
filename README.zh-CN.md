@@ -1,6 +1,6 @@
 # Buz
 
-**自托管流水线平台：每个角色一个静态 Rust 二进制，单容器 5 分钟跑通整套
+**带内置算力治理的自托管流水线平台：每个角色一个静态 Rust 二进制，5 分钟跑通整套
 Manager + Runner，一切皆 YAML 声明。**
 
 [Buz 文档](https://buz.docs.sconts.com/) ·
