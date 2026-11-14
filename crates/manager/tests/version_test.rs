@@ -1,10 +1,13 @@
+mod common;
+
+use manager::store::exec;
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
 };
 use shared::version::VERSION;
-use sqlx::sqlite::SqlitePoolOptions;
 
 use manager::api::version::health;
 use manager::api::version::mark_started;
@@ -14,7 +17,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -52,14 +54,9 @@ fn test_config() -> Config {
 }
 
 async fn test_state() -> AppState {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
     AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     }
@@ -85,23 +82,26 @@ async fn health_reports_database_jobs_and_ws_signals() {
     let state = test_state().await;
 
     // Seed a backlog signal: one running + one waiting_approval job.
-    sqlx::query(
+    exec::execute(
+        &state.pool,
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p1', 'h-probe', 'manual', '[]', '[]', 1, '')",
+        &[],
     )
-    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed pipeline");
-    sqlx::query(
+    exec::execute(
+        &state.pool,
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by) VALUES ('j1', 'p1', 'running', 'manual')",
+        &[],
     )
-    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed running job");
-    sqlx::query(
+    exec::execute(
+        &state.pool,
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by) VALUES ('j2', 'p1', 'waiting_approval', 'cron')",
+        &[],
     )
-    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed approval job");
 

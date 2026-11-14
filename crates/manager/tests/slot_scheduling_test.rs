@@ -3,19 +3,20 @@
 //! backfill vs fifo queue walking, desired∩applied profile availability, and
 //! the visible dispatch reason on pending jobs.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tower::ServiceExt;
 
 use manager::api;
 use manager::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -70,32 +71,30 @@ fn document(with_large: bool) -> String {
     .to_string()
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
-    sqlx::query(
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
          VALUES ('admin-1', 'boss', 'hash', 'boss', 1, 1, 1, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO team_resource_grants (team_id, profile, granted_by) VALUES ('team-1', 'large', 'boss')",
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
     )
-    .execute(&pool)
+    .await
+    .unwrap();
+    exec::execute(&pool,
+        "INSERT INTO team_resource_grants (team_id, profile, granted_by) VALUES ('team-1', 'large', 'boss')",
+        &[],
+    )
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -104,17 +103,14 @@ async fn test_app() -> (Router, SqlitePool) {
 
 /// A sandboxed runner attached to sandbox host `host-a/sandboxd-01` (as the
 /// heartbeat would have derived it), with a given strategy.
-async fn seed_runner(pool: &SqlitePool, id: &str, mode: &str, strategy: &str) {
-    sqlx::query(
+async fn seed_runner(pool: &exec::DbPool, id: &str, mode: &str, strategy: &str) {
+    exec::execute(
+        pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs,
                               execution_mode, host_id, sandbox_instance_id, claim_strategy)
          VALUES (?, ?, 'tok', '[\"linux-x64\"]', 'online', 8, ?, 'host-a', 'sandboxd-01', ?)",
+        &[id.into(), id.into(), mode.into(), strategy.into()],
     )
-    .bind(id)
-    .bind(id)
-    .bind(mode)
-    .bind(strategy)
-    .execute(pool)
     .await
     .unwrap();
 }
@@ -122,33 +118,29 @@ async fn seed_runner(pool: &SqlitePool, id: &str, mode: &str, strategy: &str) {
 /// Enrolled host with `budget` slots; desired and applied both at the given
 /// documents/versions (sandboxd "has applied" what the test says).
 async fn seed_host(
-    pool: &SqlitePool,
+    pool: &exec::DbPool,
     budget: i64,
     applied: (i64, &str),
     desired: Option<(i64, &str)>,
 ) {
     let (applied_v, applied_doc) = applied;
     let (desired_v, desired_doc) = desired.unwrap_or(applied);
-    sqlx::query(
-        "INSERT INTO sandbox_hosts (host_id, instance_id, status, max_resource_slots, desired_version, applied_version)
+    exec::execute(pool,
+    "INSERT INTO sandbox_hosts (host_id, instance_id, status, max_resource_slots, desired_version, applied_version)
          VALUES ('host-a', 'sandboxd-01', 'insync', ?, ?, ?)",
+    &[budget.into(), desired_v.into(), applied_v.into()],
     )
-    .bind(budget)
-    .bind(desired_v)
-    .bind(applied_v)
-    .execute(pool)
     .await
     .unwrap();
     for (v, doc) in [(applied_v, applied_doc), (desired_v, desired_doc)] {
-        sqlx::query(
-            "INSERT OR IGNORE INTO sandbox_host_configs (host_id, instance_id, version, document, document_sha256, created_by, created_at)
-             VALUES ('host-a', 'sandboxd-01', ?, ?, 'sha', 'boss', datetime('now', '-1 hour'))",
-        )
-        .bind(v)
-        .bind(doc)
-        .execute(pool)
-        .await
-        .unwrap();
+        exec::execute(pool,
+    "INSERT INTO sandbox_host_configs (host_id, instance_id, version, document, document_sha256, created_by, created_at)
+             VALUES ('host-a', 'sandboxd-01', ?, ?, 'sha', 'boss', datetime('now', '-1 hour'))
+             ON CONFLICT DO NOTHING",
+    &[v.into(), doc.into()],
+    )
+    .await
+    .unwrap();
     }
 }
 
@@ -178,7 +170,7 @@ async fn call(
     (status, serde_json::from_slice(&bytes).unwrap_or_default())
 }
 
-async fn create_pipeline(app: &Router, pool: &SqlitePool, name: &str, profile: &str) -> String {
+async fn create_pipeline(app: &Router, pool: &exec::DbPool, name: &str, profile: &str) -> String {
     let (status, created) = call(
         app,
         "POST",
@@ -193,12 +185,13 @@ async fn create_pipeline(app: &Router, pool: &SqlitePool, name: &str, profile: &
     .await;
     assert_eq!(status, StatusCode::OK, "create: {created}");
     let id = created["data"]["id"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE pipelines SET resource_profile = ? WHERE id = ?")
-        .bind(profile)
-        .bind(&id)
-        .execute(pool)
-        .await
-        .unwrap();
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET resource_profile = ? WHERE id = ?",
+        &[profile.into(), id.as_str().into()],
+    )
+    .await
+    .unwrap();
     id
 }
 
@@ -217,7 +210,7 @@ async fn trigger(app: &Router, pipeline_id: &str) -> String {
 
 /// One pipeline per job: the existing "one running job per pipeline and
 /// environment" rule would otherwise mask the slot gate under test.
-async fn job(app: &Router, pool: &SqlitePool, name: &str, profile: &str) -> String {
+async fn job(app: &Router, pool: &exec::DbPool, name: &str, profile: &str) -> String {
     let pipeline = create_pipeline(app, pool, name, profile).await;
     trigger(app, &pipeline).await
 }
@@ -236,22 +229,25 @@ async fn poll(app: &Router, runner: &str) -> Option<String> {
     body["data"]["job_id"].as_str().map(str::to_string)
 }
 
-async fn job_state(pool: &SqlitePool, job_id: &str) -> (String, i64, String, String) {
-    sqlx::query_as(
-        "SELECT status, resource_slots, sandbox_instance_id, dispatch_reason FROM jobs WHERE id = ?",
+async fn job_state(pool: &exec::DbPool, job_id: &str) -> (String, i64, String, String) {
+    let r = exec::fetch_optional(pool,
+    "SELECT status, resource_slots, sandbox_instance_id, dispatch_reason FROM jobs WHERE id = ?",
+    &[job_id.into()],
     )
-    .bind(job_id)
-    .fetch_one(pool)
     .await
     .unwrap()
+    .expect("job row");
+    (r.text(0), r.i64(1), r.text(2), r.text(3))
 }
 
-async fn finish(pool: &SqlitePool, job_id: &str) {
-    sqlx::query("UPDATE jobs SET status = 'success', end_time = datetime('now') WHERE id = ?")
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .unwrap();
+async fn finish(pool: &exec::DbPool, job_id: &str) {
+    exec::execute(
+        pool,
+        "UPDATE jobs SET status = 'success', end_time = datetime('now') WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -382,12 +378,15 @@ async fn concurrent_polls_cannot_oversell_the_budget() {
     let (a, b) = tokio::join!(poll(&app, "runner-1"), poll(&app, "runner-2"));
     let claimed = [a, b].into_iter().flatten().count();
     assert_eq!(claimed, 1, "exactly one large job may run on a 4-slot host");
-    let running: i64 = sqlx::query_scalar(
+    let running: i64 = exec::fetch_optional(
+        &pool,
         "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs WHERE status = 'running'",
+        &[],
     )
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(running, 4);
 }
 
@@ -483,12 +482,12 @@ fn catalog_json() -> String {
     .to_string()
 }
 
-async fn seed_catalog(pool: &SqlitePool) {
-    sqlx::query(
+async fn seed_catalog(pool: &exec::DbPool) {
+    exec::execute(
+        pool,
         "INSERT INTO platform_settings (key, value) VALUES ('sandbox_default_profiles', ?)",
+        &[catalog_json().into()],
     )
-    .bind(catalog_json())
-    .execute(pool)
     .await
     .unwrap();
 }
@@ -554,24 +553,25 @@ async fn defaults_only_host_dispatches_the_default_profile() {
 
 // ── starvation aging: backfill stops overtaking a job past the threshold ──
 
-async fn set_starvation(pool: &SqlitePool, seconds: i64) {
-    sqlx::query(
+async fn set_starvation(pool: &exec::DbPool, seconds: i64) {
+    exec::execute(
+        pool,
         "INSERT INTO platform_settings (key, value) VALUES ('scheduler_starvation_seconds', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        &[seconds.to_string().into()],
     )
-    .bind(seconds.to_string())
-    .execute(pool)
     .await
     .unwrap();
 }
 
-async fn backdate_job(pool: &SqlitePool, job_id: &str, seconds_ago: i64) {
-    sqlx::query("UPDATE jobs SET created_at = datetime('now', ? || ' seconds') WHERE id = ?")
-        .bind(format!("-{seconds_ago}"))
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .unwrap();
+async fn backdate_job(pool: &exec::DbPool, job_id: &str, seconds_ago: i64) {
+    exec::execute(
+        pool,
+        "UPDATE jobs SET created_at = datetime('now', ? || ' seconds') WHERE id = ?",
+        &[format!("-{seconds_ago}").into(), job_id.into()],
+    )
+    .await
+    .unwrap();
 }
 
 /// Budget 8; 4 slots in use → a large job (4) waits while a small one (1)

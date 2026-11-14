@@ -3,19 +3,20 @@
 //! at claim (revocation fails the queued job terminally), and the claim payload
 //! carrying the profile name to the Runner.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tower::ServiceExt;
 
 use manager::api;
 use manager::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -54,40 +55,39 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
-    sqlx::query(
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
          VALUES ('admin-1', 'boss', 'hash', 'boss', 1, 1, 1, 1),
                 ('user-1', 'dev', 'hash', 'dev', 0, 0, 0, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .unwrap();
+    exec::execute(&pool,
         "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', 'user-1', 'developer')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 4)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -126,7 +126,7 @@ async fn call(
 
 /// Create a pipeline through the API, then set `resource_profile` the way the
 /// YAML scanner does for `runner.resources`.
-async fn pipeline_with_profile(app: &Router, pool: &SqlitePool, profile: &str) -> String {
+async fn pipeline_with_profile(app: &Router, pool: &exec::DbPool, profile: &str) -> String {
     let (status, created) = call(
         app,
         "POST",
@@ -147,12 +147,13 @@ async fn pipeline_with_profile(app: &Router, pool: &SqlitePool, profile: &str) -
     .await;
     assert_eq!(status, StatusCode::OK, "create: {created}");
     let id = created["data"]["id"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE pipelines SET resource_profile = ? WHERE id = ?")
-        .bind(profile)
-        .bind(&id)
-        .execute(pool)
-        .await
-        .unwrap();
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET resource_profile = ? WHERE id = ?",
+        &[profile.into(), id.as_str().into()],
+    )
+    .await
+    .unwrap();
     id
 }
 
@@ -211,11 +212,15 @@ async fn default_profile_needs_no_grant_and_rides_the_claim_payload_empty() {
     let (status, resp) = trigger(&app, &pipeline_id).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     let job_id = resp["data"]["job_id"].as_str().unwrap().to_string();
-    let stored: String = sqlx::query_scalar("SELECT resource_profile FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let stored: String = exec::fetch_optional(
+        &pool,
+        "SELECT resource_profile FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(stored, "");
 
     let body = poll(&app).await;
@@ -236,10 +241,11 @@ async fn ungranted_profile_fails_at_trigger_before_any_job_exists() {
             .contains("not authorized to request resource profile 'large'"),
         "{resp}"
     );
-    let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
-        .fetch_one(&pool)
+    let jobs: i64 = exec::fetch_optional(&pool, "SELECT COUNT(*) FROM jobs", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .i64(0);
     assert_eq!(jobs, 0, "no job may be created for an unauthorized request");
 }
 
@@ -250,11 +256,12 @@ async fn granted_profile_is_frozen_into_job_snapshot_and_claim_payload() {
     grant(&app, "large").await;
     // Dispatch requires a sandboxed runner on an enrolled host offering the
     // profile (host mode cannot enforce it — see slot_scheduling_test).
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE runners SET execution_mode = 'container', host_id = 'host-a',
          sandbox_instance_id = 'sandboxd-01' WHERE id = 'runner-1'",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let doc = serde_json::json!({
@@ -264,19 +271,18 @@ async fn granted_profile_is_frozen_into_job_snapshot_and_claim_payload() {
         "network": "bridge"
     })
     .to_string();
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO sandbox_hosts (host_id, instance_id, status, max_resource_slots, desired_version, applied_version)
          VALUES ('host-a', 'sandboxd-01', 'insync', 8, 1, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO sandbox_host_configs (host_id, instance_id, version, document, document_sha256, created_by)
          VALUES ('host-a', 'sandboxd-01', 1, ?, 'sha', 'boss')",
+        &[doc.into()],
     )
-    .bind(&doc)
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -284,12 +290,17 @@ async fn granted_profile_is_frozen_into_job_snapshot_and_claim_payload() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     let job_id = resp["data"]["job_id"].as_str().unwrap().to_string();
 
-    let (stored, snapshot_raw): (String, String) =
-        sqlx::query_as("SELECT resource_profile, snapshot FROM jobs WHERE id = ?")
-            .bind(&job_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (stored, snapshot_raw): (String, String) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT resource_profile, snapshot FROM jobs WHERE id = ?",
+            &[job_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("job row");
+        (r.text(0), r.text(1))
+    };
     assert_eq!(stored, "large");
     let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw).unwrap();
     assert_eq!(snapshot["resource_profile"], "large");
@@ -327,11 +338,15 @@ async fn revoking_a_grant_while_queued_fails_the_job_at_claim() {
         body["data"].get("job_id").is_none(),
         "revoked job must not be dispatched: {body}"
     );
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(
         status, "failed",
         "revocation is terminal, not pending forever"

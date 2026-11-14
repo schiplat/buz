@@ -1,13 +1,15 @@
 //! Integration tests for file-backed YAML authoring APIs.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
@@ -17,7 +19,6 @@ use manager::config::PipelineConfig;
 use manager::config::PluginIndexConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -51,31 +52,26 @@ fn test_config(scan_dir: &str) -> Config {
 }
 
 async fn test_app(scan_dir: &str) -> Router {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed user");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(scan_dir),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -605,37 +601,39 @@ async fn concurrent_creates_for_same_filename_only_create_once() {
 async fn create_rejects_target_team_without_write_before_file_exists() {
     let dir = tempfile::tempdir().expect("tempdir");
     let scan = dir.path().to_string_lossy().to_string();
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES ('dev-1', 'dev', 'hash', 'Dev', 0, 0, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', 'dev-1', 'developer')",
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
     )
-    .execute(&pool)
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')",
+        &[],
+    )
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', 'dev-1', 'developer')",
+        &[],
+    )
     .await
     .unwrap();
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(&scan),
         log_broadcast: LogBroadcaster::new(),
     };

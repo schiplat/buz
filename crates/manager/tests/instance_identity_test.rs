@@ -2,13 +2,15 @@
 //! `manager_instance_id`, and runner-reported `host_id`/`runner_instance_id`
 //! persisted on register/heartbeat (malformed values dropped, never fatal).
 
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
-use sqlx::sqlite::SqlitePoolOptions;
+use manager::store::exec;
 use std::sync::Once;
 use tower::ServiceExt;
 
@@ -17,7 +19,6 @@ use manager::api::runners::create_runner_record;
 use manager::config::{
     AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, StandaloneConfig,
 };
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 use shared::auth::TokenManager;
@@ -61,28 +62,23 @@ fn production_config() -> Config {
     }
 }
 
-async fn test_pool() -> sqlx::SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
+async fn test_pool() -> exec::DbPool {
+    let pool = common::test_db(4).await;
     pool
 }
 
 /// App + pool + (runner_id, one-shot register_token).
-async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
+async fn app_with_runner() -> (Router, exec::DbPool, String, String) {
     let pool = test_pool().await;
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES ('admin-1', 'admin', 'hash', 'admin', 1, 1, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let created = create_runner_record(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &CreateRunnerRequest {
             name: "id-runner-01".into(),
             labels: None,
@@ -102,7 +98,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -171,28 +167,29 @@ async fn meta_reports_the_manager_instance_id() {
 async fn ensure_manager_instance_id_persists_and_is_stable() {
     let pool = test_pool().await;
     std::env::remove_var("BUZ_MANAGER_INSTANCE_ID");
-    let first =
-        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
-            .await
-            .unwrap();
-    let second =
-        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
-            .await
-            .unwrap();
+    let first = manager::db::ensure_manager_instance_id(&pool.clone())
+        .await
+        .unwrap();
+    let second = manager::db::ensure_manager_instance_id(&pool.clone())
+        .await
+        .unwrap();
     assert_eq!(first, second, "identity must survive restarts");
     assert!(first.starts_with("mgr-"));
     // Env pin overrides and is re-persisted.
     std::env::set_var("BUZ_MANAGER_INSTANCE_ID", "pinned-mgr-9");
-    let pinned =
-        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
-            .await
-            .unwrap();
+    let pinned = manager::db::ensure_manager_instance_id(&pool.clone())
+        .await
+        .unwrap();
     assert_eq!(pinned, "pinned-mgr-9");
-    let stored: String =
-        sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = 'manager_instance_id'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored: String = exec::fetch_optional(
+        &pool,
+        "SELECT value FROM manager_meta WHERE key = 'manager_instance_id'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(stored, "pinned-mgr-9");
     std::env::remove_var("BUZ_MANAGER_INSTANCE_ID");
 }
@@ -217,12 +214,17 @@ async fn register_and_heartbeat_persist_instance_ids() {
     assert_eq!(status, StatusCode::OK, "register failed: {resp}");
     let runner_jwt = data(&resp)["token"].as_str().unwrap().to_string();
 
-    let (host_id, instance_id): (String, String) = sqlx::query_as(
-        "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (host_id, instance_id): (String, String) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.text(0), r.text(1))
+    };
     assert_eq!(host_id, "host-a-01");
     assert_eq!(instance_id, "rn-abc-01");
 
@@ -239,11 +241,15 @@ async fn register_and_heartbeat_persist_instance_ids() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "heartbeat failed: {resp}");
-    let host_id: String =
-        sqlx::query_scalar("SELECT host_id FROM runners WHERE name = 'id-runner-01'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let host_id: String = exec::fetch_optional(
+        &pool,
+        "SELECT host_id FROM runners WHERE name = 'id-runner-01'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(host_id, "host-a-02");
 }
 
@@ -275,12 +281,17 @@ async fn heartbeat_without_ids_keeps_stored_values() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "heartbeat failed: {resp}");
-    let (host_id, instance_id): (String, String) = sqlx::query_as(
-        "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (host_id, instance_id): (String, String) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.text(0), r.text(1))
+    };
     assert_eq!(host_id, "host-keep");
     assert_eq!(instance_id, "rn-keep");
 }
@@ -302,12 +313,17 @@ async fn malformed_ids_are_dropped_without_failing_register() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "register must succeed: {resp}");
-    let (host_id, instance_id): (String, String) = sqlx::query_as(
-        "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (host_id, instance_id): (String, String) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT host_id, runner_instance_id FROM runners WHERE name = 'id-runner-01'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.text(0), r.text(1))
+    };
     assert_eq!(host_id, "", "invalid host id must not be stored");
     assert_eq!(instance_id, "ok-rn-1");
 }

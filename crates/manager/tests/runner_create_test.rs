@@ -1,61 +1,12 @@
-use manager::api::runners::create_runner_record;
-use shared::protocol::CreateRunnerRequest;
-use sqlx::sqlite::SqlitePoolOptions;
+mod common;
 
-async fn test_pool() -> sqlx::SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    // Minimal schema needed by create_runner_record (runners + runner_events).
-    let sql = r#"
-        CREATE TABLE IF NOT EXISTS teams (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            slug TEXT NOT NULL UNIQUE
-        );
-        CREATE TABLE IF NOT EXISTS runners (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            register_token TEXT NOT NULL,
-            token TEXT,
-            labels TEXT NOT NULL DEFAULT '[]',
-            team_id TEXT,
-            execution_mode TEXT NOT NULL DEFAULT 'host',
-            status TEXT NOT NULL DEFAULT 'offline',
-            version TEXT,
-            system_info TEXT NOT NULL DEFAULT '{}',
-            is_frozen INTEGER NOT NULL DEFAULT 0,
-            max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
-            clean_workspace_after_job INTEGER NOT NULL DEFAULT 0,
-            shell_enabled INTEGER NOT NULL DEFAULT 1,
-            ssh_enabled INTEGER NOT NULL DEFAULT 1,
-            docker_enabled INTEGER NOT NULL DEFAULT 0,
-            wasm_enabled INTEGER NOT NULL DEFAULT 0,
-            ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts',
-            claim_strategy TEXT NOT NULL DEFAULT 'backfill',
-            last_seen TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS runner_events (
-            id TEXT PRIMARY KEY,
-            runner_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            message TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-    "#;
-    for stmt in sql.split(';') {
-        let trimmed = stmt.trim();
-        if !trimmed.is_empty() {
-            sqlx::query(trimmed)
-                .execute(&pool)
-                .await
-                .expect("apply schema");
-        }
-    }
+use manager::api::runners::create_runner_record;
+use manager::store::exec;
+use shared::protocol::CreateRunnerRequest;
+
+async fn test_pool() -> exec::DbPool {
+    let pool = common::test_db(4).await;
+    // The migrated schema replaces the hand-built mini-DDL.
     pool
 }
 
@@ -77,14 +28,16 @@ async fn create_runner_record_defaults_execution_mode_to_host() {
         ssh_host_key_policy: None,
         claim_strategy: None,
     };
-    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
-        .await
-        .unwrap();
-    let mode: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
-        .bind(created.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let created = create_runner_record(&pool.clone(), &req).await.unwrap();
+    let mode: String = exec::fetch_optional(
+        &pool,
+        "SELECT execution_mode FROM runners WHERE id = ?",
+        &[created.id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(mode, "host");
 }
 
@@ -107,21 +60,23 @@ async fn create_runner_record_rejects_non_host_execution_mode() {
         ssh_host_key_policy: None,
         claim_strategy: None,
     };
-    let error =
-        match create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await {
-            Ok(_) => panic!("Container mode must wait for reported host capability"),
-            Err(error) => error,
-        };
+    let error = match create_runner_record(&pool.clone(), &req).await {
+        Ok(_) => panic!("Container mode must wait for reported host capability"),
+        Err(error) => error,
+    };
     assert!(error.to_string().contains("start in Host mode"));
 }
 
 #[tokio::test]
 async fn create_runner_record_binds_valid_team() {
     let pool = test_pool().await;
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')",
+        &[],
+    )
+    .await
+    .unwrap();
     let req = CreateRunnerRequest {
         name: "team-runner".into(),
         labels: Some(vec!["linux-x64".into()]),
@@ -138,14 +93,20 @@ async fn create_runner_record_binds_valid_team() {
         claim_strategy: None,
     };
 
-    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
+    let created = create_runner_record(&pool.clone(), &req)
         .await
         .expect("create bound runner");
-    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-        .bind(created.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let team_id: Option<String> = match exec::fetch_optional(
+        &pool,
+        "SELECT team_id FROM runners WHERE id = ?",
+        &[created.id.into()],
+    )
+    .await
+    .unwrap()
+    {
+        Some(r) => r.opt_text(0),
+        None => None,
+    };
     assert_eq!(team_id.as_deref(), Some("team-1"));
 }
 
@@ -168,11 +129,10 @@ async fn create_runner_record_rejects_unknown_team() {
         claim_strategy: None,
     };
 
-    let error =
-        match create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await {
-            Ok(_) => panic!("unknown team must be rejected"),
-            Err(error) => error,
-        };
+    let error = match create_runner_record(&pool.clone(), &req).await {
+        Ok(_) => panic!("unknown team must be rejected"),
+        Err(error) => error,
+    };
     assert!(error.to_string().contains("does not exist"));
 }
 
@@ -195,7 +155,7 @@ async fn create_runner_record_returns_register_token() {
         claim_strategy: None,
     };
 
-    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
+    let created = create_runner_record(&pool.clone(), &req)
         .await
         .expect("create");
     assert_eq!(created.name, "cli-runner-1");
@@ -204,12 +164,17 @@ async fn create_runner_record_returns_register_token() {
     assert!(!created.id.is_empty());
 
     // Row is persisted with labels + policy defaults.
-    let (token, labels): (String, String) =
-        sqlx::query_as("SELECT register_token, labels FROM runners WHERE name = ?")
-            .bind("cli-runner-1")
-            .fetch_one(&pool)
-            .await
-            .expect("fetch runner");
+    let (token, labels): (String, String) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT register_token, labels FROM runners WHERE name = ?",
+            &["cli-runner-1".into()],
+        )
+        .await
+        .unwrap()
+        .expect("fetch runner");
+        (r.text(0), r.text(1))
+    };
     // Hash-only at rest: the row carries SHA-256(token), never the plaintext.
     assert_eq!(
         token,
@@ -238,11 +203,10 @@ async fn create_runner_record_rejects_duplicate_name() {
         claim_strategy: None,
     };
 
-    create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
+    create_runner_record(&pool.clone(), &req)
         .await
         .expect("first create");
-    let second =
-        create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await;
+    let second = create_runner_record(&pool.clone(), &req).await;
     assert!(
         second.is_err(),
         "duplicate name must fail on UNIQUE constraint"

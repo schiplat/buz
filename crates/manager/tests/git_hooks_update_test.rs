@@ -1,19 +1,20 @@
 //! Git hook update API: mutable settings change via PUT; provider / hook_key
 //! / secret stay immutable (delete + recreate). Audit rows record before/after.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
 use manager::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -51,9 +52,9 @@ fn test_config() -> Config {
     }
 }
 
-fn test_state(pool: sqlx::SqlitePool) -> std::sync::Arc<AppState> {
+fn test_state(pool: exec::DbPool) -> std::sync::Arc<AppState> {
     std::sync::Arc::new(AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     })
@@ -106,27 +107,22 @@ async fn json_request(
 }
 
 async fn seeded_pipeline_with_hook() -> (Router, std::sync::Arc<AppState>, String, String) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed user");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     let state = test_state(pool);
     let app = Router::new().nest("/api/v1", api::router((*state).clone()));
@@ -214,12 +210,15 @@ async fn update_changes_mutable_settings_and_audits() {
     assert_eq!(list["data"]["items"][0]["enabled"], false);
 
     // Audit row records the transition.
-    let row: (String, String) = sqlx::query_as(
+    let r = exec::fetch_optional(
+        &state.pool,
         "SELECT action, after_json FROM audit_logs WHERE action = 'git_hook.update'",
+        &[],
     )
-    .fetch_one(state.pool.as_sqlite().expect("sqlite"))
     .await
+    .unwrap()
     .expect("audit row");
+    let row = (r.text(0), r.text(1));
     assert_eq!(row.0, "git_hook.update");
     assert!(row.1.contains("github-pr-gate"), "{}", row.1);
 }

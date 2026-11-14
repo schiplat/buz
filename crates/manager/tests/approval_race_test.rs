@@ -3,14 +3,16 @@
 //! after a cancel (or reject) must fail with Conflict — never overwrite the
 //! recorded outcome or report success.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +21,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -59,49 +60,43 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
     for (id, name, admin_flag) in [
         (SUPER_ADMIN_ID, "boss", 1),
         (DEV_ID, "dev", 0),
         (MAINTAINER_ID, "maint", 0),
     ] {
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+        exec::execute(&pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
              VALUES (?, ?, 'hash', ?, ?, ?, 1)",
-        )
-        .bind(id)
-        .bind(name)
-        .bind(name)
-        .bind(admin_flag)
-        .bind(admin_flag)
-        .execute(&pool)
+        &[id.into(), name.into(), name.into(), admin_flag.into(), admin_flag.into()],
+    )
         .await
         .expect("seed user");
     }
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     for (uid, role) in [(DEV_ID, "developer"), (MAINTAINER_ID, "maintainer")] {
-        sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, ?)")
-            .bind(uid)
-            .bind(role)
-            .execute(&pool)
-            .await
-            .expect("seed membership");
+        exec::execute(
+            &pool,
+            "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, ?)",
+            &[uid.into(), role.into()],
+        )
+        .await
+        .expect("seed membership");
     }
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -233,22 +228,31 @@ async fn setup_waiting_job(app: &Router, jwt: &str, slug: &str) -> String {
     setup_waiting_job_at(app, jwt, slug, 1).await
 }
 
-async fn job_snapshot_outcome(pool: &SqlitePool, job_id: &str) -> Option<String> {
-    let raw: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("load snapshot");
+async fn job_snapshot_outcome(pool: &exec::DbPool, job_id: &str) -> Option<String> {
+    let raw: String = exec::fetch_optional(
+        pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .expect("load snapshot")
+    .text(0);
     let snap: serde_json::Value = serde_json::from_str(&raw).unwrap();
     snap["approval"]["outcome"].as_str().map(str::to_string)
 }
 
-async fn approval_actions(pool: &SqlitePool, job_id: &str) -> Vec<String> {
-    sqlx::query_scalar("SELECT action FROM job_approvals WHERE job_id = ? ORDER BY created_at, id")
-        .bind(job_id)
-        .fetch_all(pool)
-        .await
-        .expect("load approval trail")
+async fn approval_actions(pool: &exec::DbPool, job_id: &str) -> Vec<String> {
+    exec::fetch_all(
+        pool,
+        "SELECT action FROM job_approvals WHERE job_id = ? ORDER BY created_at, id",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| r.text(0))
+    .collect()
 }
 
 // ── Sequential: a finished decision must not be overwritten ────────────────
@@ -283,11 +287,15 @@ async fn late_approve_after_cancel_conflicts_and_keeps_outcome() {
         "late approve must conflict, not succeed silently"
     );
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(status, "cancelled");
     assert_eq!(
         job_snapshot_outcome(&pool, &job_id).await.as_deref(),
@@ -331,11 +339,15 @@ async fn late_reject_after_cancel_conflicts_and_keeps_outcome() {
         "late reject must conflict, not succeed silently"
     );
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(status, "cancelled");
     assert_eq!(
         job_snapshot_outcome(&pool, &job_id).await.as_deref(),
@@ -375,11 +387,15 @@ async fn late_approve_after_reject_conflicts_and_keeps_outcome() {
     .await;
     assert_eq!(approve.status(), StatusCode::CONFLICT);
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(status, "cancelled");
     assert_eq!(
         job_snapshot_outcome(&pool, &job_id).await.as_deref(),
@@ -424,11 +440,15 @@ async fn late_reject_after_approved_promotion_conflicts_and_keeps_outcome() {
     .await;
     assert_eq!(reject.status(), StatusCode::CONFLICT);
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(
         status, "pending",
         "promoted job must not be cancelled by late reject"
@@ -473,11 +493,15 @@ async fn approve_and_cancel_race_has_single_winner() {
         cancel.status()
     );
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     let outcome = job_snapshot_outcome(&pool, &job_id).await;
     let trail = approval_actions(&pool, &job_id).await;
     assert_eq!(status, "cancelled", "cancel won → cancelled");
@@ -526,11 +550,15 @@ async fn approve_and_reject_race_has_single_winner() {
         reject.status()
     );
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     let outcome = job_snapshot_outcome(&pool, &job_id).await;
     if approve_ok {
         assert_eq!(status, "pending");
@@ -573,16 +601,22 @@ async fn concurrent_approvals_with_threshold_one_have_single_winner() {
         second.status()
     );
 
-    let (status, received): (String, i64) =
-        sqlx::query_as("SELECT status, snapshot FROM jobs WHERE id = ?")
-            .bind(&job_id)
-            .fetch_one(&pool)
-            .await
-            .map(|(status, snapshot): (String, String)| {
-                let snap: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
-                (status, snap["approval"]["received"].as_i64().unwrap_or(0))
-            })
-            .unwrap();
+    let (status, received): (String, i64) = {
+        let row = exec::fetch_optional(
+            &pool,
+            "SELECT status, snapshot FROM jobs WHERE id = ?",
+            &[job_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("job row");
+        let snapshot: String = row.text(1);
+        let snap: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        (
+            row.text(0),
+            snap["approval"]["received"].as_i64().unwrap_or(0),
+        )
+    };
     assert_eq!(status, "pending");
     assert_eq!(received, 1, "exactly one approval counted");
     assert_eq!(approval_actions(&pool, &job_id).await.len(), 1);
@@ -602,10 +636,7 @@ async fn reject_rereads_snapshot_in_transaction_preserves_concurrent_approval() 
     let job_id = setup_waiting_job_at(&app, &admin, "reject-fresh", 2).await;
 
     // Park the reject handler at BEGIN IMMEDIATE.
-    let mut guard = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .expect("hold writer lock");
+    let mut guard = pool.begin_immediate().await.expect("hold writer lock");
 
     let reject_uri = format!("/api/v1/jobs/{job_id}/reject");
     let rejector = maintainer_jwt();
@@ -625,43 +656,65 @@ async fn reject_rereads_snapshot_in_transaction_preserves_concurrent_approval() 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Concurrent below-threshold approval: approve row + snapshot received 1.
-    sqlx::query(
-        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+    guard
+        .execute(
+            "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
          VALUES ('approval-concurrent-1', ?, 'approver-2', 'approver2', 'approve', '')",
-    )
-    .bind(&job_id)
-    .execute(&mut *guard)
-    .await
-    .expect("record concurrent approval");
-    sqlx::query(
-        "UPDATE jobs SET snapshot = json_set(snapshot, '$.approval.received', 1),
-         updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&job_id)
-    .execute(&mut *guard)
-    .await
-    .expect("bump approval received");
+            &[job_id.as_str().into()],
+        )
+        .await
+        .expect("record concurrent approval");
+    // json_set is SQLite-only: read, rewrite in Rust, write back.
+    let raw = guard
+        .fetch_optional(
+            "SELECT snapshot FROM jobs WHERE id = ?",
+            &[job_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("job row")
+        .text(0);
+    let mut snap: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    snap["approval"]["received"] = serde_json::json!(1);
+    guard
+        .execute(
+            "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') WHERE id = ?",
+            &[
+                serde_json::to_string(&snap).unwrap().into(),
+                job_id.as_str().into(),
+            ],
+        )
+        .await
+        .expect("bump approval received");
     guard.commit().await.expect("release writer lock");
 
     let reject = reject_handle.await.expect("join reject task");
     assert_eq!(reject.status(), StatusCode::OK, "reject succeeds");
 
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     assert_eq!(status, "cancelled");
     assert_eq!(
         job_snapshot_outcome(&pool, &job_id).await.as_deref(),
         Some("rejected")
     );
 
-    let snapshot_raw: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let snapshot_raw: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
     let snap: serde_json::Value = serde_json::from_str(&snapshot_raw).unwrap();
     assert_eq!(
         snap["approval"]["received"], 1,

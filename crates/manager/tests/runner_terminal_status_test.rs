@@ -2,15 +2,16 @@
 //! reached a terminal state (`cancelled | success | failed | timeout`):
 //! overall status, `end_time`, `retry_times` and step statuses all stick.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +20,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -57,40 +57,36 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -207,35 +203,41 @@ async fn trigger_job(app: &Router, jwt: &str, pipeline_id: &str, environment: &s
 /// buggy Runner update would have to clobber for the test to fail.
 /// Simulate poll() dispatch: updates are only accepted from the runner the
 /// job was assigned to, so the tests must bind the job to runner-1 first.
-async fn dispatch_to(pool: &SqlitePool, job_id: &str) {
-    sqlx::query("UPDATE jobs SET runner_id = 'runner-1' WHERE id = ?")
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .expect("bind job to runner-1");
+async fn dispatch_to(pool: &exec::DbPool, job_id: &str) {
+    exec::execute(
+        pool,
+        "UPDATE jobs SET runner_id = 'runner-1' WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("bind job to runner-1");
 }
 
-async fn force_terminal(pool: &SqlitePool, job_id: &str, terminal: &str) {
-    sqlx::query(
+async fn force_terminal(pool: &exec::DbPool, job_id: &str, terminal: &str) {
+    exec::execute(
+        pool,
         "UPDATE jobs SET status = ?, end_time = '2030-01-01 00:00:00', retry_times = 7,
          step_statuses = ? WHERE id = ?",
+        &[
+            terminal.into(),
+            r#"[{"step_order":0,"status":"success","finished_at":"2030-01-01 00:00:00"}]"#.into(),
+            job_id.into(),
+        ],
     )
-    .bind(terminal)
-    .bind(r#"[{"step_order":0,"status":"success","finished_at":"2030-01-01 00:00:00"}]"#)
-    .bind(job_id)
-    .execute(pool)
     .await
     .expect("force terminal state");
 }
 
-async fn load_job(pool: &SqlitePool, job_id: &str) -> (String, Option<String>, i64, String) {
-    let row =
-        sqlx::query("SELECT status, end_time, retry_times, step_statuses FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(pool)
-            .await
-            .expect("load job");
-    (row.get(0), row.get(1), row.get(2), row.get(3))
+async fn load_job(pool: &exec::DbPool, job_id: &str) -> (String, Option<String>, i64, String) {
+    let r = exec::fetch_optional(
+        pool,
+        "SELECT status, end_time, retry_times, step_statuses FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .expect("load job");
+    (r.text(0), r.opt_text(1), r.i64(2), r.text(3))
 }
 
 #[tokio::test]
@@ -380,15 +382,18 @@ async fn failed_overall_report_sweeps_running_steps() {
     dispatch_to(&pool, &job_id).await;
 
     // Two steps: one finished, one still reported running.
-    sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")
-        .bind(
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET step_statuses = ? WHERE id = ?",
+        &[
             r#"[{"step_order":0,"status":"success","finished_at":"2030-01-01 00:00:00"},
-            {"step_order":1,"status":"running","started_at":"2030-01-01 00:00:01"}]"#,
-        )
-        .bind(&job_id)
-        .execute(&pool)
-        .await
-        .expect("seed step statuses");
+            {"step_order":1,"status":"running","started_at":"2030-01-01 00:00:01"}]"#
+                .into(),
+            job_id.as_str().into(),
+        ],
+    )
+    .await
+    .expect("seed step statuses");
 
     let overall = json_req(
         &app,

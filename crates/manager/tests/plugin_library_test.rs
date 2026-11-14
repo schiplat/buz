@@ -2,14 +2,16 @@
 //! local-index template resolves and locks at save time. Covers the happy
 //! path end-to-end over the HTTP API plus the two main authoring errors.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +21,6 @@ use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
 use manager::crypto;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -37,43 +38,39 @@ fn isolated_pipeline_config() -> PipelineConfig {
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 const ADMIN_ID: &str = "admin-1";
 
-async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed user");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
-    sqlx::query(
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let secret = crypto::encrypt("not-a-url", JWT_SECRET).expect("encrypt test secret");
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO secrets (id, name, value, team_id, kind)
          VALUES ('secret-1', 'FEISHU', ?, 'team-1', 'generic')",
+        &[secret.into()],
     )
-    .bind(secret)
-    .execute(&pool)
     .await
     .expect("seed template secret");
 
@@ -102,7 +99,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
     config.pipeline.yaml_scan_dir = yaml_dir.to_string_lossy().into_owned();
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
     };
@@ -197,25 +194,33 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
         .to_string();
 
     // Stored task is the expanded template: concrete run + INPUT_* env.
-    let (command, step_env): (String, String) = sqlx::query_as(
-        "SELECT command_template, step_env FROM tasks WHERE pipeline_id = ? AND step_order = 1",
-    )
-    .bind(&pipeline_id)
-    .fetch_one(&pool)
-    .await
-    .expect("task row");
+    let (command, step_env) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT command_template, step_env FROM tasks WHERE pipeline_id = ? AND step_order = 1",
+            &[pipeline_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.text(0), r.text(1))
+    };
     assert!(command.contains("INPUT_WEBHOOK"), "command: {command}");
     assert!(step_env.contains("INPUT_WEBHOOK"), "step_env: {step_env}");
 
     // Provenance row locks the resolution (per-pipeline, ADR §6.4).
-    let (uses_ref, version, hash, source): (String, String, String, String) = sqlx::query_as(
-        "SELECT uses_ref, resolved_version, content_sha256, source
+    let (uses_ref, version, hash, source) = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT uses_ref, resolved_version, content_sha256, source
          FROM step_resolutions WHERE pipeline_id = ?",
-    )
-    .bind(&pipeline_id)
-    .fetch_one(&pool)
-    .await
-    .expect("provenance row");
+            &[pipeline_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+        (r.text(0), r.text(1), r.text(2), r.text(3))
+    };
     assert_eq!(uses_ref, "buz/feishu@1.2");
     assert_eq!(version, "1.2.0");
     assert_eq!(hash.len(), 64);
@@ -240,11 +245,15 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
     assert_eq!(trigger.status(), StatusCode::OK);
     let trigger_body = read_json(trigger).await;
     let job_id = trigger_body["data"]["job_id"].as_str().unwrap();
-    let snapshot_raw: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let snapshot_raw: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw).unwrap();
     let task = &snapshot["tasks"][1];
     assert_eq!(task["name"], "notify");
@@ -297,16 +306,22 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
     assert_eq!(dispatched["step_env"]["INPUT_WEBHOOK"], "not-a-url");
 
     // Later pipeline edits must not rewrite historical execution provenance.
-    sqlx::query("UPDATE step_resolutions SET resolved_version = '9.9.9' WHERE pipeline_id = ?")
-        .bind(&pipeline_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let stored_snapshot: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE step_resolutions SET resolved_version = '9.9.9' WHERE pipeline_id = ?",
+        &[pipeline_id.as_str().into()],
+    )
+    .await
+    .unwrap();
+    let stored_snapshot: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     let stored: serde_json::Value = serde_json::from_str(&stored_snapshot).unwrap();
     assert_eq!(
         stored["tasks"][1]["marketplace"]["resolved_version"],
@@ -331,12 +346,17 @@ async fn frozen_docker_task_claim_preserves_privileged_and_nullable_host_id() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let pipeline_id = body["data"]["id"].as_str().unwrap();
 
-    let stored_host_id: Option<String> =
-        sqlx::query_scalar("SELECT host_id FROM tasks WHERE pipeline_id = ? AND step_order = 0")
-            .bind(pipeline_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored_host_id: Option<String> = match exec::fetch_optional(
+        &pool,
+        "SELECT host_id FROM tasks WHERE pipeline_id = ? AND step_order = 0",
+        &[pipeline_id.into()],
+    )
+    .await
+    .unwrap()
+    {
+        Some(r) => r.opt_text(0),
+        None => None,
+    };
     assert_eq!(stored_host_id, None);
 
     let trigger = app
@@ -520,9 +540,14 @@ async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
         "{body}"
     );
 
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pipelines WHERE name = 'uses-smoke'")
-        .fetch_one(&_pool)
-        .await
-        .unwrap();
+    let rows: i64 = exec::fetch_optional(
+        &_pool,
+        "SELECT COUNT(*) FROM pipelines WHERE name = 'uses-smoke'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(rows, 0, "failed saves must not leave a pipeline behind");
 }

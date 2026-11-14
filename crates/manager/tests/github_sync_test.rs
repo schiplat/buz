@@ -5,6 +5,9 @@
 //! PUT the encrypted value. The mock owns the recipient keypair, so the test
 //! proves the encrypted value actually decrypts to the stored secret.
 
+mod common;
+
+use manager::store::exec;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -16,7 +19,6 @@ use base64::Engine;
 use crypto_box::aead::OsRng;
 use http_body_util::BodyExt;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
@@ -26,7 +28,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -58,42 +59,34 @@ fn test_config() -> Config {
 }
 
 async fn test_app() -> Router {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 0, 0, 1)",
+        &[REGULAR_USER_ID.into(), "alice".into(), "alice".into()],
     )
-    .bind(REGULAR_USER_ID)
-    .bind("alice")
-    .bind("alice")
-    .execute(&pool)
     .await
     .expect("seed user");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

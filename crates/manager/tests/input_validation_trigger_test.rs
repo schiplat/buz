@@ -3,14 +3,17 @@
 //! enforced by POST /pipelines/{id}/trigger (and the shared webhook path),
 //! returning 422 with field-level messages instead of queuing the job.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +22,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -58,49 +60,46 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     // A registered Host so `type: host` inputs can pass validation.
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data)
          VALUES ('host-1', 'prod-01', '10.0.0.1', 22, 'root', 'none', '{}')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed host");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -292,12 +291,15 @@ async fn empty_value_falls_back_to_declared_default() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_body(resp).await);
 
-    let params: serde_json::Value = sqlx::query_scalar::<_, String>(
+    let params: serde_json::Value = exec::fetch_optional(
+        &pool,
         "SELECT trigger_params FROM jobs ORDER BY created_at DESC LIMIT 1",
+        &[],
     )
-    .fetch_one(&pool)
     .await
+    .unwrap()
     .expect("job trigger_params")
+    .text(0)
     .parse()
     .expect("json");
     assert_eq!(params["tag"], "0.1.0", "default merged for required blank");
@@ -382,10 +384,11 @@ async fn invalid_input_never_creates_a_job() {
     .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
-        .fetch_one(&pool)
+    let count: i64 = exec::fetch_optional(&pool, "SELECT COUNT(*) FROM jobs", &[])
         .await
-        .expect("count jobs");
+        .unwrap()
+        .expect("count jobs")
+        .i64(0);
     assert_eq!(count, 0, "validation failure must not queue a job");
 }
 

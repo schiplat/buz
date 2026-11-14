@@ -3,15 +3,16 @@
 //! job, stay distinct from the admin-only `debug_unredact` flag, and be echoed
 //! back to the Runner in the dispatch payload.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use tower::ServiceExt;
 
 use manager::api;
@@ -20,7 +21,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -60,62 +60,55 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
     // Super admin (platform admin).
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
     // Regular member (platform user) with developer role in the default team.
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 0, 0, 1)",
+        &[MEMBER_ID.into(), "dev".into(), "dev".into()],
     )
-    .bind(MEMBER_ID)
-    .bind("dev")
-    .bind("dev")
-    .execute(&pool)
     .await
     .expect("seed member");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
-
-    sqlx::query(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
     )
-    .bind(MEMBER_ID)
-    .execute(&pool)
+    .await
+    .expect("seed team");
+
+    exec::execute(
+        &pool,
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+        &[MEMBER_ID.into()],
+    )
     .await
     .expect("seed membership");
 
     // Runner with a matching label so dispatch can be exercised.
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -227,13 +220,16 @@ async fn trigger_debug(app: &Router, jwt: &str, pipeline_id: &str) -> axum::resp
         .unwrap()
 }
 
-async fn job_verbose_flag(pool: &SqlitePool, job_id: &str) -> bool {
-    let flag: i64 = sqlx::query("SELECT verbose_logs FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("load job")
-        .get(0);
+async fn job_verbose_flag(pool: &exec::DbPool, job_id: &str) -> bool {
+    let flag: i64 = exec::fetch_optional(
+        pool,
+        "SELECT verbose_logs FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .expect("load job")
+    .i64(0);
     flag != 0
 }
 
@@ -254,12 +250,15 @@ async fn member_can_request_verbose_trigger() {
         job_verbose_flag(&pool, job_id).await,
         "verbose_logs = 1 persisted"
     );
-    let debug: i64 = sqlx::query("SELECT debug_unredact FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load job")
-        .get(0);
+    let debug: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT debug_unredact FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .expect("load job")
+    .i64(0);
     assert_eq!(debug, 0, "verbose must not flip the admin-only debug flag");
 }
 

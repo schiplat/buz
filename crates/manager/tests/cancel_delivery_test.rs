@@ -3,14 +3,16 @@
 //! `/runners/poll` response via the one-shot `cancel_ack_pending` flag,
 //! replacing the runner's former per-job 2s status-check probes.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tower::ServiceExt;
 
 use manager::api;
@@ -19,7 +21,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -46,44 +47,43 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')")
-        .execute(&pool)
-        .await
-        .expect("seed other team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')",
+        &[],
+    )
+    .await
+    .expect("seed other team");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 4)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -195,12 +195,12 @@ async fn poll_delivers_operator_cancel_once_and_clears_the_flag() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
          start_time = datetime('now') WHERE id = ?",
+        &[job_id.as_str().into()],
     )
-    .bind(&job_id)
-    .execute(&pool)
     .await
     .expect("force running");
 
@@ -268,11 +268,15 @@ async fn poll_delivers_operator_cancel_once_and_clears_the_flag() {
             .is_empty(),
         "acked notice is not repeated: {body3}"
     );
-    let pending: i64 = sqlx::query_scalar("SELECT cancel_ack_pending FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let pending: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT cancel_ack_pending FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(pending, 0);
 }
 
@@ -285,12 +289,15 @@ async fn poll_delivers_cancels_even_at_capacity() {
 
     // Capacity 1 with one *uncancelled* running job → every poll hits the
     // capacity gate, while a second runner-owned cancellation must be delivered.
-    sqlx::query("UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .expect("cap runner");
+    exec::execute(
+        &pool,
+        "UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .expect("cap runner");
 
-    async fn running_job(app: &Router, pool: &SqlitePool, admin: &str, pipe: &str) -> String {
+    async fn running_job(app: &Router, pool: &exec::DbPool, admin: &str, pipe: &str) -> String {
         let trig = json_req(
             app,
             "POST",
@@ -303,12 +310,12 @@ async fn poll_delivers_cancels_even_at_capacity() {
             .as_str()
             .unwrap()
             .to_string();
-        sqlx::query(
+        exec::execute(
+            pool,
             "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
              start_time = datetime('now') WHERE id = ?",
+            &[job_id.as_str().into()],
         )
-        .bind(&job_id)
-        .execute(pool)
         .await
         .expect("force running");
         job_id
@@ -363,12 +370,12 @@ async fn claim_response_carries_cancel_notices_alongside_the_job() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
          start_time = datetime('now') WHERE id = ?",
+        &[running.as_str().into()],
     )
-    .bind(&running)
-    .execute(&pool)
     .await
     .expect("force running");
     let cancel = json_req(
@@ -478,12 +485,12 @@ async fn claim_poll_delivers_cancel_notices_without_legacy_compat_mode() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
          start_time = datetime('now') WHERE id = ?",
+        &[job_id.as_str().into()],
     )
-    .bind(&job_id)
-    .execute(&pool)
     .await
     .unwrap();
     let cancel = json_req(
@@ -505,11 +512,15 @@ async fn claim_poll_delivers_cancel_notices_without_legacy_compat_mode() {
             .unwrap_or(false),
         "claim channel delivers cancellation notice: {body}"
     );
-    let pending: i64 = sqlx::query_scalar("SELECT cancel_ack_pending FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let pending: i64 = exec::fetch_optional(
+        &pool,
+        "SELECT cancel_ack_pending FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .i64(0);
     assert_eq!(
         pending, 1,
         "legacy poll must not consume new-protocol notice"
@@ -546,12 +557,12 @@ async fn negotiated_long_poll_wakes_when_a_running_job_is_cancelled() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
          start_time = datetime('now') WHERE id = ?",
+        &[job_id.as_str().into()],
     )
-    .bind(&job_id)
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -605,10 +616,13 @@ async fn unrelated_wakeup_returns_retry_hint_to_refresh_active_count() {
     let admin = admin_jwt();
     let busy_pipe = create_pipeline(&app, &admin, "busy-active-snapshot").await;
     let other_pipe = create_pipeline(&app, &admin, "other-runner-event").await;
-    sqlx::query("UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
 
     let running = json_req(
         &app,
@@ -622,12 +636,12 @@ async fn unrelated_wakeup_returns_retry_hint_to_refresh_active_count() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query(
+    exec::execute(
+        &pool,
         "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
          start_time = datetime('now') WHERE id = ?",
+        &[running_id.into()],
     )
-    .bind(&running_id)
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -680,10 +694,13 @@ async fn bound_runner_only_claims_its_frozen_team_and_shared_runner_can_claim_an
     let team1_pipe = create_pipeline_in_team(&app, &admin, "team-one-pipe", "team-1").await;
     let team2_pipe = create_pipeline_in_team(&app, &admin, "team-two-pipe", "team-2").await;
 
-    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
 
     let foreign = json_req(
         &app,
@@ -716,11 +733,15 @@ async fn bound_runner_only_claims_its_frozen_team_and_shared_runner_can_claim_an
         body["data"]["job_id"], own_id,
         "bound runner claims its team: {body}"
     );
-    let foreign_status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&foreign_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let foreign_status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[foreign_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(
         foreign_status, "pending",
         "foreign team job remains pending"
@@ -728,15 +749,20 @@ async fn bound_runner_only_claims_its_frozen_team_and_shared_runner_can_claim_an
 
     // Remove the first claim and make the runner shared; the same foreign job
     // becomes eligible without relying on a label convention.
-    sqlx::query("UPDATE jobs SET status = 'success' WHERE id = ?")
-        .bind(own_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE runners SET team_id = NULL WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET status = 'success' WHERE id = ?",
+        &[own_id.into()],
+    )
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET team_id = NULL WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
     let poll = negotiated_poll(&app, None).await;
     let body = read_body(poll).await;
     assert_eq!(
@@ -750,10 +776,13 @@ async fn bound_runner_skips_legacy_job_without_frozen_team() {
     let (app, pool, _state) = test_app().await;
     let admin = admin_jwt();
     let pipe = create_pipeline_in_team(&app, &admin, "legacy-team-pipe", "team-1").await;
-    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
     let trigger = json_req(
         &app,
         "POST",
@@ -766,11 +795,29 @@ async fn bound_runner_skips_legacy_job_without_frozen_team() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query("UPDATE jobs SET snapshot = json_remove(snapshot, '$.team_id') WHERE id = ?")
-        .bind(&job_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let raw = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("job row")
+    .text(0);
+    let mut snap: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    if let Some(obj) = snap.as_object_mut() {
+        obj.remove("team_id");
+    }
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET snapshot = ? WHERE id = ?",
+        &[
+            serde_json::to_string(&snap).unwrap().into(),
+            job_id.as_str().into(),
+        ],
+    )
+    .await
+    .unwrap();
 
     let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
     let body = read_body(poll).await;
@@ -778,11 +825,15 @@ async fn bound_runner_skips_legacy_job_without_frozen_team() {
         body["data"]["job_id"].is_null(),
         "bound runner skips unknown legacy ownership: {body}"
     );
-    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let status: String = exec::fetch_optional(
+        &pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(status, "pending");
 }
 
@@ -823,11 +874,17 @@ async fn runner_team_binding_patch_distinguishes_omitted_bound_and_shared() {
     assert_eq!(shared.status(), StatusCode::OK);
     assert!(read_body(shared).await["data"]["team_id"].is_null());
 
-    let team_id: Option<String> =
-        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = 'runner-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let team_id: Option<String> = match exec::fetch_optional(
+        &pool,
+        "SELECT team_id FROM runners WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap()
+    {
+        Some(r) => r.opt_text(0),
+        None => None,
+    };
     assert_eq!(team_id, None);
 }
 
@@ -848,11 +905,13 @@ async fn runner_team_binding_cannot_change_with_running_jobs() {
         .as_str()
         .unwrap()
         .to_string();
-    sqlx::query("UPDATE jobs SET status='running', runner_id='runner-1' WHERE id=?")
-        .bind(job_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET status='running', runner_id='runner-1' WHERE id=?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap();
 
     let update = json_req(
         &app,
@@ -868,27 +927,38 @@ async fn runner_team_binding_cannot_change_with_running_jobs() {
 #[tokio::test]
 async fn team_with_bound_runner_cannot_be_deleted() {
     let (app, pool, _state) = test_app().await;
-    sqlx::query("UPDATE runners SET team_id='team-2' WHERE id='runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET team_id='team-2' WHERE id='runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
     let response = json_req(&app, "DELETE", "/api/v1/teams/team-2", &admin_jwt(), None).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM teams WHERE id='team-2'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let exists: i64 =
+        exec::fetch_optional(&pool, "SELECT COUNT(*) FROM teams WHERE id='team-2'", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .i64(0);
     assert_eq!(exists, 1);
 }
 
 #[tokio::test]
 async fn migrated_legacy_runner_remains_shared_by_default() {
     let (_app, pool, _state) = test_app().await;
-    let team_id: Option<String> =
-        sqlx::query_scalar("SELECT team_id FROM runners WHERE id='runner-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let team_id: Option<String> = match exec::fetch_optional(
+        &pool,
+        "SELECT team_id FROM runners WHERE id='runner-1'",
+        &[],
+    )
+    .await
+    .unwrap()
+    {
+        Some(r) => r.opt_text(0),
+        None => None,
+    };
     assert_eq!(
         team_id, None,
         "migration must not silently bind legacy runners"
@@ -899,11 +969,11 @@ async fn migrated_legacy_runner_remains_shared_by_default() {
 async fn claim_does_not_resolve_foreign_team_ssh_host_credentials() {
     let (app, pool, _state) = test_app().await;
     let admin = admin_jwt();
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data, team_id) \
          VALUES ('host-foreign', 'foreign-host', '192.0.2.40', 22, 'deploy', 'vault', 'foreign-secret', 'team-2')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -963,21 +1033,26 @@ async fn foreign_team_backlog_does_not_fill_claim_limit() {
     let admin = admin_jwt();
     let foreign_pipe = create_pipeline_in_team(&app, &admin, "foreign-backlog", "team-2").await;
     let own_pipe = create_pipeline_in_team(&app, &admin, "own-after-backlog", "team-1").await;
-    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'",
+        &[],
+    )
+    .await
+    .unwrap();
 
     for index in 0..55 {
-        sqlx::query(
+        exec::execute(
+            &pool,
             "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, created_at) \
              VALUES (?, ?, 'pending', 'manual', ?, datetime('now', ?))",
+            &[
+                format!("foreign-{index:02}").into(),
+                foreign_pipe.as_str().into(),
+                r#"{"team_id":"team-2","tasks":[]}"#.into(),
+                format!("+{index} seconds").into(),
+            ],
         )
-        .bind(format!("foreign-{index:02}"))
-        .bind(&foreign_pipe)
-        .bind(r#"{"team_id":"team-2","tasks":[]}"#)
-        .bind(format!("+{index} seconds"))
-        .execute(&pool)
         .await
         .unwrap();
     }

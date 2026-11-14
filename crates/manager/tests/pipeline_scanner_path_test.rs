@@ -1,26 +1,24 @@
+mod common;
+
 use manager::services::pipeline_scanner::filename_from_pipeline_name;
 use manager::services::pipeline_scanner::normalize_yaml_path_key;
 use manager::services::pipeline_scanner::upsert_from_yaml;
 use manager::services::pipeline_scanner::validate_yaml_filename;
 use manager::services::pipeline_scanner::yaml_content_etag;
 use manager::services::pipeline_scanner::yaml_path_storage;
-use sqlx::sqlite::SqlitePoolOptions;
+use manager::store::exec;
 use std::path::Path;
 
 #[tokio::test]
 async fn scanner_projects_automatic_trigger_environments_on_insert_and_update() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("memory sqlite");
-    manager::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
-        .await
-        .expect("migrate");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed default team");
+    let pool = common::test_db(4).await;
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed default team");
 
     let cron_yaml = r#"
 name: scanner-projection
@@ -36,7 +34,7 @@ steps:
 "#;
     let parsed = serde_yaml::from_str(cron_yaml).expect("parse cron YAML");
     let pipeline_id = upsert_from_yaml(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -48,25 +46,31 @@ steps:
     .await
     .expect("insert projection");
 
-    let projected: (String, String, String) = sqlx::query_as(
-        "SELECT webhook_environment, cron_environment, environments FROM pipelines WHERE id = ?",
-    )
-    .bind(&pipeline_id)
-    .fetch_one(&pool)
-    .await
-    .expect("read cron projection");
+    let projected = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT webhook_environment, cron_environment, environments FROM pipelines WHERE id = ?",
+            &[pipeline_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("read cron projection");
+        (r.text(0), r.text(1), r.text(2))
+    };
     assert_eq!(projected.0, "");
     assert_eq!(projected.1, "production");
     assert_eq!(projected.2, r#"["default","staging","production"]"#);
 
-    sqlx::query("UPDATE pipelines SET cron_environment = '' WHERE id = ?")
-        .bind(&pipeline_id)
-        .execute(&pool)
-        .await
-        .expect("simulate stale projection");
+    exec::execute(
+        &pool,
+        "UPDATE pipelines SET cron_environment = '' WHERE id = ?",
+        &[pipeline_id.as_str().into()],
+    )
+    .await
+    .expect("simulate stale projection");
     let parsed = serde_yaml::from_str(cron_yaml).expect("parse same cron YAML");
     let same_id = upsert_from_yaml(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -78,12 +82,15 @@ steps:
     .await
     .expect("repair same-hash projection");
     assert_eq!(same_id, pipeline_id);
-    let cron_environment: String =
-        sqlx::query_scalar("SELECT cron_environment FROM pipelines WHERE id = ?")
-            .bind(&pipeline_id)
-            .fetch_one(&pool)
-            .await
-            .expect("read repaired projection");
+    let cron_environment: String = exec::fetch_optional(
+        &pool,
+        "SELECT cron_environment FROM pipelines WHERE id = ?",
+        &[pipeline_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("read repaired projection")
+    .text(0);
     assert_eq!(cron_environment, "production");
 
     let webhook_yaml = cron_yaml
@@ -94,7 +101,7 @@ steps:
         .replace("echo cron", "echo webhook");
     let parsed = serde_yaml::from_str(&webhook_yaml).expect("parse webhook YAML");
     let updated_id = upsert_from_yaml(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -106,12 +113,17 @@ steps:
     .await
     .expect("update projection");
     assert_eq!(updated_id, pipeline_id);
-    let projected: (String, String) =
-        sqlx::query_as("SELECT webhook_environment, cron_environment FROM pipelines WHERE id = ?")
-            .bind(&pipeline_id)
-            .fetch_one(&pool)
-            .await
-            .expect("read webhook projection");
+    let projected = {
+        let r = exec::fetch_optional(
+            &pool,
+            "SELECT webhook_environment, cron_environment FROM pipelines WHERE id = ?",
+            &[pipeline_id.as_str().into()],
+        )
+        .await
+        .unwrap()
+        .expect("read webhook projection");
+        (r.text(0), r.text(1))
+    };
     assert_eq!(projected, ("staging".into(), "".into()));
 }
 
@@ -173,18 +185,14 @@ fn etag_stable_for_same_content() {
 
 #[tokio::test]
 async fn scanner_projects_runner_resources_into_resource_profile_on_insert_and_update() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("memory sqlite");
-    manager::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
-        .await
-        .expect("migrate");
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed default team");
+    let pool = common::test_db(4).await;
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed default team");
 
     let large_yaml = r#"
 name: scanner-resources
@@ -199,7 +207,7 @@ steps:
 "#;
     let parsed = serde_yaml::from_str(large_yaml).expect("parse YAML");
     let pipeline_id = upsert_from_yaml(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         "scanner-resources.yml",
         &parsed,
         Path::new("."),
@@ -210,18 +218,22 @@ steps:
     )
     .await
     .expect("insert");
-    let profile: String = sqlx::query_scalar("SELECT resource_profile FROM pipelines WHERE id = ?")
-        .bind(&pipeline_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read profile");
+    let profile: String = exec::fetch_optional(
+        &pool,
+        "SELECT resource_profile FROM pipelines WHERE id = ?",
+        &[pipeline_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("read profile")
+    .text(0);
     assert_eq!(profile, "large");
 
     // Explicit `default` and an omitted key both normalize to '' (implicit).
     let default_yaml = large_yaml.replace("resources: large", "resources: default");
     let parsed = serde_yaml::from_str(&default_yaml).expect("parse YAML");
     let same_id = upsert_from_yaml(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         "scanner-resources.yml",
         &parsed,
         Path::new("."),
@@ -233,11 +245,15 @@ steps:
     .await
     .expect("update");
     assert_eq!(same_id, pipeline_id);
-    let profile: String = sqlx::query_scalar("SELECT resource_profile FROM pipelines WHERE id = ?")
-        .bind(&pipeline_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read profile");
+    let profile: String = exec::fetch_optional(
+        &pool,
+        "SELECT resource_profile FROM pipelines WHERE id = ?",
+        &[pipeline_id.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("read profile")
+    .text(0);
     assert_eq!(
         profile, "",
         "explicit default normalizes to the implicit form"

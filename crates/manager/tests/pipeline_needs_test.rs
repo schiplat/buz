@@ -2,19 +2,20 @@
 //! returns them, and the trigger-time job snapshot freezes them — so the
 //! Runner's claim payload can schedule concurrently even for historical jobs.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
 use manager::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -52,32 +53,27 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, sqlx::SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed user");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -251,12 +247,13 @@ async fn job_detail_reports_truncated_steps() {
     // on the job row as a union, so a DAG reporting several steps keeps them
     // all. The status endpoint itself requires Runner credentials — writing
     // the column here isolates the read side this test is about.
-    sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = ?")
-        .bind(r#"[1,2]"#)
-        .bind(&job_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET truncated_steps = ? WHERE id = ?",
+        &[r#"[1,2]"#.into(), job_id.as_str().into()],
+    )
+    .await
+    .unwrap();
 
     let (get_status, job) =
         json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
@@ -269,11 +266,13 @@ async fn job_detail_reports_truncated_steps() {
 
     // The fact lives on the job row, so retention sweeping the log rows (the
     // legacy 9991 marker included) must not erase it.
-    sqlx::query("DELETE FROM job_logs WHERE job_id = ?")
-        .bind(&job_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    exec::execute(
+        &pool,
+        "DELETE FROM job_logs WHERE job_id = ?",
+        &[job_id.as_str().into()],
+    )
+    .await
+    .unwrap();
     let (_, job) = json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
     assert_eq!(
         job["data"]["truncated_steps"],
@@ -289,39 +288,53 @@ async fn job_detail_reports_truncated_steps() {
 #[tokio::test]
 async fn truncated_steps_union_not_overwrite() {
     let (_app, pool) = test_app().await;
-    sqlx::query("INSERT INTO pipelines (id, name, team_id) VALUES ('p-union', 'union', 'team-1')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
+    exec::execute(
+        &pool,
+        "INSERT INTO pipelines (id, name, team_id) VALUES ('p-union', 'union', 'team-1')",
+        &[],
+    )
+    .await
+    .unwrap();
+    exec::execute(
+        &pool,
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by)
          VALUES ('j-union', 'p-union', 'running', 'test')",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
     for incoming in [vec![0i32], vec![1], vec![0, 2]] {
-        let existing: String =
-            sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = 'j-union'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let existing: String = exec::fetch_optional(
+            &pool,
+            "SELECT truncated_steps FROM jobs WHERE id = 'j-union'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .text(0);
         let mut merged: Vec<i32> = serde_json::from_str(&existing).unwrap_or_default();
         merged.extend(incoming);
         merged.sort_unstable();
         merged.dedup();
-        sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = 'j-union'")
-            .bind(serde_json::to_string(&merged).unwrap())
-            .execute(&pool)
-            .await
-            .unwrap();
+        exec::execute(
+            &pool,
+            "UPDATE jobs SET truncated_steps = ? WHERE id = 'j-union'",
+            &[serde_json::to_string(&merged).unwrap().into()],
+        )
+        .await
+        .unwrap();
     }
 
-    let stored: String =
-        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = 'j-union'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored: String = exec::fetch_optional(
+        &pool,
+        "SELECT truncated_steps FROM jobs WHERE id = 'j-union'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(stored, "[0,1,2]");
 }

@@ -1,14 +1,16 @@
 //! Step library listing API (GET /api/v1/plugins) — reads the local step
 //! directory; unparseable files are reported, not fatal.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use manager::api;
@@ -17,7 +19,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -36,21 +37,13 @@ const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 const ADMIN_ID: &str = "admin-1";
 
 async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed user");
 
@@ -74,7 +67,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
     config.plugin_index.local_dir = dir.to_string_lossy().into_owned();
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
     };

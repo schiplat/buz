@@ -306,6 +306,16 @@ impl From<&str> for SqlValue {
         Self::Text(v.to_string())
     }
 }
+impl From<&&str> for SqlValue {
+    fn from(v: &&str) -> Self {
+        Self::Text((*v).to_string())
+    }
+}
+impl From<&String> for SqlValue {
+    fn from(v: &String) -> Self {
+        Self::Text(v.clone())
+    }
+}
 impl From<String> for SqlValue {
     fn from(v: String) -> Self {
         Self::Text(v)

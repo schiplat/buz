@@ -2,6 +2,8 @@
 //! a fresh JWT. Re-registration requires the previous runner JWT (Bearer,
 //! expiry ignored) or an admin-issued register_token.
 
+mod common;
+
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -9,7 +11,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
-use sqlx::sqlite::SqlitePoolOptions;
+use manager::store::exec;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
@@ -21,7 +23,6 @@ use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
 use manager::config::StandaloneConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 use shared::auth::{Role, TokenManager};
@@ -65,23 +66,18 @@ fn production_config() -> Config {
 }
 
 /// App + pool + (runner_id, one-shot register_token) with a pre-created runner row.
-async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    run_migrations(&pool, JWT_SECRET).await.unwrap();
-    sqlx::query(
+async fn app_with_runner() -> (Router, exec::DbPool, String, String) {
+    let pool = common::test_db(4).await;
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES ('admin-1', 'admin', 'hash', 'admin', 1, 1, 1),
                 ('member-1', 'member', 'hash', 'member', 0, 0, 1)",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
     let created = create_runner_record(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &pool.clone(),
         &CreateRunnerRequest {
             name: "lab-runner-01".into(),
             labels: None,
@@ -101,7 +97,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -335,12 +331,15 @@ async fn admin_reissue_token_can_recover_runner_registration() {
     assert!(!replacement_token.is_empty());
     assert_ne!(replacement_token, initial_token);
 
-    let stored_token: String =
-        sqlx::query_scalar("SELECT register_token FROM runners WHERE id = ?")
-            .bind(&runner_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stored_token: String = exec::fetch_optional(
+        &pool,
+        "SELECT register_token FROM runners WHERE id = ?",
+        &[runner_id.into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     // Hash-only at rest: the row carries SHA-256(replacement).
     assert_eq!(
         stored_token,

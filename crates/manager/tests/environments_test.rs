@@ -1,15 +1,17 @@
 //! Integration tests for platform Environments: CRUD, trigger resolution,
 //! and claim-time Variable override merge order.
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
+
 use tower::ServiceExt;
 
 use manager::api;
@@ -18,7 +20,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -56,40 +57,36 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool) {
+    let pool = common::test_db(4).await;
 
-    sqlx::query(
+    exec::execute(&pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
          VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+        &[SUPER_ADMIN_ID.into(), "boss".into(), "boss".into()],
     )
-    .bind(SUPER_ADMIN_ID)
-    .bind("boss")
-    .bind("boss")
-    .execute(&pool)
     .await
     .expect("seed admin");
 
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 2)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -339,11 +336,12 @@ async fn restricted_environment_rejects_dynamic_host_targets() {
     let (app, pool) = test_app().await;
     let jwt = admin_jwt();
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data)
          VALUES ('host-prod', 'prod-01', '10.0.0.1', 22, 'root', 'none', '{}')",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed host");
 
@@ -411,10 +409,11 @@ async fn restricted_environment_rejects_dynamic_host_targets() {
     assert_eq!(trigger.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = read_body(trigger).await;
     assert!(body["message"].as_str().unwrap().contains("dynamic host"));
-    let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
-        .fetch_one(&pool)
+    let job_count: i64 = exec::fetch_optional(&pool, "SELECT COUNT(*) FROM jobs", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .i64(0);
     assert_eq!(job_count, 0, "rejected host must not create a job");
 }
 
@@ -523,20 +522,28 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
     let trig_body = read_body(trig).await;
     let job_id = trig_body["data"]["job_id"].as_str().expect("job_id");
 
-    let job_env_id: Option<String> = sqlx::query("SELECT environment_id FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .expect("job row")
-        .get(0);
+    let job_env_id: Option<String> = match exec::fetch_optional(
+        &pool,
+        "SELECT environment_id FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    {
+        Some(r) => r.opt_text(0),
+        None => None,
+    };
     assert_eq!(job_env_id.as_deref(), Some(env_id.as_str()));
 
-    let snap_raw: String = sqlx::query("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .expect("snapshot")
-        .get(0);
+    let snap_raw: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .expect("snapshot")
+    .text(0);
     let snap: serde_json::Value = serde_json::from_str(&snap_raw).unwrap();
     assert_eq!(snap["environment"], "staging");
 

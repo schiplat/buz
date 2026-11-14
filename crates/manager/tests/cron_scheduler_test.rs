@@ -1,5 +1,8 @@
+mod common;
+
 use manager::services::cron_scheduler::fetch_active_cron_pipelines;
 use manager::services::cron_scheduler::normalize_cron;
+use manager::store::exec;
 use std::str::FromStr;
 
 #[test]
@@ -82,42 +85,31 @@ fn every_minute_cron_has_upcoming() {
 /// passes each pipeline's `cron_environment` through as the fixed target.
 #[tokio::test]
 async fn fetch_active_cron_pipelines_returns_configured_environment() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    manager::db::run_migrations(&pool, "test-secret-0123456789abcdef")
-        .await
-        .expect("migrate db");
+    let pool = common::test_db(1).await;
 
-    let seed = |id: &str, expr: Option<&str>, env: &str, active: i64| {
-        let pool = pool.clone();
-        let id = id.to_string();
-        let expr = expr.map(str::to_string);
-        let env = env.to_string();
-        async move {
-            sqlx::query(
-                "INSERT INTO pipelines (id, name, trigger_type, cron_expr, cron_environment, is_active)
+    async fn seed(pool: &exec::DbPool, id: &str, expr: Option<&str>, env: &str, active: i64) {
+        exec::execute(
+            pool,
+            "INSERT INTO pipelines (id, name, trigger_type, cron_expr, cron_environment, is_active)
                  VALUES (?, ?, 'cron', ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(&id)
-            .bind(&expr)
-            .bind(&env)
-            .bind(active)
-            .execute(&pool)
-            .await
-            .expect("seed pipeline");
-        }
-    };
-    seed("cron-nightly", Some("0 3 * * *"), "nightly", 1).await;
-    seed("cron-missing-env", Some("0 4 * * *"), "", 1).await;
-    seed("cron-inactive", Some("0 5 * * *"), "nightly", 0).await;
-    seed("cron-no-expr", None, "nightly", 1).await;
-    seed("cron-manual", None, "", 1).await;
+            &[
+                id.into(),
+                id.into(),
+                expr.unwrap_or("").into(),
+                env.into(),
+                active.into(),
+            ],
+        )
+        .await
+        .expect("seed pipeline");
+    }
+    seed(&pool, "cron-nightly", Some("0 3 * * *"), "nightly", 1).await;
+    seed(&pool, "cron-missing-env", Some("0 4 * * *"), "", 1).await;
+    seed(&pool, "cron-inactive", Some("0 5 * * *"), "nightly", 0).await;
+    seed(&pool, "cron-no-expr", None, "nightly", 1).await;
+    seed(&pool, "cron-manual", None, "", 1).await;
 
-    let rows = fetch_active_cron_pipelines(&manager::store::exec::DbPool::from_sqlite(&pool))
+    let rows = fetch_active_cron_pipelines(&pool.clone())
         .await
         .expect("fetch");
     let mut found: Vec<(String, String)> = rows
@@ -141,30 +133,19 @@ async fn fetch_active_cron_pipelines_returns_configured_environment() {
 // ── claim_cron_fire: persisted, transactional fire decisions ────────────
 
 use manager::services::cron_scheduler::claim_cron_fire;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
 
-async fn claim_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    manager::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
-        .await
-        .expect("migrate db");
+async fn claim_pool() -> exec::DbPool {
+    let pool = common::test_db(4).await;
     pool
 }
 
-async fn seed_cron_pipeline(pool: &SqlitePool, id: &str, env: &str) {
-    sqlx::query(
+async fn seed_cron_pipeline(pool: &exec::DbPool, id: &str, env: &str) {
+    exec::execute(
+        pool,
         "INSERT INTO pipelines (id, name, trigger_type, cron_expr, cron_environment, is_active)
          VALUES (?, ?, 'cron', '* * * * *', ?, 1)",
+        &[id.into(), id.into(), env.into()],
     )
-    .bind(id)
-    .bind(id)
-    .bind(env)
-    .execute(pool)
     .await
     .expect("seed cron pipeline");
 }
@@ -181,21 +162,20 @@ async fn first_claim_fires_and_stamps() {
     seed_cron_pipeline(&pool, "p-cron", "default").await;
 
     let schedule = every_second();
-    let fired = claim_cron_fire(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        "p-cron",
-        &schedule,
-        30,
-    )
-    .await
-    .expect("first claim");
+    let fired = claim_cron_fire(&pool.clone(), "p-cron", &schedule, 30)
+        .await
+        .expect("first claim");
     assert!(fired, "never-fired pipeline fires");
 
-    let stamp: String =
-        sqlx::query_scalar("SELECT cron_last_fired_at FROM pipelines WHERE id = 'p-cron'")
-            .fetch_one(&pool)
-            .await
-            .expect("read stamp");
+    let stamp: String = exec::fetch_optional(
+        &pool,
+        "SELECT cron_last_fired_at FROM pipelines WHERE id = 'p-cron'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .expect("read stamp")
+    .text(0);
     assert!(!stamp.is_empty(), "cron_last_fired_at persisted");
 }
 
@@ -205,26 +185,16 @@ async fn second_claim_within_gap_is_refused() {
     seed_cron_pipeline(&pool, "p-cron", "default").await;
     let schedule = every_second();
 
-    assert!(claim_cron_fire(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        "p-cron",
-        &schedule,
-        30
-    )
-    .await
-    .unwrap());
+    assert!(claim_cron_fire(&pool.clone(), "p-cron", &schedule, 30)
+        .await
+        .unwrap());
     // Leadership-flip simulation: a fresh claimer immediately after the fire
     // must see the persisted stamp and refuse — the old in-memory limiter
     // allowed a re-fire exactly here.
     assert!(
-        !claim_cron_fire(
-            &manager::store::exec::DbPool::from_sqlite(&pool),
-            "p-cron",
-            &schedule,
-            30
-        )
-        .await
-        .unwrap(),
+        !claim_cron_fire(&pool.clone(), "p-cron", &schedule, 30)
+            .await
+            .unwrap(),
         "persisted stamp blocks the immediate re-fire"
     );
 }
@@ -235,18 +205,15 @@ async fn gap_expiry_allows_the_next_window() {
     seed_cron_pipeline(&pool, "p-cron", "default").await;
 
     // Backdate the stamp past the 120s gap.
-    sqlx::query("UPDATE pipelines SET cron_last_fired_at = datetime('now', '-130 seconds') WHERE id = 'p-cron'")
-        .execute(&pool)
+    exec::execute(&pool,
+        "UPDATE pipelines SET cron_last_fired_at = datetime('now', '-130 seconds') WHERE id = 'p-cron'",
+        &[],
+    )
         .await
         .expect("backdate stamp");
-    let fired = claim_cron_fire(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        "p-cron",
-        &every_second(),
-        30,
-    )
-    .await
-    .expect("claim after gap");
+    let fired = claim_cron_fire(&pool.clone(), "p-cron", &every_second(), 30)
+        .await
+        .expect("claim after gap");
     assert!(fired, "gap expired → fires again");
 }
 
@@ -257,28 +224,21 @@ async fn empty_window_never_fires() {
 
     // check_interval = 0 makes the window empty (next_fire > now && <= now),
     // so no schedule can fire — the window bound is what gates, not luck.
-    let fired = claim_cron_fire(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        "p-cron",
-        &every_second(),
-        0,
-    )
-    .await
-    .expect("claim with empty window");
+    let fired = claim_cron_fire(&pool.clone(), "p-cron", &every_second(), 0)
+        .await
+        .expect("claim with empty window");
     assert!(!fired);
 
     // Garbage stamp (unparseable) behaves like "never fired".
-    sqlx::query("UPDATE pipelines SET cron_last_fired_at = 'not-a-date' WHERE id = 'p-cron'")
-        .execute(&pool)
-        .await
-        .expect("corrupt stamp");
-    let fired = claim_cron_fire(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        "p-cron",
-        &every_second(),
-        30,
+    exec::execute(
+        &pool,
+        "UPDATE pipelines SET cron_last_fired_at = 'not-a-date' WHERE id = 'p-cron'",
+        &[],
     )
     .await
-    .expect("claim with garbage stamp");
+    .expect("corrupt stamp");
+    let fired = claim_cron_fire(&pool.clone(), "p-cron", &every_second(), 30)
+        .await
+        .expect("claim with garbage stamp");
     assert!(fired, "unparseable stamp falls back to never-fired");
 }

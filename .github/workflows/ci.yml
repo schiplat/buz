@@ -178,9 +178,12 @@ jobs:
       - name: Schema parity between SQLite and Postgres
         run: cargo test -p manager --features postgres --test schema_parity_test
 
-      # The dual-backend fixture matrix: suites converted to the shared
-      # `test_db()` factory run unmodified on Postgres via BUZ_TEST_DB=pg.
-      # The list grows with every batch of converted suites.
+      # The dual-backend fixture matrix: every converted suite runs
+      # unmodified on Postgres via BUZ_TEST_DB=pg. slot_scheduling_test is
+      # excluded until the slot-gate write skew under Postgres is fixed
+      # (see KNOWN_ISSUES.md); SQLite-only suites (migration-chain tests,
+      # cluster_mode, schema_dump, run_number, rotate_jwt_key, step_resolver)
+      # and the pg_* suites are not part of the matrix.
       - name: Fixture matrix (BUZ_TEST_DB=pg)
         run: |
           BUZ_TEST_DB=pg cargo test -p manager --features postgres \
@@ -189,7 +192,47 @@ jobs:
             --test logs_unit_pagination_test \
             --test log_upload_guard_test \
             --test rerun_test \
-            --test sandbox_journey_test
+            --test sandbox_journey_test \
+            --test api_token_test \
+            --test approval_race_test \
+            --test cancel_delivery_test \
+            --test cancel_in_progress_test \
+            --test cancel_queue_timeout_test \
+            --test cron_scheduler_test \
+            --test debug_log_cleanup_test \
+            --test debug_trigger_test \
+            --test definition_transfer_test \
+            --test dispatch_log_mask_test \
+            --test environment_approval_test \
+            --test environments_test \
+            --test git_hooks_update_test \
+            --test github_sync_test \
+            --test input_validation_trigger_test \
+            --test instance_identity_test \
+            --test job_log_retention_test \
+            --test jobs_stats_test \
+            --test ops_sandbox_test \
+            --test pipeline_disable_test \
+            --test pipeline_env_test \
+            --test pipeline_needs_test \
+            --test pipeline_scanner_path_test \
+            --test pipeline_yaml_files_test \
+            --test plugin_library_test \
+            --test plugins_library_test \
+            --test resource_profile_request_test \
+            --test runner_create_test \
+            --test runner_reprobe_test \
+            --test runner_reregister_test \
+            --test runner_restart_test \
+            --test runner_standalone_register_test \
+            --test runner_terminal_status_test \
+            --test sandboxd_config_test \
+            --test verbose_trigger_test \
+            --test version_test \
+            --test webhook_environment_test \
+            --test yaml_validate_test \
+            --test rbac_test \
+            --test scan_deprecated_test
 
       - name: Store SQL validation (postgres feature)
         run: cargo test -p manager --features postgres --test store_sql_validation_test

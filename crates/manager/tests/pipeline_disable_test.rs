@@ -3,15 +3,16 @@
 //! waiting_approval) in the same transaction, and never re-enables on repeat.
 //! Enable is a no-op when active. Both require PipelineWrite (Developer+).
 
+mod common;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use manager::store::exec;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
 use tower::ServiceExt;
 
 use manager::api;
@@ -20,7 +21,6 @@ use manager::config::Config;
 use manager::config::PipelineConfig;
 use manager::config::RunnerConfig;
 use manager::config::ServerConfig;
-use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
@@ -60,65 +60,65 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> (Router, SqlitePool, AppState) {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+async fn test_app() -> (Router, exec::DbPool, AppState) {
+    let pool = common::test_db(4).await;
 
     for (id, username) in [
         (SUPER_ADMIN_ID, "boss"),
         (DEV_ID, "dev"),
         (VIEWER_ID, "viewer"),
     ] {
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+        exec::execute(&pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
              VALUES (?, ?, 'hash', ?, 0, 0, 1)",
-        )
-        .bind(id)
-        .bind(username)
-        .bind(username)
-        .execute(&pool)
+        &[id.into(), username.into(), username.into()],
+    )
         .await
         .expect("seed user");
     }
     // boss becomes platform admin via flag flip (kept separate for clarity).
-    sqlx::query("UPDATE users SET is_platform_admin = 1 WHERE id = ?")
-        .bind(SUPER_ADMIN_ID)
-        .execute(&pool)
-        .await
-        .expect("promote admin");
-
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
-        .execute(&pool)
-        .await
-        .expect("seed team");
-
-    sqlx::query(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+    exec::execute(
+        &pool,
+        "UPDATE users SET is_platform_admin = 1 WHERE id = ?",
+        &[SUPER_ADMIN_ID.into()],
     )
-    .bind(DEV_ID)
-    .execute(&pool)
+    .await
+    .expect("promote admin");
+
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')",
+        &[],
+    )
+    .await
+    .expect("seed team");
+
+    exec::execute(
+        &pool,
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+        &[DEV_ID.into()],
+    )
     .await
     .expect("seed developer membership");
-    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'viewer')")
-        .bind(VIEWER_ID)
-        .execute(&pool)
-        .await
-        .expect("seed viewer membership");
+    exec::execute(
+        &pool,
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'viewer')",
+        &[VIEWER_ID.into()],
+    )
+    .await
+    .expect("seed viewer membership");
 
-    sqlx::query(
+    exec::execute(
+        &pool,
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
          VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 4)",
+        &[],
     )
-    .execute(&pool)
     .await
     .expect("seed runner");
 
     let state = AppState {
-        pool: manager::store::exec::DbPool::from_sqlite(&pool),
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -251,40 +251,54 @@ async fn trigger_job(app: &Router, jwt: &str, pipeline_id: &str, environment: &s
         .to_string()
 }
 
-async fn job_status(pool: &SqlitePool, job_id: &str) -> String {
-    sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("load job status")
+async fn job_status(pool: &exec::DbPool, job_id: &str) -> String {
+    exec::fetch_optional(
+        pool,
+        "SELECT status FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("load job status")
+    .expect("row")
+    .text(0)
 }
 
 /// Move an API-triggered job into an arbitrary non-terminal state, optionally
 /// stamping the waiting_approval snapshot marker.
-async fn force_status(pool: &SqlitePool, job_id: &str, status: &str, step_statuses: &str) {
-    let mut snapshot: serde_json::Value =
-        sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(pool)
-            .await
-            .expect("load snapshot");
+async fn force_status(pool: &exec::DbPool, job_id: &str, status: &str, step_statuses: &str) {
+    let mut snapshot: serde_json::Value = serde_json::from_str(
+        &exec::fetch_optional(
+            pool,
+            "SELECT snapshot FROM jobs WHERE id = ?",
+            &[job_id.into()],
+        )
+        .await
+        .unwrap()
+        .expect("load snapshot")
+        .text(0),
+    )
+    .unwrap();
     if status == "waiting_approval" {
         snapshot["approval"] = serde_json::json!({ "required": true, "received": 1 });
     }
-    sqlx::query("UPDATE jobs SET status = ?, step_statuses = ? WHERE id = ?")
-        .bind(status)
-        .bind(step_statuses)
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .expect("force status");
+    exec::execute(
+        pool,
+        "UPDATE jobs SET status = ?, step_statuses = ? WHERE id = ?",
+        &[status.into(), step_statuses.into(), job_id.into()],
+    )
+    .await
+    .expect("force status");
     if status == "waiting_approval" {
-        sqlx::query("UPDATE jobs SET snapshot = ? WHERE id = ?")
-            .bind(serde_json::to_string(&snapshot).unwrap())
-            .bind(job_id)
-            .execute(pool)
-            .await
-            .expect("stamp approval metadata");
+        exec::execute(
+            pool,
+            "UPDATE jobs SET snapshot = ? WHERE id = ?",
+            &[
+                serde_json::to_string(&snapshot).unwrap().into(),
+                job_id.into(),
+            ],
+        )
+        .await
+        .expect("stamp approval metadata");
     }
 }
 
@@ -345,11 +359,15 @@ async fn disable_cancels_in_flight_jobs_and_blocks_trigger() {
 
     // Running job: overall status + running step flipped to cancelled.
     assert_eq!(job_status(&pool, &running).await, "cancelled");
-    let ss: String = sqlx::query_scalar("SELECT step_statuses FROM jobs WHERE id = ?")
-        .bind(&running)
-        .fetch_one(&pool)
-        .await
-        .expect("load step_statuses");
+    let ss: String = exec::fetch_optional(
+        &pool,
+        "SELECT step_statuses FROM jobs WHERE id = ?",
+        &[running.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("load step_statuses")
+    .text(0);
     let ss: serde_json::Value = serde_json::from_str(&ss).expect("parse step_statuses");
     assert_eq!(
         ss[0]["status"], "cancelled",
@@ -358,18 +376,26 @@ async fn disable_cancels_in_flight_jobs_and_blocks_trigger() {
 
     // waiting_approval job: snapshot outcome + job_approvals cancel row.
     assert_eq!(job_status(&pool, &waiting).await, "cancelled");
-    let snapshot: String = sqlx::query_scalar("SELECT snapshot FROM jobs WHERE id = ?")
-        .bind(&waiting)
-        .fetch_one(&pool)
-        .await
-        .expect("load snapshot");
+    let snapshot: String = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[waiting.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("load snapshot")
+    .text(0);
     let snapshot: serde_json::Value = serde_json::from_str(&snapshot).expect("parse snapshot");
     assert_eq!(snapshot["approval"]["outcome"], "cancelled");
-    let action: String = sqlx::query_scalar("SELECT action FROM job_approvals WHERE job_id = ?")
-        .bind(&waiting)
-        .fetch_one(&pool)
-        .await
-        .expect("approval row exists");
+    let action: String = exec::fetch_optional(
+        &pool,
+        "SELECT action FROM job_approvals WHERE job_id = ?",
+        &[waiting.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .expect("approval row exists")
+    .text(0);
     assert_eq!(action, "cancel");
 
     // Sibling pipeline's job is untouched.
@@ -396,15 +422,16 @@ async fn disable_cancels_in_flight_jobs_and_blocks_trigger() {
     assert_eq!(ok.status(), StatusCode::OK);
 
     // Audit trail: one disable event naming the cancelled jobs.
-    let audit_row = sqlx::query(
+    let audit_row = exec::fetch_optional(
+        &pool,
         "SELECT action, meta_json FROM audit_logs WHERE action = 'pipeline.disable' AND resource_id = ?",
+        &[pipe_a.as_str().into()],
     )
-    .bind(&pipe_a)
-    .fetch_one(&pool)
     .await
+    .unwrap()
     .expect("audit row exists");
-    let audit_action: String = audit_row.get(0);
-    let meta: String = audit_row.get(1);
+    let audit_action: String = audit_row.text(0);
+    let meta: String = audit_row.text(1);
     assert_eq!(audit_action, "pipeline.disable");
     assert!(meta.contains(&running), "audit meta lists cancelled job");
 }
@@ -523,10 +550,13 @@ async fn disable_unknown_pipeline_is_404() {
 async fn pipeline_team_migration_blocked_while_jobs_active_and_allowed_after_terminal() {
     let (app, pool, _state) = test_app().await;
     let admin = admin_jwt();
-    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')")
-        .execute(&pool)
-        .await
-        .expect("seed second team");
+    exec::execute(
+        &pool,
+        "INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')",
+        &[],
+    )
+    .await
+    .expect("seed second team");
 
     let pipe = create_pipeline(&app, &admin, "team-migrate", "default", &["linux-x64"]).await;
     let trigger = json_req(
@@ -564,20 +594,26 @@ async fn pipeline_team_migration_blocked_while_jobs_active_and_allowed_after_ter
         StatusCode::CONFLICT,
         "active job must block team migration"
     );
-    let team_after_block: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-        .bind(&pipe)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let team_after_block: String = exec::fetch_optional(
+        &pool,
+        "SELECT team_id FROM pipelines WHERE id = ?",
+        &[pipe.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(team_after_block, "team-1");
 
     // Freeze the job's team into the snapshot, then finish it (terminal jobs
     // do not block migration).
-    sqlx::query("UPDATE jobs SET status = 'success' WHERE id = ?")
-        .bind(&job_id)
-        .execute(&pool)
-        .await
-        .expect("finish job");
+    exec::execute(
+        &pool,
+        "UPDATE jobs SET status = 'success' WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("finish job");
 
     let allowed = json_req(
         &app,
@@ -592,11 +628,15 @@ async fn pipeline_team_migration_blocked_while_jobs_active_and_allowed_after_ter
         StatusCode::OK,
         "terminal jobs allow team migration"
     );
-    let team_after_move: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-        .bind(&pipe)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let team_after_move: String = exec::fetch_optional(
+        &pool,
+        "SELECT team_id FROM pipelines WHERE id = ?",
+        &[pipe.as_str().into()],
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text(0);
     assert_eq!(team_after_move, "team-2");
 }
 
@@ -618,12 +658,21 @@ async fn job_snapshot_freezes_trigger_time_team() {
         .as_str()
         .unwrap()
         .to_string();
-    let frozen_team: Option<String> =
-        sqlx::query_scalar("SELECT json_extract(snapshot, '$.team_id') FROM jobs WHERE id = ?")
-            .bind(&job_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // json_extract is SQLite-only: read the snapshot and parse in Rust.
+    let frozen_team: Option<String> = exec::fetch_optional(
+        &pool,
+        "SELECT snapshot FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .unwrap()
+    .and_then(|r| {
+        let raw = r.text(0);
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_default()
+            .get("team_id")
+            .and_then(|v| v.as_str().map(str::to_string))
+    });
     assert_eq!(
         frozen_team.as_deref(),
         Some("team-1"),

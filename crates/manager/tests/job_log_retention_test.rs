@@ -3,79 +3,79 @@
 //! dropped); fresh jobs, non-terminal jobs, and debug jobs are untouched;
 //! `job_log_retention_days = 0` disables the sweep.
 
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
+mod common;
 
-use manager::db::run_migrations;
+use manager::store::exec;
+
 use manager::services::job_log_retention::purge_expired_job_logs;
 use manager::services::log_broadcast::LogBroadcaster;
 
-const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
-
-async fn setup() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
-    sqlx::query("INSERT INTO pipelines (id, name) VALUES ('p1', 'demo')")
-        .execute(&pool)
-        .await
-        .expect("seed pipeline");
+async fn setup() -> exec::DbPool {
+    let pool = common::test_db(4).await;
+    exec::execute(
+        &pool,
+        "INSERT INTO pipelines (id, name) VALUES ('p1', 'demo')",
+        &[],
+    )
+    .await
+    .expect("seed pipeline");
     pool
 }
 
 /// Override the retention setting (rows: platform_settings(key, value)).
-async fn set_retention_days(pool: &SqlitePool, days: &str) {
-    sqlx::query("INSERT OR REPLACE INTO platform_settings (key, value) VALUES ('job_log_retention_days', ?)")
-        .bind(days)
-        .execute(pool)
-        .await
-        .expect("set retention setting");
+async fn set_retention_days(pool: &exec::DbPool, days: &str) {
+    exec::execute(
+        pool,
+        "INSERT INTO platform_settings (key, value) VALUES ('job_log_retention_days', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        &[days.into()],
+    )
+    .await
+    .expect("set retention setting");
 }
 
 /// Insert a terminal job created `age` ago, with two log rows.
-async fn seed_job(pool: &SqlitePool, id: &str, status: &str, age: &str, debug: bool) {
-    sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, debug_unredact, created_at, updated_at)
+async fn seed_job(pool: &exec::DbPool, id: &str, status: &str, age: &str, debug: bool) {
+    exec::execute(pool,
+    "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, debug_unredact, created_at, updated_at)
          VALUES (?, 'p1', ?, 'test', '{}', ?, datetime('now', ?), datetime('now', ?))",
+    &[id.into(), status.into(), if debug { 1 } else { 0 }.into(), age.into(), age.into()],
     )
-    .bind(id)
-    .bind(status)
-    .bind(if debug { 1 } else { 0 })
-    .bind(age)
-    .bind(age)
-    .execute(pool)
     .await
     .expect("seed job");
     for chunk in 0..2 {
-        sqlx::query(
+        exec::execute(
+            pool,
             "INSERT INTO job_logs (id, job_id, chunk_index, log_content) VALUES (?, ?, ?, 'data')",
+            &[format!("{id}-log-{chunk}").into(), id.into(), chunk.into()],
         )
-        .bind(format!("{id}-log-{chunk}"))
-        .bind(id)
-        .bind(chunk)
-        .execute(pool)
         .await
         .expect("seed log");
     }
 }
 
-async fn log_count(pool: &SqlitePool, job_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM job_logs WHERE job_id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("count logs")
+async fn log_count(pool: &exec::DbPool, job_id: &str) -> i64 {
+    exec::fetch_optional(
+        pool,
+        "SELECT COUNT(*) FROM job_logs WHERE job_id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("count logs")
+    .expect("row")
+    .i64(0)
 }
 
-async fn purged_flag(pool: &SqlitePool, job_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT logs_purged FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(pool)
-        .await
-        .expect("load flag")
+async fn purged_flag(pool: &exec::DbPool, job_id: &str) -> i64 {
+    exec::fetch_optional(
+        pool,
+        "SELECT logs_purged FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .expect("load flag")
+    .expect("row")
+    .i64(0)
 }
 
 #[tokio::test]
@@ -91,12 +91,9 @@ async fn purges_expired_terminal_jobs_only() {
     seed_job(&pool, "old-debug", "failed", "-40 days", true).await;
     broadcaster.broadcast("old-failed", 0, None, "history");
 
-    let purged = purge_expired_job_logs(
-        &manager::store::exec::DbPool::from_sqlite(&pool),
-        &broadcaster,
-    )
-    .await
-    .expect("purge runs");
+    let purged = purge_expired_job_logs(&pool.clone(), &broadcaster)
+        .await
+        .expect("purge runs");
     assert_eq!(purged, 2, "two expired terminal jobs purged");
 
     assert_eq!(log_count(&pool, "old-failed").await, 0);
@@ -133,21 +130,15 @@ async fn idempotent_after_marker_set() {
     seed_job(&pool, "old", "failed", "-40 days", false).await;
 
     assert_eq!(
-        purge_expired_job_logs(
-            &manager::store::exec::DbPool::from_sqlite(&pool),
-            &broadcaster
-        )
-        .await
-        .unwrap(),
+        purge_expired_job_logs(&pool.clone(), &broadcaster)
+            .await
+            .unwrap(),
         1
     );
     assert_eq!(
-        purge_expired_job_logs(
-            &manager::store::exec::DbPool::from_sqlite(&pool),
-            &broadcaster
-        )
-        .await
-        .unwrap(),
+        purge_expired_job_logs(&pool.clone(), &broadcaster)
+            .await
+            .unwrap(),
         0,
         "marker prevents rescan"
     );
@@ -163,12 +154,9 @@ async fn setting_zero_disables_and_override_applies() {
     // 0 = keep forever.
     set_retention_days(&pool, "0").await;
     assert_eq!(
-        purge_expired_job_logs(
-            &manager::store::exec::DbPool::from_sqlite(&pool),
-            &broadcaster
-        )
-        .await
-        .unwrap(),
+        purge_expired_job_logs(&pool.clone(), &broadcaster)
+            .await
+            .unwrap(),
         0
     );
     assert_eq!(log_count(&pool, "old").await, 2);
@@ -176,12 +164,9 @@ async fn setting_zero_disables_and_override_applies() {
     // Override to 1 day: the 40-day-old job now expires.
     set_retention_days(&pool, "1").await;
     assert_eq!(
-        purge_expired_job_logs(
-            &manager::store::exec::DbPool::from_sqlite(&pool),
-            &broadcaster
-        )
-        .await
-        .unwrap(),
+        purge_expired_job_logs(&pool.clone(), &broadcaster)
+            .await
+            .unwrap(),
         1
     );
     assert_eq!(log_count(&pool, "old").await, 0);
