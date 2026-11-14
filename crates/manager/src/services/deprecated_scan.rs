@@ -14,8 +14,6 @@
 use std::io::Write;
 use std::path::Path;
 
-use sqlx::{Row, SqlitePool};
-
 /// One affected artifact and the deprecated markers it carries.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeprecatedFinding {
@@ -110,41 +108,30 @@ impl ScanReport {
 /// Scan a database and optional YAML directory. Used by the CLI and tests;
 /// does not run migrations — callers open the pool the same way the server
 /// does (which runs them), so the legacy columns are present.
-pub async fn scan_pool(pool: &SqlitePool, yaml_scan_dir: Option<&Path>) -> ScanReport {
+pub async fn scan_pool(
+    pool: &crate::store::exec::DbPool,
+    yaml_scan_dir: Option<&Path>,
+) -> ScanReport {
     let mut report = ScanReport::default();
 
     // 1. Live task rows — covers form-authored and YAML-imported pipelines.
     // The kernel no longer reads these columns; they are report-only until the
     // next release drops them.
-    let rows = sqlx::query(
-        "SELECT p.name AS pipeline_name, t.name AS step_name,
-                t.registry_secret, t.config_source, t.config_key_path
-         FROM tasks t
-         JOIN pipelines p ON p.id = t.pipeline_id
-         WHERE t.registry_secret != '' OR t.config_source != '' OR t.config_key_path != ''
-         ORDER BY p.name, t.step_order",
-    )
-    .fetch_all(pool)
-    .await;
-    match rows {
+    match crate::store::pipelines::deprecated_task_columns(pool).await {
         Ok(rows) => {
             for row in rows {
                 let mut keys = Vec::new();
-                if !row.get::<String, _>("registry_secret").is_empty() {
+                if !row.registry_secret.is_empty() {
                     keys.push("registry_secret".to_string());
                 }
-                if !row.get::<String, _>("config_source").is_empty() {
+                if !row.config_source.is_empty() {
                     keys.push("config.source".to_string());
                 }
-                if !row.get::<String, _>("config_key_path").is_empty() {
+                if !row.config_key_path.is_empty() {
                     keys.push("config.key_path".to_string());
                 }
                 report.task_findings.push(DeprecatedFinding {
-                    location: format!(
-                        "{} / step \"{}\"",
-                        row.get::<String, _>("pipeline_name"),
-                        row.get::<String, _>("step_name"),
-                    ),
+                    location: format!("{} / step \"{}\"", row.pipeline_name, row.step_name),
                     keys,
                 });
             }
@@ -157,17 +144,12 @@ pub async fn scan_pool(pool: &SqlitePool, yaml_scan_dir: Option<&Path>) -> ScanR
     // 2. Secrets on the two retired kinds. The columns are added by
     // run_migrations; a missing column means a pre-kind database — report and
     // continue rather than fail the whole scan.
-    let rows = sqlx::query(
-        "SELECT name, kind FROM secrets WHERE kind IN ('registry', 'aliyun_oss_auth') ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await;
-    match rows {
+    match crate::store::secrets::deprecated_secret_kinds(pool).await {
         Ok(rows) => {
-            for row in rows {
+            for (name, kind) in rows {
                 report.secret_findings.push(DeprecatedFinding {
-                    location: row.get::<String, _>("name"),
-                    keys: vec![format!("kind={}", row.get::<String, _>("kind"))],
+                    location: name,
+                    keys: vec![format!("kind={kind}")],
                 });
             }
         }
@@ -246,8 +228,10 @@ fn scan_yaml_file(file: &Path, report: &mut ScanReport) {
 /// CLI entry: load config, open + migrate the database, scan, print.
 pub async fn run(config_path: &str) -> anyhow::Result<()> {
     let config = crate::config::load(Some(config_path))?;
-    let pool = crate::db::init(&config).await?;
-    crate::db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+    let db = crate::db::init(&config).await?;
+    if let Some(sqlite) = db.as_sqlite() {
+        crate::db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+    }
 
     let yaml_dir = {
         let dir = &config.pipeline.yaml_scan_dir;
@@ -258,7 +242,7 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
             Some(std::path::PathBuf::from(trimmed))
         }
     };
-    let report = scan_pool(&pool, yaml_dir.as_deref()).await;
+    let report = scan_pool(&db, yaml_dir.as_deref()).await;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     report.print(&mut out)?;

@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-use sqlx::SqlitePool;
+use crate::store::exec::DbPool;
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -923,7 +923,7 @@ pub fn resolve_uses_steps(
 pub async fn resolve_uses_steps_async(
     steps: Vec<StepDef>,
     index_dir: PathBuf,
-    pool: &SqlitePool,
+    pool: &DbPool,
     http: &reqwest::Client,
 ) -> Result<ResolvedSteps, String> {
     let policy = policy_from_settings();
@@ -1001,40 +1001,6 @@ pub async fn resolve_uses_steps_async(
         steps: out,
         resolutions,
     })
-}
-
-/// Replace a pipeline's provenance rows inside the caller's transaction.
-pub async fn replace_step_resolutions(
-    conn: &mut sqlx::SqliteConnection,
-    pipeline_id: &str,
-    resolutions: &[PendingStepResolution],
-) -> Result<(), String> {
-    sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
-        .bind(pipeline_id)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| format!("cannot replace step resolutions: {e}"))?;
-    for resolution in resolutions {
-        sqlx::query(
-            "INSERT INTO step_resolutions
-             (id, pipeline_id, step_order, uses_ref, resolved_version, content_sha256, source, expanded_json, input_defs_json, reviewed)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(pipeline_id)
-        .bind(resolution.step_order)
-        .bind(&resolution.uses_ref)
-        .bind(&resolution.resolved_version)
-        .bind(&resolution.content_sha256)
-        .bind(&resolution.source)
-        .bind(&resolution.expanded_json)
-        .bind(&resolution.input_defs_json)
-        .bind(resolution.reviewed)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| format!("cannot record step resolution: {e}"))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

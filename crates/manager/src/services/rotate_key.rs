@@ -150,12 +150,20 @@ pub async fn run(
 }
 
 /// Columns storing `crypto::encrypt` blobs (table, column).
-pub const ENCRYPTED_COLUMNS: &[(&str, &str)] = &[
-    ("secrets", "value"),
-    ("github_connections", "token_ciphertext"),
-    ("pipeline_git_hooks", "secret_ciphertext"),
-    ("environment_secret_overrides", "value"),
-    ("hosts", "credential_data"),
+/// Encrypted-at-rest columns with the row-key expression that identifies a
+/// row in both SQLite and Postgres (`||` string concat is dialect-neutral).
+/// `environment_secret_overrides` has a composite primary key, hence the
+/// concat instead of a bare `id` column.
+pub const ENCRYPTED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("secrets", "value", "id"),
+    ("github_connections", "token_ciphertext", "id"),
+    ("pipeline_git_hooks", "secret_ciphertext", "id"),
+    (
+        "environment_secret_overrides",
+        "value",
+        "environment_id || ':' || secret_id",
+    ),
+    ("hosts", "credential_data", "id"),
 ];
 
 const TRIGGER_PARAM_PREFIX: &str = "buzenc:v1:";
@@ -201,22 +209,22 @@ pub async fn plan(
         .map_err(|e| format!("new secret rejected: {e}"))?;
 
     let mut entries = Vec::new();
-    for (table, column) in ENCRYPTED_COLUMNS {
+    for (table, column, key_expr) in ENCRYPTED_COLUMNS {
         let mut rows = 0i64;
         let mut bytes = 0i64;
         let query = format!(
-            "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
+            "SELECT {key_expr} AS row_key, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
         );
         for row in sqlx::query(&query).fetch_all(pool).await.map_err(|e| {
             format!(
                 "cannot read {table}.{column}: {e} (is the schema current? run the manager once)"
             )
         })? {
-            let rowid: i64 = row.get(0);
+            let row_key: String = row.get(0);
             let blob: String = row.get(1);
             let plain = crypto::decrypt(&blob, old_secret).map_err(|_| {
                 format!(
-                    "decrypt failed on {table}.{column} (rowid {rowid}) — the old secret does \
+                    "decrypt failed on {table}.{column} ({row_key}) — the old secret does \
                      not match this database"
                 )
             })?;
@@ -266,25 +274,27 @@ pub async fn apply(
 
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
 
-    for (table, column) in ENCRYPTED_COLUMNS {
+    for (table, column, key_expr) in ENCRYPTED_COLUMNS {
         let query = format!(
-            "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
+            "SELECT {key_expr} AS row_key, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
         );
         for row in sqlx::query(&query)
             .fetch_all(&mut *tx)
             .await
             .map_err(|e| format!("read {table}.{column} failed: {e}"))?
         {
-            let rowid: i64 = row.get(0);
+            let row_key: String = row.get(0);
             let blob: String = row.get(1);
             let plain = crypto::decrypt(&blob, old_secret).map_err(|_| {
-                format!("decrypt failed on {table}.{column} (rowid {rowid}) — aborting, nothing written")
+                format!(
+                    "decrypt failed on {table}.{column} ({row_key}) — aborting, nothing written"
+                )
             })?;
             let updated = crypto::encrypt(&plain, new_secret)
                 .map_err(|e| format!("re-encrypt {table}.{column} failed: {e}"))?;
-            sqlx::query(&format!("UPDATE {table} SET {column}=? WHERE rowid=?"))
+            sqlx::query(&format!("UPDATE {table} SET {column}=? WHERE {key_expr}=?"))
                 .bind(&updated)
-                .bind(rowid)
+                .bind(&row_key)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| format!("update {table}.{column} failed: {e}"))?;
@@ -312,20 +322,20 @@ pub async fn apply(
 
     // In-transaction roundtrip: every re-encrypted blob must open under the
     // new key before we commit.
-    for (table, column) in ENCRYPTED_COLUMNS {
+    for (table, column, key_expr) in ENCRYPTED_COLUMNS {
         let query = format!(
-            "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
+            "SELECT {key_expr} AS row_key, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
         );
         for row in sqlx::query(&query)
             .fetch_all(&mut *tx)
             .await
             .map_err(|e| format!("roundtrip read {table}.{column} failed: {e}"))?
         {
-            let rowid: i64 = row.get(0);
+            let row_key: String = row.get(0);
             let blob: String = row.get(1);
             if crypto::decrypt(&blob, new_secret).is_err() {
                 return Err(format!(
-                    "roundtrip failed on {table}.{column} (rowid {rowid}) — rolled back, nothing written"
+                    "roundtrip failed on {table}.{column} ({row_key}) — rolled back, nothing written"
                 ));
             }
         }

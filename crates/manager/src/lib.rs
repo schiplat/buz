@@ -20,3 +20,4 @@ pub mod rbac;
 pub mod services;
 pub mod ssh_probe;
 pub mod state;
+pub mod store;

@@ -158,10 +158,11 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
     .expect("seed runner");
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: Config {
             server: Default::default(),
             database: Default::default(),
+            cluster: Default::default(),
             auth: AuthConfig {
                 jwt_secret: JWT_SECRET.into(),
                 jwt_ttl_hours: 24,
@@ -277,14 +278,17 @@ async fn community_source_curates_resolves_and_gates() {
     // The spawned background sync races the mock server in this
     // single-threaded test runtime, so the fetch is exercised
     // deterministically here (same call the spawn performs).
-    let source = manager::services::plugin_pool::get_source(&pool, &source_id)
-        .await
-        .unwrap()
-        .expect("source row");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source_id,
+    )
+    .await
+    .unwrap()
+    .expect("source row");
     let http = manager::services::plugin_pool::http_client(60);
     let count = manager::services::plugin_pool::sync_source(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source,
         shared::version::VERSION,
     )
@@ -358,7 +362,7 @@ async fn community_source_curates_resolves_and_gates() {
     // the meta path never auto-enables) and preserves the enabled 1.0.0.
     let refreshed = manager::services::plugin_pool::refresh_plugin(
         &reqwest::Client::new(),
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "alice",
         "oss-upload",
         shared::version::VERSION,
@@ -418,7 +422,7 @@ async fn community_source_curates_resolves_and_gates() {
     // hand-inserted row simulating a curator-enabled older version.)
     let refreshed = manager::services::plugin_pool::refresh_plugin(
         &reqwest::Client::new(),
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "alice",
         "oss-upload",
         shared::version::VERSION,
@@ -566,7 +570,7 @@ run: |
         .await
         .unwrap();
     let synced = manager::services::plugin_pool::sync_all_enabled(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &reqwest::Client::new(),
         shared::version::VERSION,
     )
@@ -706,17 +710,20 @@ run: |
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "src-compat")
-        .await
-        .unwrap()
-        .expect("source row");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "src-compat",
+    )
+    .await
+    .unwrap()
+    .expect("source row");
     let http = manager::services::plugin_pool::http_client(60);
 
     // First sync: compatible → Some(true), too-new → Some(false) with the
     // gate's message, missing template → unknown (NULL, sync still succeeds).
     let count = manager::services::plugin_pool::sync_source(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source,
         shared::version::VERSION,
     )
@@ -729,9 +736,11 @@ run: |
     assert_eq!(progress.done_entries, 3);
     assert_eq!(progress.done_plugins, 3);
     assert!(progress.error.is_none());
-    let rows = manager::services::plugin_pool::list_pool(&pool)
-        .await
-        .unwrap();
+    let rows = manager::services::plugin_pool::list_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+    )
+    .await
+    .unwrap();
     let compatible = pool_row_for(&rows, "compatible");
     assert_eq!(compatible.buz_compatible, Some(true));
     assert_eq!(compatible.requires_buz.as_deref(), Some(">=1.0.0"));
@@ -757,22 +766,36 @@ run: |
     }
 
     // Re-sync without a version change: cached verdicts are kept.
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("re-sync");
-    let rows = manager::services::plugin_pool::list_pool(&pool)
-        .await
-        .unwrap();
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("re-sync");
+    let rows = manager::services::plugin_pool::list_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+    )
+    .await
+    .unwrap();
     assert_eq!(pool_row_for(&rows, "too-new").buz_compatible, Some(false));
 
     // Manager upgrade: syncing under a newer build re-verifies — the
     // previously too-new entry becomes compatible.
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, "99.0.0")
-        .await
-        .expect("re-sync under new manager version");
-    let rows = manager::services::plugin_pool::list_pool(&pool)
-        .await
-        .unwrap();
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        "99.0.0",
+    )
+    .await
+    .expect("re-sync under new manager version");
+    let rows = manager::services::plugin_pool::list_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+    )
+    .await
+    .unwrap();
     let too_new = pool_row_for(&rows, "too-new");
     assert_eq!(
         too_new.buz_compatible,
@@ -867,15 +890,23 @@ run: |
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "src-auto")
-        .await
-        .unwrap()
-        .expect("source row");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "src-auto",
+    )
+    .await
+    .unwrap()
+    .expect("source row");
     let http = manager::services::plugin_pool::http_client(60);
 
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("init sync");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("init sync");
 
     let enabled: Vec<String> =
         sqlx::query_as("SELECT version FROM plugin_pool WHERE enabled = 1 ORDER BY version")
@@ -903,9 +934,14 @@ run: |
         .execute(&pool)
         .await
         .unwrap();
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("re-sync after curator lock");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("re-sync after curator lock");
     let (enabled,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM plugin_pool WHERE enabled = 1")
         .fetch_one(&pool)
         .await
@@ -993,19 +1029,29 @@ async fn full_meta_source_probes_files_on_staging() {
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "src-meta")
-        .await
-        .unwrap()
-        .expect("source row");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "src-meta",
+    )
+    .await
+    .unwrap()
+    .expect("source row");
     let http = manager::services::plugin_pool::http_client(60);
 
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("sync from full-meta index");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("sync from full-meta index");
 
-    let rows = manager::services::plugin_pool::list_pool(&pool)
-        .await
-        .unwrap();
+    let rows = manager::services::plugin_pool::list_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+    )
+    .await
+    .unwrap();
     let row = |plugin_id: &str| {
         rows.iter()
             .find(|row| row.plugin_id == plugin_id)
@@ -1091,14 +1137,17 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
 
     // Deterministic sync (the same call the spawned background task makes):
     // index, reviews, and the template file all come from the mirror.
-    let source = manager::services::plugin_pool::get_source(&pool, &source_id)
-        .await
-        .expect("get source")
-        .expect("source exists");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source_id,
+    )
+    .await
+    .expect("get source")
+    .expect("source exists");
     let http = manager::services::plugin_pool::http_client(30);
     let count = manager::services::plugin_pool::sync_source(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source,
         shared::version::VERSION,
     )
@@ -1106,10 +1155,13 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
     .expect("sync must succeed through the mirror");
     assert!(count > 0, "mirror sync must stage pool rows");
 
-    let refreshed = manager::services::plugin_pool::get_source(&pool, &source_id)
-        .await
-        .expect("get source")
-        .expect("source exists");
+    let refreshed = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source_id,
+    )
+    .await
+    .expect("get source")
+    .expect("source exists");
     assert!(
         refreshed.last_sync_error.is_none(),
         "{:?}",
@@ -1186,7 +1238,7 @@ async fn mirror_check_reports_in_sync_across_identical_servers() {
 
     let report = manager::services::plugin_pool::check_mirror(
         &manager::services::plugin_pool::http_client(30),
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source_id,
     )
     .await
@@ -1241,7 +1293,7 @@ async fn mirror_check_reports_out_of_sync_when_mirror_content_drifted() {
 
     let report = manager::services::plugin_pool::check_mirror(
         &manager::services::plugin_pool::http_client(30),
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source_id,
     )
     .await
@@ -1272,14 +1324,17 @@ async fn sync_error_includes_the_raw_response_when_index_is_not_json() {
         .expect("source id")
         .to_string();
 
-    let source = manager::services::plugin_pool::get_source(&pool, &source_id)
-        .await
-        .expect("get source")
-        .expect("source exists");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source_id,
+    )
+    .await
+    .expect("get source")
+    .expect("source exists");
     let http = manager::services::plugin_pool::http_client(30);
     let error = manager::services::plugin_pool::sync_source(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source,
         shared::version::VERSION,
     )
@@ -1305,7 +1360,7 @@ async fn mirror_check_requires_a_configured_mirror() {
 
     let error = manager::services::plugin_pool::check_mirror(
         &manager::services::plugin_pool::http_client(30),
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source_id,
     )
     .await
@@ -1332,14 +1387,22 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
         .expect("source id")
         .to_string();
     // Deterministic sync so the pool row exists.
-    let source = manager::services::plugin_pool::get_source(&pool, &source_id)
-        .await
-        .expect("get source")
-        .expect("source exists");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source_id,
+    )
+    .await
+    .expect("get source")
+    .expect("source exists");
     let http = manager::services::plugin_pool::http_client(30);
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("sync");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("sync");
 
     // Enable via the API, then disable again.
     for enabled in [true, false] {
@@ -1506,14 +1569,22 @@ run: |
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "src-newest")
-        .await
-        .unwrap()
-        .expect("source row");
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "src-newest",
+    )
+    .await
+    .unwrap()
+    .expect("source row");
     let http = manager::services::plugin_pool::http_client(60);
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("sync");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("sync");
 
     assert_eq!(
         fetched.load(Ordering::SeqCst),
@@ -1540,7 +1611,7 @@ run: |
     // on demand (cache miss → download).
     manager::services::plugin_pool::verify_entry(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "car",
         "tool",
         "1.0.0",
@@ -1664,25 +1735,36 @@ async fn signed_index_is_verified_and_tampering_is_rejected() {
     // Authentic source syncs.
     let body = add_source(&app, &jwt, &format!("{good_base}/index.json")).await;
     let good_id = body["data"]["source"]["id"].as_str().unwrap().to_string();
-    let source = manager::services::plugin_pool::get_source(&pool, &good_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &good_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let http = manager::services::plugin_pool::http_client(30);
-    manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
-        .await
-        .expect("signed source syncs");
+    manager::services::plugin_pool::sync_source(
+        &http,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &source,
+        shared::version::VERSION,
+    )
+    .await
+    .expect("signed source syncs");
 
     // Rewritten index with a stale signature is refused.
     let body = add_source(&app, &jwt, &format!("{evil_base}/index.json")).await;
     let evil_id = body["data"]["source"]["id"].as_str().unwrap().to_string();
-    let source = manager::services::plugin_pool::get_source(&pool, &evil_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &evil_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let error = manager::services::plugin_pool::sync_source(
         &http,
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &source,
         shared::version::VERSION,
     )
@@ -1841,13 +1923,17 @@ async fn reviews_ledger_must_be_signed_when_the_trust_anchor_is_on() {
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "rl")
-        .await
-        .unwrap()
-        .unwrap();
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "rl",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let http = manager::services::plugin_pool::http_client(30);
+    let db = manager::store::exec::DbPool::from_sqlite(&pool);
     let sync = || {
-        manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        manager::services::plugin_pool::sync_source(&http, &db, &source, shared::version::VERSION)
     };
     let reviewed = || async {
         sqlx::query_scalar::<_, i64>(
@@ -1994,13 +2080,17 @@ async fn signed_index_rollback_and_forked_sequence_are_refused() {
     .execute(&pool)
     .await
     .unwrap();
-    let source = manager::services::plugin_pool::get_source(&pool, "rb")
-        .await
-        .unwrap()
-        .unwrap();
+    let source = manager::services::plugin_pool::get_source(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "rb",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let http = manager::services::plugin_pool::http_client(30);
+    let db = manager::store::exec::DbPool::from_sqlite(&pool);
     let sync = || {
-        manager::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        manager::services::plugin_pool::sync_source(&http, &db, &source, shared::version::VERSION)
     };
 
     publish(format!(

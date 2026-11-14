@@ -11,8 +11,6 @@
 //! transition-specific before/after payloads, and the wake timing is a
 //! scheduling decision the caller owns.
 
-use sqlx::Row;
-
 use crate::state::AppState;
 
 /// A job status that notify channels treat as an end-of-build event.
@@ -36,7 +34,7 @@ pub(crate) async fn announce_job_status(
 ) {
     if notify && is_notify_status(status) {
         crate::services::notify::spawn_job_notify(
-            state.pool.clone(),
+            state.db(),
             state.config.auth.jwt_secret.clone(),
             state.config.server.public_base_url.clone(),
             job_id.to_string(),
@@ -45,30 +43,19 @@ pub(crate) async fn announce_job_status(
     }
 
     // Broadcast status to WebSocket subscribers.
-    if let Ok(Some(row)) = sqlx::query(
-        "SELECT pipeline_id, status, step_statuses, start_time, end_time, debug_unredact
-         FROM jobs WHERE id = ?",
-    )
-    .bind(job_id)
-    .fetch_optional(&state.pool)
-    .await
-    {
-        let pipeline_id: String = row.get(0);
-        let row_status: String = row.get(1);
+    if let Ok(Some(row)) = crate::store::jobs::status_broadcast_row(&state.db(), job_id).await {
         let payload = serde_json::json!({
             "id": job_id,
-            "status": row_status,
-            "step_statuses": serde_json::from_str::<serde_json::Value>(
-                &row.get::<String, _>(2),
-            )
-            .unwrap_or_default(),
-            "start_time": row.get::<Option<String>, _>(3),
-            "end_time": row.get::<Option<String>, _>(4),
-            "debug_unredact": row.get::<i64, _>(5) != 0,
+            "status": row.status,
+            "step_statuses": serde_json::from_str::<serde_json::Value>(&row.step_statuses)
+                .unwrap_or_default(),
+            "start_time": row.start_time,
+            "end_time": row.end_time,
+            "debug_unredact": row.debug_unredact,
         });
         state.log_broadcast.broadcast_status(
             job_id,
-            &pipeline_id,
+            &row.pipeline_id,
             &serde_json::to_string(&payload).unwrap_or_default(),
         );
     }

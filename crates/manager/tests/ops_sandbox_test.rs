@@ -38,6 +38,7 @@ fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -89,7 +90,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
         .await
         .unwrap();
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -513,7 +514,7 @@ async fn get_host_reports_document_and_attached_runners() {
     enrolled_host(&app).await;
     // A runner reporting host_id 'host-a' counts as attached.
     let created = manager::api::runners::create_runner_record(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &shared::protocol::CreateRunnerRequest {
             name: "attached-runner".into(),
             labels: None,
@@ -867,7 +868,7 @@ async fn grants_require_approval_and_approve_applies_them() {
     assert_eq!(row["decision_comment"], "ok");
 
     let audit_actions: Vec<String> = sqlx::query_scalar(
-        "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY rowid",
+        "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY seq",
     )
     .fetch_all(&pool)
     .await

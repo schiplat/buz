@@ -7,12 +7,12 @@
 //! **Access:** callers that have not yet authorized the YAML `team:` must use
 //! [`validate_pipeline_yaml_for_viewer`] so secret/team probes cannot cross teams.
 
+use crate::store::exec::DbPool;
 use shared::error::AppError;
 use shared::pipeline_yaml::{
     collect_effective_secret_names, PipelineYaml, YamlValidationError, YamlValidationResult,
 };
 use shared::rbac::Perm;
-use sqlx::{Row, SqlitePool};
 
 use crate::rbac::AuthUser;
 use crate::services::plugin_resolver::LocalPluginIndex;
@@ -32,7 +32,7 @@ pub struct ValidatedYaml {
 /// referential checks always run — DB state can change without the file
 /// changing.
 pub async fn validate_pipeline_yaml(
-    pool: &SqlitePool,
+    pool: &DbPool,
     yaml: &str,
 ) -> Result<YamlValidationResult, AppError> {
     Ok(validate_pipeline_yaml_with_parse(pool, yaml).await?.result)
@@ -40,7 +40,7 @@ pub async fn validate_pipeline_yaml(
 
 /// [`validate_pipeline_yaml`] retaining the parsed document for reuse.
 pub async fn validate_pipeline_yaml_with_parse(
-    pool: &SqlitePool,
+    pool: &DbPool,
     yaml: &str,
 ) -> Result<ValidatedYaml, AppError> {
     let cached = crate::services::yaml_cache::parse_cached(yaml);
@@ -75,7 +75,7 @@ pub struct PluginPolicy {
 }
 
 pub async fn validate_pipeline_yaml_for_viewer(
-    pool: &SqlitePool,
+    pool: &DbPool,
     yaml: &str,
     auth: &AuthUser,
     plugin_policy: &PluginPolicy,
@@ -105,7 +105,7 @@ pub async fn validate_pipeline_yaml_for_viewer(
 /// Local lookups only: no template download, no network, and no review-gate
 /// verdict (that is a save-time policy, not an availability question).
 async fn check_uses_availability(
-    pool: &SqlitePool,
+    pool: &DbPool,
     parsed: &PipelineYaml,
     policy: &PluginPolicy,
     result: &mut YamlValidationResult,
@@ -127,12 +127,9 @@ async fn check_uses_availability(
     }
 
     // Enabled pool rows: the curator's allowlist for remote sources.
-    let pool_rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT namespace, plugin_id, version, sha256 FROM plugin_pool WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    let pool_rows = crate::store::plugin_pool::enabled_entries(pool)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     // Local plugin directory; a missing directory is an empty library, not an
     // error (same semantics as GET /plugins).
@@ -159,11 +156,11 @@ async fn check_uses_availability(
         let mut reviewed = false;
         // Pool rows carry the badge computed at sync time; local entries are
         // checked against the ledger by content hash.
-        for (ns, id, version, sha) in &pool_rows {
-            if format!("{ns}/{id}") == reference {
-                versions.push(version.as_str());
-                hashes.push(sha.as_str());
-                reviewed |= reviewed_hashes.contains(sha);
+        for entry in &pool_rows {
+            if format!("{}/{}", entry.namespace, entry.plugin_id) == reference {
+                versions.push(entry.version.as_str());
+                hashes.push(entry.sha256.as_str());
+                reviewed |= reviewed_hashes.contains(&entry.sha256);
             }
         }
         let local_versions = local_index.available_versions(&reference);
@@ -257,7 +254,7 @@ enum ReferentialMode<'a> {
 
 /// Append referential errors (team / secrets / variables). Does not clear structural errors.
 async fn enrich_referential_errors(
-    pool: &SqlitePool,
+    pool: &DbPool,
     parsed: &PipelineYaml,
     result: &mut YamlValidationResult,
     mode: ReferentialMode<'_>,
@@ -273,10 +270,9 @@ async fn enrich_referential_errors(
         check_environment_slugs(pool, parsed, result, false).await?;
     }
 
-    let team_row = sqlx::query("SELECT id FROM teams WHERE slug = ?")
-        .bind(team_slug)
-        .fetch_optional(pool)
-        .await?;
+    let team_row = crate::store::teams::id_by_slug(pool, team_slug)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let Some(team_row) = team_row else {
         match mode {
@@ -302,7 +298,7 @@ async fn enrich_referential_errors(
         }
         return Ok(());
     };
-    let team_id: String = team_row.get(0);
+    let team_id: String = team_row;
 
     let viewer_mode = matches!(&mode, ReferentialMode::Viewer { .. });
     if let ReferentialMode::Viewer { auth } = &mode {
@@ -321,15 +317,8 @@ async fn enrich_referential_errors(
 
     let secret_names = collect_effective_secret_names(parsed);
     if !secret_names.is_empty() {
-        let placeholders = vec!["?"; secret_names.len()].join(",");
-        let query =
-            format!("SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
-        let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
-        for name in &secret_names {
-            q = q.bind(name);
-        }
-        let found: std::collections::HashSet<String> =
-            q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+        let found =
+            crate::store::secrets::existing_names_in_team(pool, &team_id, &secret_names).await?;
         for name in &secret_names {
             if !found.contains(name) {
                 result.errors.push(YamlValidationError {
@@ -347,7 +336,7 @@ async fn enrich_referential_errors(
 }
 
 async fn check_environment_slugs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     parsed: &PipelineYaml,
     result: &mut YamlValidationResult,
     generic_errors: bool,
@@ -357,11 +346,7 @@ async fn check_environment_slugs(
         if slug.is_empty() {
             continue;
         }
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM environments WHERE slug = ?)")
-                .bind(slug)
-                .fetch_one(pool)
-                .await?;
+        let exists = crate::store::environments::slug_exists(pool, slug).await?;
         if !exists {
             result.errors.push(YamlValidationError {
                 field: "environments".into(),
@@ -379,7 +364,7 @@ async fn check_environment_slugs(
 }
 
 async fn check_platform_variables(
-    pool: &SqlitePool,
+    pool: &DbPool,
     parsed: &PipelineYaml,
     result: &mut YamlValidationResult,
 ) -> Result<(), AppError> {
@@ -394,14 +379,7 @@ async fn check_platform_variables(
     if names.is_empty() {
         return Ok(());
     }
-    let placeholders = vec!["?"; names.len()].join(",");
-    let query = format!("SELECT name FROM platform_vars WHERE name IN ({placeholders})");
-    let mut q = sqlx::query_as::<_, (String,)>(&query);
-    for name in &names {
-        q = q.bind(name);
-    }
-    let found: std::collections::HashSet<String> =
-        q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+    let found = crate::store::variables::existing_platform_names(pool, &names).await?;
     for name in &names {
         if !found.contains(name) {
             result.errors.push(YamlValidationError {
@@ -433,7 +411,7 @@ pub fn reject_if_invalid(result: &YamlValidationResult) -> Result<(), AppError> 
 
 /// Resolve `(team_id, slug)` from YAML `team:` / `owner_group:` (omit → `default`).
 pub async fn resolve_parsed_team_id(
-    pool: &SqlitePool,
+    pool: &DbPool,
     parsed: &PipelineYaml,
 ) -> Result<(String, String), AppError> {
     let team_slug = parsed
@@ -442,21 +420,19 @@ pub async fn resolve_parsed_team_id(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("default");
-    let row = sqlx::query("SELECT id, slug FROM teams WHERE slug = ?")
-        .bind(team_slug)
-        .fetch_optional(pool)
+    let row = crate::store::teams::id_and_slug_by_slug(pool, team_slug)
         .await?
         .ok_or_else(|| {
             AppError::ValidationFailed(format!(
                 "team '{team_slug}' does not exist — create it under Teams or fix team: / owner_group:"
             ))
         })?;
-    Ok((row.get(0), row.get(1)))
+    Ok(row)
 }
 
 /// Parse YAML and resolve target team (serde — same as upsert).
 pub async fn parse_and_resolve_team(
-    pool: &SqlitePool,
+    pool: &DbPool,
     yaml: &str,
 ) -> Result<(PipelineYaml, String, String), AppError> {
     let parsed: PipelineYaml = serde_yaml::from_str(yaml)

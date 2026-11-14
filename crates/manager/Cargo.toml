@@ -3,6 +3,12 @@ name = "manager"
 version.workspace = true
 edition.workspace = true
 
+# `postgres` enables the Postgres store backend (dual-dialect execution, the
+# pg migration runner, and the advisory-locked startup). Default builds are
+# SQLite-only and carry no Postgres driver code.
+[features]
+postgres = ["sqlx/postgres"]
+
 [[bin]]
 name = "buz-manager"
 path = "src/main.rs"

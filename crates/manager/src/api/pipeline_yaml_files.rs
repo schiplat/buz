@@ -1,9 +1,11 @@
-//! Online YAML authoring against `pipeline.yaml_scan_dir`.
+//! Online YAML authoring against the database.
 //!
-//! The file on disk is the authority; the DB row is the runtime projection
-//! (tasks / bindings). Save = write file + immediate upsert (same path as scanner).
+//! The pipeline row is the authority: `yaml_source` holds the exact bytes the
+//! validation accepted, and the task/binding projection is written in the same
+//! path. Nothing is written to `pipeline.yaml_scan_dir`; that directory is only
+//! an import/export location.
 //!
-//! Files are **flat basenames only** under `yaml_scan_dir` (no subdirectories).
+//! Identifiers are flat origin basenames (`my-pipe.yml`).
 //! Optimistic concurrency via content `etag` / `If-Match`.
 
 use axum::{
@@ -14,15 +16,14 @@ use axum::{
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
-use sqlx::Row;
 
 use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::AuthUser;
 use crate::rbac::pipeline_team_id;
 use crate::services::pipeline_scanner::{
     delete_yaml_file, filename_from_pipeline_name, filename_from_yaml_path, find_yaml_pipeline_row,
-    list_yaml_files, lock_yaml_file, read_yaml_file, validate_yaml_filename,
-    write_and_upsert_yaml_locked, yaml_content_etag, yaml_path_storage,
+    list_yaml_files, read_yaml_file, validate_yaml_filename, write_and_upsert_yaml,
+    yaml_content_etag,
 };
 use crate::services::yaml_validate::{
     parse_and_resolve_team, reject_if_invalid, validate_pipeline_yaml,
@@ -48,7 +49,7 @@ pub async fn list_files(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let scan_dir = &state.config.pipeline.yaml_scan_dir;
-    let files = list_yaml_files(&state.pool, scan_dir).await?;
+    let files = list_yaml_files(&state.db()).await?;
     // Filter by team visibility (platform admin sees all).
     let visible: Vec<_> = files
         .into_iter()
@@ -71,8 +72,8 @@ pub async fn get_file(
     let scan_dir = &state.config.pipeline.yaml_scan_dir;
     validate_yaml_filename(&filename)?;
     authorize_file_access(&state, &auth, scan_dir, &filename, Perm::TeamView).await?;
-    let yaml = read_yaml_file(scan_dir, &filename).await?;
-    let yaml_path = yaml_path_storage(scan_dir, &filename)?;
+    let yaml = read_yaml_file(&state.db(), &filename).await?;
+    let yaml_path = filename.clone();
     let etag = yaml_content_etag(&yaml);
     Ok(Json(ApiResponse::success(serde_json::json!({
         "filename": filename,
@@ -88,18 +89,11 @@ pub async fn get_pipeline_source(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let row = sqlx::query("SELECT source, yaml_path, name FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-
-    let source: String = row.get(0);
-    let yaml_path: Option<String> = row.get(1);
-    let name: String = row.get(2);
+    let (source, yaml_path, name) =
+        crate::store::pipelines::pipeline_source_row(&state.db(), &id).await?;
 
     if source != "yaml" {
         return Err(AppError::ValidationFailed(
@@ -112,8 +106,7 @@ pub async fn get_pipeline_source(
     let filename = filename_from_yaml_path(&yaml_path)
         .ok_or_else(|| AppError::Internal(format!("invalid yaml_path on pipeline: {yaml_path}")))?;
 
-    let scan_dir = &state.config.pipeline.yaml_scan_dir;
-    let yaml = read_yaml_file(scan_dir, &filename).await?;
+    let yaml = read_yaml_file(&state.db(), &filename).await?;
     let etag = yaml_content_etag(&yaml);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -131,17 +124,16 @@ pub async fn create_file(
     State(state): State<AppState>,
     Json(req): Json<WriteYamlFileRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let scan_dir = state.config.pipeline.yaml_scan_dir.clone();
     let yaml = req.yaml;
     if yaml.trim().is_empty() {
         return Err(AppError::ValidationFailed("yaml is required".into()));
     }
 
     // Target team from serde (same as upsert) — authorize BEFORE any write.
-    let (parsed, target_team_id, _) = parse_and_resolve_team(&state.pool, &yaml).await?;
+    let (parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
 
-    let validation = validate_pipeline_yaml(&state.pool, &yaml).await?;
+    let validation = validate_pipeline_yaml(&state.db(), &yaml).await?;
     reject_if_invalid(&validation)?;
     let pipeline_name = parsed.name.trim();
     let pipeline_name = if pipeline_name.is_empty() {
@@ -163,18 +155,18 @@ pub async fn create_file(
         None => filename_from_pipeline_name(pipeline_name),
     };
 
-    // Create refuses overwrite — check and write under the same file lock.
-    let file_guard = lock_yaml_file(&scan_dir, &filename).await?;
-    let path = crate::services::pipeline_scanner::resolve_yaml_path(&scan_dir, &filename)?;
-    if path.exists() {
+    // Create refuses overwrite — the origin basename identifies at most one row.
+    if find_yaml_pipeline_row(&state.db(), &filename)
+        .await?
+        .is_some()
+    {
         return Err(AppError::Conflict(format!(
             "file {filename} already exists — use PUT to update"
         )));
     }
 
-    let result = write_and_upsert_yaml_locked(
-        &state.pool,
-        &scan_dir,
+    let result = write_and_upsert_yaml(
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -184,14 +176,15 @@ pub async fn create_file(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         None,
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-        file_guard,
+        None,
+        true,
     )
     .await?;
     let etag = yaml_content_etag(&yaml);
@@ -232,42 +225,42 @@ pub async fn put_file(
     }
 
     // Target team from serde — must authorize BEFORE write/upsert (no post-hoc orphan).
-    let (_parsed, target_team_id, _) = parse_and_resolve_team(&state.pool, &yaml).await?;
+    let (_parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
 
     // Also require write on the current binding (source team / migrate source).
     if let Some(ref pid) = req.pipeline_id {
-        let current_team_id = pipeline_team_id(&state.pool, pid).await?;
+        let current_team_id = pipeline_team_id(&state.db(), pid).await?;
         auth.check_team(&current_team_id, Perm::PipelineWrite)?;
     } else {
         authorize_file_access(&state, &auth, &scan_dir, &filename, Perm::PipelineWrite).await?;
     }
 
-    // Serialize the compare and replace with scanner read/upsert for this file.
-    let file_guard = lock_yaml_file(&scan_dir, &filename).await?;
-
-    // Optimistic concurrency when the file already exists. Re-read only after
-    // taking the coordination lock so two PUTs cannot both pass on one ETag.
-    let path = crate::services::pipeline_scanner::resolve_yaml_path(&scan_dir, &filename)?;
-    if path.exists() {
-        if let Some(expected) = if_match_value(&headers, req.etag.as_deref()) {
-            let current = read_yaml_file(&scan_dir, &filename).await?;
+    // Optimistic concurrency: this early check gives a clean 409 without doing
+    // any resolution work, and the write path re-checks the same token under
+    // its write transaction so two writers cannot both pass.
+    let expected_etag = if_match_value(&headers, req.etag.as_deref());
+    if find_yaml_pipeline_row(&state.db(), &filename)
+        .await?
+        .is_some()
+    {
+        if let Some(ref expected) = expected_etag {
+            let current = read_yaml_file(&state.db(), &filename).await?;
             let current_etag = yaml_content_etag(&current);
-            if expected != "*" && expected != current_etag {
+            if expected != "*" && *expected != current_etag {
                 return Err(AppError::Conflict(
-                    "YAML file was modified by another writer — reload and retry (If-Match / etag mismatch)"
+                    "YAML definition was modified by another writer — reload and retry (If-Match / etag mismatch)"
                         .into(),
                 ));
             }
         }
     }
 
-    let validation = validate_pipeline_yaml(&state.pool, &yaml).await?;
+    let validation = validate_pipeline_yaml(&state.db(), &yaml).await?;
     reject_if_invalid(&validation)?;
 
-    let result = write_and_upsert_yaml_locked(
-        &state.pool,
-        &scan_dir,
+    let result = write_and_upsert_yaml(
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -277,14 +270,15 @@ pub async fn put_file(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         req.pipeline_id.as_deref(),
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-        file_guard,
+        expected_etag.as_deref(),
+        false,
     )
     .await?;
     let etag = yaml_content_etag(&yaml);
@@ -319,7 +313,7 @@ pub async fn delete_file(
     validate_yaml_filename(&filename)?;
     authorize_file_access(&state, &auth, scan_dir, &filename, Perm::PipelineDelete).await?;
 
-    let deleted_id = delete_yaml_file(&state.pool, scan_dir, &filename).await?;
+    let deleted_id = delete_yaml_file(&state.db(), &filename).await?;
 
     if let Some(ref id) = deleted_id {
         audit::record(
@@ -352,14 +346,13 @@ fn if_match_value(headers: &HeaderMap, body_etag: Option<&str>) -> Option<String
 async fn authorize_file_access(
     state: &AppState,
     auth: &AuthUser,
-    scan_dir: &str,
+    _scan_dir: &str,
     filename: &str,
     perm: Perm,
 ) -> Result<(), AppError> {
-    let _ = yaml_path_storage(scan_dir, filename)?;
-    match find_yaml_pipeline_row(&state.pool, filename).await? {
+    match find_yaml_pipeline_row(&state.db(), filename).await? {
         Some(pid) => {
-            let team_id = pipeline_team_id(&state.pool, &pid).await?;
+            let team_id = pipeline_team_id(&state.db(), &pid).await?;
             auth.check_team(&team_id, perm)?;
         }
         None => {

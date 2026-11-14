@@ -93,9 +93,12 @@ async fn purges_only_expired_debug_jobs() {
     // WS client connected (the sink retains them in memory).
     broadcaster.broadcast("old-debug", 0, None, "plaintext-secret");
 
-    let purged = purge_expired_debug_logs(&pool, &broadcaster)
-        .await
-        .expect("purge runs");
+    let purged = purge_expired_debug_logs(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &broadcaster,
+    )
+    .await
+    .expect("purge runs");
     assert_eq!(purged, 1, "only the expired debug job is purged");
 
     assert_eq!(
@@ -138,9 +141,12 @@ async fn noop_when_no_expired_debug_jobs() {
     let broadcaster = LogBroadcaster::new();
     seed_job(&pool, "fresh-debug", true).await;
 
-    let purged = purge_expired_debug_logs(&pool, &broadcaster)
-        .await
-        .expect("purge runs");
+    let purged = purge_expired_debug_logs(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &broadcaster,
+    )
+    .await
+    .expect("purge runs");
     assert_eq!(purged, 0);
     assert_eq!(debug_flag(&pool, "fresh-debug").await, 1);
     // Fresh debug job keeps its in-memory sink (admin may still stream it live).
@@ -163,9 +169,12 @@ async fn expired_non_debug_jobs_are_not_touched() {
         .await
         .expect("seed log");
 
-    let purged = purge_expired_debug_logs(&pool, &broadcaster)
-        .await
-        .expect("purge runs");
+    let purged = purge_expired_debug_logs(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &broadcaster,
+    )
+    .await
+    .expect("purge runs");
     assert_eq!(purged, 0);
     assert_eq!(
         log_count(&pool, "old-normal").await,

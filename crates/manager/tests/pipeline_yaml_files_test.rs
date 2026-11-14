@@ -28,6 +28,7 @@ fn test_config(scan_dir: &str) -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -74,7 +75,7 @@ async fn test_app(scan_dir: &str) -> Router {
         .expect("seed team");
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(scan_dir),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -139,7 +140,9 @@ async fn create_put_get_delete_yaml_file() {
     let created = read_body(resp).await;
     assert_eq!(created["code"], 0);
     let pipeline_id = created["data"]["pipeline_id"].as_str().unwrap().to_string();
-    assert!(dir.path().join("file-backed-demo.yml").exists());
+    // The definition is stored in the database; the legacy scan directory is
+    // not written.
+    assert!(!dir.path().join("file-backed-demo.yml").exists());
 
     // Get by filename
     let resp = app
@@ -194,8 +197,23 @@ async fn create_put_get_delete_yaml_file() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = std::fs::read_to_string(dir.path().join("file-backed-demo.yml")).unwrap();
-    assert!(body.contains("echo updated"));
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines/yaml-files/file-backed-demo.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = read_body(resp).await;
+    assert!(body["data"]["yaml"]
+        .as_str()
+        .unwrap()
+        .contains("echo updated"));
 
     // Delete file + projection
     let resp = app
@@ -211,7 +229,20 @@ async fn create_put_get_delete_yaml_file() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(!dir.path().join("file-backed-demo.yml").exists());
+    // The delete removes the pipeline row; the definition is gone with it.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines/yaml-files/file-backed-demo.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     let resp = app
         .oneshot(
@@ -324,10 +355,22 @@ async fn unresolved_uses_returns_validation_error_and_restores_yaml_file() {
         .as_str()
         .unwrap()
         .contains("not found in the local plugin index"));
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("file-backed-demo.yml")).unwrap(),
-        SAMPLE_YAML
-    );
+    // The rejected save left the stored definition untouched.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines/yaml-files/file-backed-demo.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = read_body(resp).await;
+    assert_eq!(body["data"]["yaml"].as_str().unwrap(), SAMPLE_YAML);
     let pipelines = app
         .oneshot(
             Request::builder()
@@ -475,7 +518,7 @@ async fn concurrent_puts_with_same_etag_only_allow_one_save() {
 
     let (first, second) = tokio::join!(
         app.clone().oneshot(make_request(first_yaml.clone())),
-        app.oneshot(make_request(second_yaml.clone())),
+        app.clone().oneshot(make_request(second_yaml.clone())),
     );
     let first_status = first.unwrap().status();
     let second_status = second.unwrap().status();
@@ -485,7 +528,21 @@ async fn concurrent_puts_with_same_etag_only_allow_one_save() {
         "expected one successful save and one stale-ETag conflict, got {first_status} and {second_status}"
     );
 
-    let final_yaml = std::fs::read_to_string(dir.path().join("concurrent-save.yml")).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines/yaml-files/concurrent-save.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = read_body(resp).await;
+    let final_yaml = body["data"]["yaml"].as_str().unwrap().to_string();
     assert!(final_yaml == first_yaml || final_yaml == second_yaml);
 }
 
@@ -516,7 +573,7 @@ async fn concurrent_creates_for_same_filename_only_create_once() {
     let yaml_b = SAMPLE_YAML.replace("echo hello", "echo b");
     let (first, second) = tokio::join!(
         app.clone().oneshot(make_request(yaml_a.clone())),
-        app.oneshot(make_request(yaml_b.clone())),
+        app.clone().oneshot(make_request(yaml_b.clone())),
     );
     let first_status = first.unwrap().status();
     let second_status = second.unwrap().status();
@@ -526,7 +583,21 @@ async fn concurrent_creates_for_same_filename_only_create_once() {
         "expected one create and one conflict, got {first_status} and {second_status}"
     );
 
-    let final_yaml = std::fs::read_to_string(dir.path().join("concurrent-create.yml")).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines/yaml-files/concurrent-create.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = read_body(resp).await;
+    let final_yaml = body["data"]["yaml"].as_str().unwrap().to_string();
     assert!(final_yaml == yaml_a || final_yaml == yaml_b);
 }
 
@@ -564,7 +635,7 @@ async fn create_rejects_target_team_without_write_before_file_exists() {
     .unwrap();
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(&scan),
         log_broadcast: LogBroadcaster::new(),
     };

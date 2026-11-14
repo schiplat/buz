@@ -33,7 +33,7 @@ pub fn spawn_fetch_scheduler(state: AppState, check_interval_seconds: u64) {
         );
 
         loop {
-            match try_acquire_lease(&state.pool, FETCH_LEASE_ID, &instance_id).await {
+            match try_acquire_lease(&state.db(), FETCH_LEASE_ID, &instance_id).await {
                 Ok(true) => {
                     if let Err(e) = run_due_fetches(&state).await {
                         tracing::error!("GitHub fetch scheduler cycle failed: {e}");
@@ -76,31 +76,22 @@ pub fn connection_is_due(last_fetch_at: Option<&str>, interval_minutes: i64) -> 
 
 /// Fetch every connection whose `last_fetch_at` is past its configured interval.
 async fn run_due_fetches(state: &AppState) -> anyhow::Result<()> {
-    use sqlx::Row;
-
-    let rows = sqlx::query(
-        "SELECT id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes, last_fetch_at
-         FROM github_connections
-         WHERE fetch_interval_minutes IS NOT NULL AND fetch_interval_minutes > 0
-           AND fetch_owners != ''",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::github::fetch_candidates(&state.db())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut due: Vec<DueConnection> = Vec::new();
     for row in rows {
-        let interval: i64 = row.get(5);
-        let last_fetch_at: Option<String> = row.get(6);
-        if !connection_is_due(last_fetch_at.as_deref(), interval) {
+        if !connection_is_due(row.last_fetch_at.as_deref(), row.fetch_interval_minutes) {
             continue;
         }
         due.push(DueConnection {
-            id: row.get(0),
-            name: row.get(1),
-            api_base_url: row.get(2),
-            token_ciphertext: row.get(3),
+            id: row.id,
+            name: row.name,
+            api_base_url: row.api_base_url,
+            token_ciphertext: row.token_ciphertext,
             owners: row
-                .get::<String, _>(4)
+                .fetch_owners
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -137,7 +128,7 @@ async fn run_due_fetches(state: &AppState) -> anyhow::Result<()> {
         );
 
         for owner in &conn.owners {
-            match fetch_and_upsert_repos(&state.pool, &conn.id, &conn.name, owner, &client).await {
+            match fetch_and_upsert_repos(&state.db(), &conn.id, &conn.name, owner, &client).await {
                 Ok((added, existing)) => {
                     tracing::info!(
                         connection = %conn.name,
@@ -159,12 +150,9 @@ async fn run_due_fetches(state: &AppState) -> anyhow::Result<()> {
 
         // Stamp the fetch time even when an owner failed, so a permanently
         // failing owner does not retry on every scheduler tick.
-        sqlx::query(
-            "UPDATE github_connections SET last_fetch_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&conn.id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::github::mark_auto_fetched(&state.db(), &conn.id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!(connection = %conn.name, "github-sync: auto fetch cycle done");
     }
 

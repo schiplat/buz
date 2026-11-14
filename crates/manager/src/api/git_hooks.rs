@@ -12,7 +12,6 @@ use shared::error::AppError;
 use shared::git_webhook::{normalize_provider, PROVIDER_GITEE, PROVIDER_GITHUB};
 use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::rbac;
@@ -26,11 +25,6 @@ fn random_hex(nbytes: usize) -> String {
     let mut buf = vec![0u8; nbytes];
     rand::thread_rng().fill_bytes(&mut buf);
     hex::encode(buf)
-}
-
-async fn pipeline_team(pool: &sqlx::SqlitePool, pipeline_id: &str) -> Result<String, AppError> {
-    // Shared resolver (same semantics, incl. the empty-team_id guard).
-    rbac::pipeline_team_id(pool, pipeline_id).await
 }
 
 #[allow(clippy::too_many_arguments)] // handler context: state, path, body, headers, auth
@@ -70,38 +64,23 @@ pub async fn list_hooks(
     Path(pipeline_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let rows = sqlx::query(
-        "SELECT id, label, provider, hook_key, branch_filter, enabled, environment, event_filter
-         FROM pipeline_git_hooks WHERE pipeline_id = ?
-         ORDER BY created_at ASC",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::git_hooks::list_for_pipeline(&state.db(), &pipeline_id).await?;
 
     let items: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|r| {
-            let id: String = r.get(0);
-            let label: String = r.get(1);
-            let provider: String = r.get(2);
-            let hook_key: String = r.get(3);
-            let branch_filter: String = r.get(4);
-            let enabled: i64 = r.get(5);
-            let environment: String = r.get(6);
-            let event_filter: String = r.get(7);
+        .map(|h| {
             public_hook_view(
-                &id,
-                &label,
-                &provider,
-                &hook_key,
-                &branch_filter,
-                &event_filter,
-                &environment,
-                enabled != 0,
+                &h.id,
+                &h.label,
+                &h.provider,
+                &h.hook_key,
+                &h.branch_filter,
+                &h.event_filter,
+                &h.environment,
+                h.enabled,
                 None,
             )
         })
@@ -136,7 +115,7 @@ pub async fn create_hook(
     State(state): State<AppState>,
     Json(req): Json<CreateGitHookRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let provider = normalize_provider(&req.provider).ok_or_else(|| {
@@ -154,10 +133,7 @@ pub async fn create_hook(
         ));
     }
     let declared_raw: String =
-        sqlx::query_scalar("SELECT environments FROM pipelines WHERE id = ?")
-            .bind(&pipeline_id)
-            .fetch_one(&state.pool)
-            .await?;
+        crate::store::pipelines::declared_environments(&state.db(), &pipeline_id).await?;
     let declared: Vec<String> = serde_json::from_str(&declared_raw).unwrap_or_default();
     if !declared.iter().any(|slug| slug == &environment) {
         return Err(AppError::ValidationFailed(format!(
@@ -172,22 +148,21 @@ pub async fn create_hook(
     let cipher =
         crypto::encrypt(&secret, &state.config.auth.jwt_secret).map_err(AppError::Internal)?;
 
-    sqlx::query(
-        "INSERT INTO pipeline_git_hooks
-         (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, environment, enabled, event_filter)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    crate::store::git_hooks::insert(
+        &state.db(),
+        &crate::store::git_hooks::GitHookInsert {
+            id: id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            label: label.clone(),
+            provider: provider.to_string(),
+            hook_key: hook_key.clone(),
+            secret_ciphertext: cipher,
+            branch_filter: branch_filter.clone(),
+            environment: environment.clone(),
+            enabled,
+            event_filter: event_filter.clone(),
+        },
     )
-    .bind(&id)
-    .bind(&pipeline_id)
-    .bind(&label)
-    .bind(provider)
-    .bind(&hook_key)
-    .bind(&cipher)
-    .bind(&branch_filter)
-    .bind(&environment)
-    .bind(if enabled { 1 } else { 0 })
-    .bind(&event_filter)
-    .execute(&state.pool)
     .await?;
 
     let name = if label.is_empty() {
@@ -253,7 +228,7 @@ pub async fn update_hook(
     State(state): State<AppState>,
     Json(req): Json<UpdateGitHookRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let label = req.label.unwrap_or_default().trim().to_string();
@@ -267,38 +242,29 @@ pub async fn update_hook(
     }
     let enabled = req.enabled.unwrap_or(true);
 
-    let existing = sqlx::query(
-        "SELECT label, branch_filter, event_filter, environment, enabled, provider, hook_key
-         FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?",
-    )
-    .bind(&hook_id)
-    .bind(&pipeline_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("git hook not found".into()))?;
-    let provider: String = existing.get(5);
-    let hook_key: String = existing.get(6);
+    let existing = crate::store::git_hooks::find_for_update(&state.db(), &hook_id, &pipeline_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("git hook not found".into()))?;
+    let provider = existing.provider.clone();
+    let hook_key = existing.hook_key.clone();
     let before = serde_json::json!({
-        "label": existing.get::<String, _>(0),
-        "branch_filter": existing.get::<String, _>(1),
-        "event_filter": existing.get::<String, _>(2),
-        "environment": existing.get::<String, _>(3),
-        "enabled": existing.get::<i64, _>(4) != 0,
+        "label": existing.label,
+        "branch_filter": existing.branch_filter,
+        "event_filter": existing.event_filter,
+        "environment": existing.environment,
+        "enabled": existing.enabled,
     });
 
-    sqlx::query(
-        "UPDATE pipeline_git_hooks SET label = ?, branch_filter = ?, event_filter = ?,
-         environment = ?, enabled = ?, updated_at = datetime('now')
-         WHERE id = ? AND pipeline_id = ?",
+    crate::store::git_hooks::update_hook(
+        &state.db(),
+        &pipeline_id,
+        &hook_id,
+        &label,
+        &branch_filter,
+        &event_filter,
+        &environment,
+        enabled,
     )
-    .bind(&label)
-    .bind(&branch_filter)
-    .bind(&event_filter)
-    .bind(&environment)
-    .bind(if enabled { 1 } else { 0 })
-    .bind(&hook_id)
-    .bind(&pipeline_id)
-    .execute(&state.pool)
     .await?;
 
     let name = if label.is_empty() {
@@ -340,48 +306,34 @@ pub async fn delete_hook(
     Path((pipeline_id, hook_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
-    let before_row = sqlx::query(
-        "SELECT label, provider, hook_key, branch_filter, environment, enabled FROM pipeline_git_hooks
-         WHERE id = ? AND pipeline_id = ?",
-    )
-    .bind(&hook_id)
-    .bind(&pipeline_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let before = before_row.as_ref().map(|r| {
+    let before_row =
+        crate::store::git_hooks::delete_facts(&state.db(), &hook_id, &pipeline_id).await?;
+    let before = before_row.as_ref().map(|f| {
         serde_json::json!({
             "id": hook_id,
             "pipeline_id": pipeline_id,
-            "label": r.get::<String, _>(0),
-            "provider": r.get::<String, _>(1),
-            "hook_key": r.get::<String, _>(2),
-            "branch_filter": r.get::<String, _>(3),
-            "environment": r.get::<String, _>(4),
-            "enabled": r.get::<i64, _>(5) != 0,
+            "label": f.label,
+            "provider": f.provider,
+            "hook_key": f.hook_key,
+            "branch_filter": f.branch_filter,
+            "environment": f.environment,
+            "enabled": f.enabled,
         })
     });
     let name = before_row
-        .as_ref()
-        .map(|r| {
-            let label: String = r.get(0);
-            let provider: String = r.get(1);
-            let key: String = r.get(2);
-            if label.is_empty() {
-                format!("{provider}/{key}")
+        .map(|f| {
+            if f.label.is_empty() {
+                format!("{}/{}", f.provider, f.hook_key)
             } else {
-                label
+                f.label
             }
         })
         .unwrap_or_else(|| hook_id.clone());
 
-    let res = sqlx::query("DELETE FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?")
-        .bind(&hook_id)
-        .bind(&pipeline_id)
-        .execute(&state.pool)
-        .await?;
-    if res.rows_affected() == 0 {
+    let deleted = crate::store::git_hooks::delete_hook(&state.db(), &hook_id, &pipeline_id).await?;
+    if !deleted {
         return Err(AppError::NotFound("git hook not found".into()));
     }
     audit::record(

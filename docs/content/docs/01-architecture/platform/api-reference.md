@@ -334,7 +334,7 @@ Primary authoring is **YAML file APIs** under Manager `yaml_scan_dir` — see [Y
 |--------|------|------|-------|
 | GET | `/api/v1/pipelines` | JWT | List + rate summary |
 | POST | `/api/v1/pipelines/validate` | JWT | Syntax + schema + DB referential checks (viewer-scoped) |
-| GET | `/api/v1/pipelines/yaml-files` | JWT | List files in `yaml_scan_dir` (+ `scan_dir`) |
+| GET | `/api/v1/pipelines/yaml-files` | JWT | List stored definitions by origin basename (+ `scan_dir`, informational) |
 | POST | `/api/v1/pipelines/yaml-files` | JWT | Create file + upsert projection |
 | GET | `/api/v1/pipelines/yaml-files/:filename` | JWT | Read file; returns `etag` |
 | PUT | `/api/v1/pipelines/yaml-files/:filename` | JWT | Overwrite + upsert; body `etag` or `If-Match` → 409 on mismatch |
@@ -370,7 +370,7 @@ For `source=yaml`, response includes `yaml_sync`:
 | `in_sync` | File mtime matches last projection |
 | `stale` | File newer than last sync (Trigger refreshes) |
 | `validation_failed` | On-disk YAML invalid |
-| `missing_file` | Basename missing under `yaml_scan_dir` |
+| `missing_file` | Legacy row whose definition was not backfilled yet |
 | `not_file_backed` | `source≠yaml` |
 
 ### POST /pipelines/yaml-files — Create (preferred)
@@ -383,7 +383,7 @@ Request:
 }
 ```
 
-`filename` optional → slug from YAML `name:`. Writes under flat `yaml_scan_dir` (basename only).
+`filename` optional → slug from YAML `name:`. Stores the definition in the pipeline row (basename is the identity).
 
 ### POST /pipelines/:id/trigger — Trigger Run
 

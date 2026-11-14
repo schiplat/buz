@@ -42,6 +42,7 @@ fn base_config(standalone: bool) -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -69,12 +70,12 @@ async fn test_app(standalone: bool) -> Router {
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
 
     let config = base_config(standalone);
-    ensure_standalone_auto_approve(&pool, &config)
+    ensure_standalone_auto_approve(&manager::store::exec::DbPool::from_sqlite(&pool), &config)
         .await
         .expect("auto_approve");
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config,
         log_broadcast: LogBroadcaster::new(),
     };
@@ -128,7 +129,7 @@ async fn production_mode_rejects_empty_token() {
         .unwrap();
     run_migrations(&pool, JWT_SECRET).await.unwrap();
     create_runner_record(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &CreateRunnerRequest {
             name: "prod-runner".into(),
             labels: None,
@@ -148,7 +149,7 @@ async fn production_mode_rejects_empty_token() {
     .await
     .unwrap();
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: base_config(false),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -176,7 +177,7 @@ async fn standalone_rejects_non_loopback_even_with_token() {
         .unwrap();
     run_migrations(&pool, JWT_SECRET).await.unwrap();
     let config = base_config(true);
-    ensure_standalone_auto_approve(&pool, &config)
+    ensure_standalone_auto_approve(&manager::store::exec::DbPool::from_sqlite(&pool), &config)
         .await
         .unwrap();
     let token: String = sqlx::query_scalar("SELECT register_token FROM runners WHERE name = ?")
@@ -185,7 +186,7 @@ async fn standalone_rejects_non_loopback_even_with_token() {
         .await
         .unwrap();
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config,
         log_broadcast: LogBroadcaster::new(),
     };

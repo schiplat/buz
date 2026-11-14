@@ -78,6 +78,7 @@ pub fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -147,7 +148,7 @@ impl TestApp {
         .await
         .unwrap();
         let state = AppState {
-            pool: pool.clone(),
+            pool: manager::store::exec::DbPool::from_sqlite(&pool),
             config: test_config(),
             log_broadcast: LogBroadcaster::new(),
         };

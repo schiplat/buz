@@ -1,18 +1,21 @@
-use sqlx::SqlitePool;
-
 use crate::config::Config;
 use crate::services::log_broadcast::LogBroadcaster;
+use crate::store::exec::DbPool;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: SqlitePool,
+    /// Backend-neutral pool: SQLite (single mode) or Postgres (multi target).
+    pub pool: DbPool,
     pub config: Config,
     pub log_broadcast: LogBroadcaster,
 }
 
-impl axum::extract::FromRef<AppState> for SqlitePool {
-    fn from_ref(state: &AppState) -> Self {
-        state.pool.clone()
+impl AppState {
+    /// Backend-neutral handle for `store::` calls — a plain pool clone.
+    /// Kept as a method so older call sites written against `state.db()`
+    /// keep working; new code may use `&state.pool` directly.
+    pub fn db(&self) -> DbPool {
+        self.pool.clone()
     }
 }
 

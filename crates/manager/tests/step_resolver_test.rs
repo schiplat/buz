@@ -422,14 +422,25 @@ async fn resolve_uses_steps_stages_provenance_for_caller_transaction() {
         "resolution has no side effects before persistence"
     );
 
-    let mut tx = pool.begin().await.unwrap();
-    manager::services::plugin_resolver::replace_step_resolutions(
-        &mut tx,
-        "pipe-1",
-        &resolved.resolutions,
-    )
-    .await
-    .unwrap();
+    let db = manager::store::exec::DbPool::from_sqlite(&pool);
+    let mut tx = db.begin().await.unwrap();
+    let writes: Vec<manager::store::pipelines::StepResolutionWrite> = resolved
+        .resolutions
+        .iter()
+        .map(|r| manager::store::pipelines::StepResolutionWrite {
+            step_order: r.step_order,
+            uses_ref: r.uses_ref.clone(),
+            resolved_version: r.resolved_version.clone(),
+            content_sha256: r.content_sha256.clone(),
+            source: r.source.clone(),
+            expanded_json: r.expanded_json.clone(),
+            input_defs_json: r.input_defs_json.clone(),
+            reviewed: r.reviewed,
+        })
+        .collect();
+    manager::store::pipelines::replace_step_resolutions_tx(&mut tx, "pipe-1", &writes)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let (version, hash, source, reviewed, step_order, input_defs_json): (

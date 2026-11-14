@@ -35,6 +35,7 @@ fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -52,7 +53,7 @@ fn test_config() -> Config {
 
 fn test_state(pool: sqlx::SqlitePool) -> std::sync::Arc<AppState> {
     std::sync::Arc::new(AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     })
@@ -216,7 +217,7 @@ async fn update_changes_mutable_settings_and_audits() {
     let row: (String, String) = sqlx::query_as(
         "SELECT action, after_json FROM audit_logs WHERE action = 'git_hook.update'",
     )
-    .fetch_one(&state.pool)
+    .fetch_one(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("audit row");
     assert_eq!(row.0, "git_hook.update");

@@ -14,7 +14,7 @@ mod common;
 async fn metrics_app() -> Router {
     let pool = common::migrated_pool(4).await;
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: common::test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -107,7 +107,7 @@ async fn metrics_counts_rows_and_leaks_no_identifiers() {
     .unwrap();
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: common::test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

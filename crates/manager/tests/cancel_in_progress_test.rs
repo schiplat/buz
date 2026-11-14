@@ -45,6 +45,7 @@ fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
@@ -93,7 +94,7 @@ async fn test_app() -> (Router, SqlitePool, AppState) {
     .expect("seed runner");
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -289,7 +290,7 @@ async fn cancel_in_progress_supersedes_older_jobs_and_dispatches_newest() {
     force_status(&pool, &waiting_old, "waiting_approval", "[]").await;
     let pending_old = trigger_job(&app, &admin, &pipe_b, "deploy").await;
 
-    // Newest pending job — inserted last so it holds MAX(rowid).
+    // Newest pending job — inserted last so it holds MAX(seq).
     let newest = trigger_job(&app, &admin, &pipe_a, "deploy").await;
     assert_eq!(job_status(&pool, &newest).await, "pending");
 
@@ -404,7 +405,7 @@ async fn cancel_in_progress_backlog_of_50_plus_still_dispatches_newest() {
         .expect("seed backlog job");
     }
 
-    // The newest pending job arrives after the whole backlog (MAX rowid).
+    // The newest pending job arrives after the whole backlog (MAX seq).
     let newest = trigger_job(&app, &admin, &pid, "backlog").await;
 
     let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;

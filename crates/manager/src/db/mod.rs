@@ -1,17 +1,208 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
-use crate::config::Config;
+use crate::store::exec::DbPool;
 
-pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
+/// Postgres migration runner (advisory-locked baseline application). Declared
+/// only under the `postgres` feature — default builds carry no PG driver code.
+#[cfg(feature = "postgres")]
+pub mod migrate_pg;
+
+use crate::config::ClusterMode;
+use crate::config::Config;
+use crate::config::{DatabaseConfig, StorageKind};
+
+/// The SQLite file this config points at: `url` (`sqlite:<path>`) when set,
+/// otherwise the legacy `[database] path`. The startup gate refuses other
+/// schemes before this is reached.
+fn sqlite_file(database: &DatabaseConfig) -> String {
+    match &database.url {
+        Some(url) if url.trim().to_lowercase().starts_with("sqlite:") => url.trim()
+            [("sqlite:".len())..]
+            .trim_start_matches("//")
+            .to_string(),
+        _ => database.path.clone(),
+    }
+}
+
+/// Refuse to start when `[cluster] mode` and the storage backend contradict
+/// each other, or when the configured backend cannot be served yet.
+///
+/// - `multi` + SQLite is refused: SQLite has no cross-instance coordination
+///   (a single writer, no row locks), so two Managers on one file would
+///   corrupt scheduling state. `multi` needs the Postgres backend.
+/// - Postgres is served when the binary was built with the `postgres`
+///   feature; without it the startup fails closed rather than pretending
+///   to serve a backend it cannot answer.
+pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> anyhow::Result<()> {
+    let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
+    match (mode, kind) {
+        (ClusterMode::Single, StorageKind::Sqlite) => Ok(()),
+        (ClusterMode::Multi, StorageKind::Sqlite) => Err(anyhow::anyhow!(
+            "[cluster] mode = \"multi\" requires the Postgres backend: SQLite has no \
+             cross-instance coordination (single writer, no row locks), so two Manager \
+             instances on one SQLite file would corrupt scheduling state. Point \
+             [database] url at postgres:, or keep mode = \"single\"."
+        )),
+        (_, StorageKind::Postgres) => postgres_gate(),
+    }
+}
+
+/// Postgres enablement check. The schema, dual-backend dispatcher, migration
+/// runner and isolation gates are all proven — every store statement
+/// prepares on Postgres, the journey suites and the schema parity test run
+/// against a real Postgres 14 server in CI, and the CI `postgres` job is
+/// green. Serving Postgres now requires only that the binary was built with
+/// the feature.
+#[cfg(feature = "postgres")]
+fn postgres_gate() -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "postgres"))]
+fn postgres_gate() -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "database url points at Postgres, but this binary was compiled without the \
+         `postgres` feature (the default build is SQLite-only). Rebuild with \
+         `--features postgres`, or run SQLite with [cluster] mode = \"single\"."
+    ))
+}
+
+/// Held-for-lifetime proof that this process is the only Manager serving its
+/// storage: an flock on a `<db path>.lock` sidecar for SQLite, a session
+/// advisory lock (held on a dedicated connection) for Postgres. Dropping the
+/// handle (or exiting) releases it.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: Option<std::fs::File>,
+    #[cfg(feature = "postgres")]
+    _pg: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+}
+
+impl InstanceLock {
+    fn none() -> Self {
+        Self {
+            _file: None,
+            #[cfg(feature = "postgres")]
+            _pg: None,
+        }
+    }
+}
+
+/// Advisory-lock key for the single-instance gate (distinct from the
+/// session-migration lock: migrations finish, the instance lock lives on).
+#[cfg(feature = "postgres")]
+const INSTANCE_ADVISORY_LOCK_KEY: i64 = 0x6275_7A6D_6772_3032; // "buzmgr02"
+
+/// Take the single-instance lock for the configured storage. Errors when
+/// another process already holds it. Postgres returns an empty lock here; the
+/// advisory lock needs a live pool and is taken by
+/// [`acquire_pg_instance_lock`] right after `init`.
+pub fn acquire_instance_lock(database: &DatabaseConfig) -> anyhow::Result<InstanceLock> {
+    let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
+    if kind == StorageKind::Postgres {
+        return Ok(InstanceLock::none());
+    }
+    let lock_path = format!("{}.lock", sqlite_file(database));
+    if let Some(parent) = std::path::Path::new(&lock_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    if file.try_lock().is_err() {
+        return Err(anyhow::anyhow!(
+            "another Manager instance is already serving {lock_path} — refusing to \
+             start a second one; stop it first (systemd: `systemctl stop buz-manager`)"
+        ));
+    }
+    Ok(InstanceLock {
+        _file: Some(file),
+        #[cfg(feature = "postgres")]
+        _pg: None,
+    })
+}
+
+/// Postgres single-instance gate: take a session advisory lock and hold its
+/// connection for the process lifetime. A second Manager against the same
+/// database is refused before it touches storage.
+#[cfg(feature = "postgres")]
+pub async fn acquire_pg_instance_lock(pool: &DbPool) -> anyhow::Result<InstanceLock> {
+    let DbPool::Pg(pg) = pool else {
+        return Ok(InstanceLock::none());
+    };
+    let mut conn = pg.acquire().await?;
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(INSTANCE_ADVISORY_LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !acquired {
+        return Err(anyhow::anyhow!(
+            "another Manager instance already holds the Postgres instance lock — \
+             refusing to start a second one; stop it first"
+        ));
+    }
+    Ok(InstanceLock {
+        _file: None,
+        _pg: Some(conn),
+    })
+}
+
+#[cfg(not(feature = "postgres"))]
+pub async fn acquire_pg_instance_lock(_pool: &DbPool) -> anyhow::Result<InstanceLock> {
+    Ok(InstanceLock::none())
+}
+
+/// Open the configured backend. SQLite keeps its current setup (PRAGMAs,
+/// migrations are run by the caller); Postgres builds the pool and applies the
+/// advisory-locked baseline here (there is no separate PG migration step).
+pub async fn init(config: &Config) -> anyhow::Result<DbPool> {
+    match config.database.storage_kind().map_err(anyhow::Error::msg)? {
+        StorageKind::Sqlite => init_sqlite(config).await.map(DbPool::Sqlite),
+        StorageKind::Postgres => init_postgres(config).await,
+    }
+}
+
+#[cfg(feature = "postgres")]
+async fn init_postgres(config: &Config) -> anyhow::Result<DbPool> {
+    let url = config
+        .database
+        .url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres storage requires [database] url"))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .connect(url)
+        .await?;
+    migrate_pg::run_pg_migrations(&pool).await?;
+    tracing::info!(
+        "Database initialized: postgres (pool={})",
+        config.database.max_connections
+    );
+    Ok(DbPool::Pg(pool))
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn init_postgres(_config: &Config) -> anyhow::Result<DbPool> {
+    Err(anyhow::anyhow!(
+        "this binary was compiled without the `postgres` feature"
+    ))
+}
+
+async fn init_sqlite(config: &Config) -> anyhow::Result<SqlitePool> {
+    let db_file = sqlite_file(&config.database);
     // Ensure data directory exists
-    if let Some(parent) = std::path::Path::new(&config.database.path).parent() {
+    if let Some(parent) = std::path::Path::new(&db_file).parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let pool = SqlitePoolOptions::new()
         .max_connections(config.database.max_connections)
-        .connect(&format!("sqlite:{}?mode=rwc", config.database.path))
+        .connect(&format!("sqlite:{db_file}?mode=rwc"))
         .await?;
 
     // ── Performance & reliability PRAGMAs ──
@@ -62,22 +253,24 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
 }
 
 /// Read one Manager-local fact from `manager_meta`.
-pub async fn manager_meta_get(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
-    Ok(
-        sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = ?")
-            .bind(key)
-            .fetch_optional(pool)
-            .await?,
+pub async fn manager_meta_get(pool: &DbPool, key: &str) -> anyhow::Result<Option<String>> {
+    Ok(crate::store::exec::fetch_optional(
+        pool,
+        "SELECT value FROM manager_meta WHERE key = ?",
+        &[key.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Persist one Manager-local fact in `manager_meta` (upsert).
-pub async fn manager_meta_set(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await?;
+pub async fn manager_meta_set(pool: &DbPool, key: &str, value: &str) -> anyhow::Result<()> {
+    crate::store::exec::execute(
+        pool,
+        "INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        &[key.into(), value.into()],
+    )
+    .await?;
     Ok(())
 }
 
@@ -91,7 +284,7 @@ pub const META_KEY_MANAGER_INSTANCE_ID: &str = "manager_instance_id";
 /// Multiple Managers on different devices are independent control planes (the
 /// SQLite database is local to one device); this identity binds ownership and
 /// log/audit correlation — it is not an HA coordinator.
-pub async fn ensure_manager_instance_id(pool: &SqlitePool) -> anyhow::Result<String> {
+pub async fn ensure_manager_instance_id(pool: &DbPool) -> anyhow::Result<String> {
     const ENV_VAR: &str = "BUZ_MANAGER_INSTANCE_ID";
     match shared::instance::from_env(ENV_VAR) {
         Ok(Some(id)) => {
@@ -272,7 +465,170 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
     }
 }
 
-pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Result<()> {
+/// Ordered schema migrations. All v1.x schema lives in version 1 as one body:
+/// before versioning existed, every startup replayed the whole baseline
+/// (`001`–`003` DDL + the additive/`pragma_table_info` chain + data
+/// migrations), so deployed databases already hold all of it and each
+/// statement is idempotent by construction.
+///
+/// To add a migration: append a version, add its body to `MIGRATIONS`
+/// dispatch below, and **never edit or reorder an existing entry** — its
+/// version is already recorded on deployed databases, so an edited body would
+/// silently never run. New bodies need not be idempotent: they run once.
+const MIGRATIONS: &[i64] = &[1, 2, 3];
+
+/// Versioned migration runner: applies each migration at most once per
+/// database, recording it in `schema_migrations`.
+///
+/// Only single-writer deployment is assumed today: a concurrent second Manager
+/// on the same SQLite file could interleave a migration. Serialising that is
+/// the job of the storage switch (Postgres advisory lock); with SQLite `WAL`
+/// and one Manager there is no second writer.
+pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_migrations")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    for version in MIGRATIONS {
+        if applied.contains(version) {
+            tracing::debug!(version, "migration already applied — skipped");
+            continue;
+        }
+        tracing::info!(version, "applying migration");
+        apply_migration(pool, jwt_secret, *version).await?;
+        sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
+            .bind(version)
+            .execute(pool)
+            .await?;
+    }
+
+    tracing::info!("Database migrations applied successfully");
+    Ok(())
+}
+
+async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> anyhow::Result<()> {
+    match version {
+        1 => apply_legacy_baseline(pool, jwt_secret).await,
+        2 => apply_v2_yaml_source(pool).await,
+        3 => apply_v3_insertion_order_seq(pool).await,
+        other => anyhow::bail!("unknown migration version {other}"),
+    }
+}
+
+/// v2: the canonical YAML text moves into the database. The file under
+/// `pipeline.yaml_scan_dir` stops being authoritative in this release (the
+/// directory scan is retired); `yaml_path` keeps only the origin basename for
+/// display and export, and `yaml_source` holds the exact bytes the API
+/// validated.
+async fn apply_v2_yaml_source(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(pool, "pipelines", "yaml_source TEXT NOT NULL DEFAULT ''").await;
+    // Origin basenames identify a stored definition. The API pre-checks before
+    // writing; this index makes two concurrent creates converge on exactly one
+    // winner instead of two rows sharing a definition name.
+    //
+    // A pre-versioning database that already holds duplicates cannot take the
+    // index. Name them, so the operator can fix the rows instead of reading a
+    // bare constraint error.
+    let duplicates: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT yaml_path, COUNT(*) FROM pipelines
+         WHERE source = 'yaml' AND yaml_path IS NOT NULL AND yaml_path != ''
+         GROUP BY yaml_path HAVING COUNT(*) > 1",
+    )
+    .fetch_all(pool)
+    .await?;
+    if !duplicates.is_empty() {
+        let list = duplicates
+            .iter()
+            .map(|(path, count)| format!("{path} ×{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "cannot enforce one pipeline per definition name — duplicate yaml_path rows: {list}. \
+             Delete or re-save the extra pipelines, then restart."
+        );
+    }
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_yaml_path
+         ON pipelines(yaml_path) WHERE source = 'yaml'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v3: explicit insertion-order sequences for `jobs` and `audit_logs`.
+///
+/// Business logic picks "the newest pending job" and orders FIFO candidates by
+/// `rowid` — an SQLite-only implicit column with no Postgres equivalent. Those
+/// orderings move to an explicit `seq` maintained by a trigger, so the queries
+/// become dialect-neutral (`ORDER BY seq`).
+///
+/// Postgres mapping (storage switch): `seq BIGINT GENERATED ALWAYS AS
+/// IDENTITY` replaces both the column default and the trigger.
+///
+/// Trigger internals use `NEW.id` (both tables are `id TEXT PRIMARY KEY`), so
+/// no `rowid` dependency enters the schema objects either. The `MAX(seq)`
+/// subquery is index-backed (`idx_jobs_seq` / `idx_audit_logs_seq`); SQLite's
+/// single-writer rule makes the read-increment-write inside the trigger safe.
+async fn apply_v3_insertion_order_seq(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(pool, "jobs", "seq INTEGER NOT NULL DEFAULT 0").await;
+    add_column_if_missing(pool, "audit_logs", "seq INTEGER NOT NULL DEFAULT 0").await;
+
+    // Backfill from rowid: it encoded insertion order until now. UPDATE does
+    // not fire the INSERT triggers below, so order of operations is free.
+    sqlx::query("UPDATE jobs SET seq = rowid WHERE seq = 0")
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE audit_logs SET seq = rowid WHERE seq = 0")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_seq ON jobs(seq)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_logs_seq ON audit_logs(seq)")
+        .execute(pool)
+        .await?;
+
+    // WHEN NEW.seq = 0 leaves explicitly-numbered inserts (tests, future
+    // import tools) untouched.
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_jobs_insert_seq
+         AFTER INSERT ON jobs
+         WHEN NEW.seq = 0
+         BEGIN
+             UPDATE jobs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM jobs)
+             WHERE id = NEW.id;
+         END",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_audit_logs_insert_seq
+         AFTER INSERT ON audit_logs
+         WHEN NEW.seq = 0
+         BEGIN
+             UPDATE audit_logs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_logs)
+             WHERE id = NEW.id;
+         END",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The 1.x baseline, preserved verbatim from the pre-versioning runner.
+async fn apply_legacy_baseline(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Result<()> {
     // NOTE: the per-host team whitelist (sandbox_host_teams) is retired before
     // it ever shipped — tenant policy lives on runner team bindings. Dev
     // databases that still hold the table are migrated and the table dropped
@@ -1484,7 +1840,6 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     .execute(pool)
     .await;
 
-    tracing::info!("Database migrations applied successfully");
     Ok(())
 }
 

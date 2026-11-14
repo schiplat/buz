@@ -8,11 +8,9 @@ use serde::Deserialize;
 
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::{LogChunk, LogLevel};
+use shared::protocol::LogChunk;
 use shared::rbac::Perm;
-use sqlx::Row;
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{self, pipeline_team_id};
@@ -20,17 +18,13 @@ use crate::services::log_broadcast::LogBroadcaster;
 use crate::state::AppState;
 
 async fn assert_job_team_view(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     auth: &AuthUser,
     job_id: &str,
 ) -> Result<(), AppError> {
-    let row = sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_optional(pool)
+    let (pipeline_id, debug_unredact) = crate::store::logs::job_view_facts(&state.pool, job_id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    let pipeline_id: String = row.get(0);
-    let debug_unredact: i64 = row.get(1);
 
     // Debug (no-redaction) jobs contain plaintext secrets in the logs; only
     // platform admins may read them, regardless of team membership.
@@ -41,7 +35,7 @@ async fn assert_job_team_view(
         ));
     }
 
-    let team_id = pipeline_team_id(pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)
 }
 
@@ -54,29 +48,25 @@ pub async fn upload(
     // Runner↔job binding: log chunks are accepted only for jobs poll()
     // dispatched to this runner — otherwise any runner JWT could forge any
     // job's logs.
-    let row = sqlx::query("SELECT runner_id FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_optional(&state.pool)
+    let owner = crate::store::logs::job_runner_id(&state.pool, &job_id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    let owner: Option<String> = row.get(0);
+    // `owner` is `Option<String>`: a job that exists but was never dispatched
+    // has a NULL runner_id, and no runner may write to it.
     if owner.as_deref() != Some(auth.runner_id.as_str()) {
         return Err(AppError::Forbidden(
             "job is not assigned to this runner".into(),
         ));
     }
 
-    sqlx::query(
-        "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
-         VALUES (?, ?, ?, ?, ?, 1, ?)",
+    crate::store::logs::insert_chunk(
+        &state.pool,
+        &job_id,
+        chunk.chunk_index,
+        chunk.step_order,
+        &chunk.content,
+        chunk.level.as_ref().map(|l| l.as_str()),
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(&job_id)
-    .bind(chunk.chunk_index)
-    .bind(chunk.step_order)
-    .bind(&chunk.content)
-    .bind(chunk.level.map(|l| l.as_str()))
-    .execute(&state.pool)
     .await?;
 
     // Broadcast the log chunk to connected WebSocket clients
@@ -121,7 +111,7 @@ pub async fn get_logs(
     Path(job_id): Path<String>,
     Query(page): Query<LogsPageQuery>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    assert_job_team_view(&state.pool, &auth, &job_id).await?;
+    assert_job_team_view(&state, &auth, &job_id).await?;
 
     let limit = page.limit.map(|l| l.clamp(1, 10_000));
     let offset = page.offset.unwrap_or(0).max(0);
@@ -140,59 +130,20 @@ pub async fn get_logs(
         None => None,
     };
 
-    let rows = if let Some(window) = window {
-        let mut rows = sqlx::query(
-            "SELECT chunk_index, step_order, log_content, level, created_at
-             FROM job_logs WHERE job_id = ?
-             AND (? IS NULL OR step_order < ? OR (step_order = ? AND chunk_index < ?))
-             ORDER BY step_order DESC, chunk_index DESC
-             LIMIT ?",
+    let logs = if let Some(window) = window {
+        crate::store::logs::read_windowed(
+            &state.pool,
+            &job_id,
+            page.before_step,
+            page.before_chunk,
+            window,
         )
-        .bind(&job_id)
-        .bind(page.before_step)
-        .bind(page.before_step.unwrap_or(0))
-        .bind(page.before_step.unwrap_or(0))
-        .bind(page.before_chunk.unwrap_or(0))
-        .bind(window)
-        .fetch_all(&state.pool)
-        .await?;
-        rows.reverse();
-        rows
+        .await?
     } else if let Some(limit) = limit {
-        sqlx::query(
-            "SELECT chunk_index, step_order, log_content, level, created_at
-             FROM job_logs WHERE job_id = ?
-             ORDER BY step_order, chunk_index
-             LIMIT ? OFFSET ?",
-        )
-        .bind(&job_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await?
+        crate::store::logs::read_page(&state.pool, &job_id, limit, offset).await?
     } else {
-        sqlx::query(
-            "SELECT chunk_index, step_order, log_content, level, created_at
-             FROM job_logs WHERE job_id = ?
-             ORDER BY step_order, chunk_index",
-        )
-        .bind(&job_id)
-        .fetch_all(&state.pool)
-        .await?
+        crate::store::logs::read_all(&state.pool, &job_id).await?
     };
-
-    let logs: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "chunk_index": r.get::<i64, _>(0),
-                "step_order": r.get::<i64, _>(1),
-                "content": r.get::<String, _>(2),
-                "level": LogLevel::parse(r.get::<Option<String>, _>(3).as_deref()),
-                "created_at": r.get::<Option<String>, _>(4),
-            })
-        })
-        .collect();
 
     Ok(Json(ApiResponse::success(logs)))
 }
@@ -217,7 +168,7 @@ async fn auth_user_from_query_token(
     if token_str.is_empty() {
         return Err(AppError::AuthFailed("invalid or missing token".into()));
     }
-    rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token_str).await
+    rbac::authenticate_user_token(&state.db(), &state.config.auth.jwt_secret, token_str).await
 }
 
 pub async fn stream_logs(
@@ -227,7 +178,7 @@ pub async fn stream_logs(
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth = auth_user_from_query_token(&state, query.token.as_deref()).await?;
-    assert_job_team_view(&state.pool, &auth, &job_id).await?;
+    assert_job_team_view(&state, &auth, &job_id).await?;
 
     let broadcast = state.log_broadcast.clone();
     Ok(ws.on_upgrade(move |socket| handle_stream(socket, broadcast, job_id)))
@@ -306,7 +257,7 @@ pub async fn pipeline_stream(
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth = auth_user_from_query_token(&state, query.token.as_deref()).await?;
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let broadcast = state.log_broadcast.clone();

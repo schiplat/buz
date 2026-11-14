@@ -77,7 +77,9 @@ async fn create_runner_record_defaults_execution_mode_to_host() {
         ssh_host_key_policy: None,
         claim_strategy: None,
     };
-    let created = create_runner_record(&pool, &req).await.unwrap();
+    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
+        .await
+        .unwrap();
     let mode: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
         .bind(created.id)
         .fetch_one(&pool)
@@ -105,10 +107,11 @@ async fn create_runner_record_rejects_non_host_execution_mode() {
         ssh_host_key_policy: None,
         claim_strategy: None,
     };
-    let error = match create_runner_record(&pool, &req).await {
-        Ok(_) => panic!("Container mode must wait for reported host capability"),
-        Err(error) => error,
-    };
+    let error =
+        match create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await {
+            Ok(_) => panic!("Container mode must wait for reported host capability"),
+            Err(error) => error,
+        };
     assert!(error.to_string().contains("start in Host mode"));
 }
 
@@ -135,7 +138,7 @@ async fn create_runner_record_binds_valid_team() {
         claim_strategy: None,
     };
 
-    let created = create_runner_record(&pool, &req)
+    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
         .await
         .expect("create bound runner");
     let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
@@ -165,10 +168,11 @@ async fn create_runner_record_rejects_unknown_team() {
         claim_strategy: None,
     };
 
-    let error = match create_runner_record(&pool, &req).await {
-        Ok(_) => panic!("unknown team must be rejected"),
-        Err(error) => error,
-    };
+    let error =
+        match create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await {
+            Ok(_) => panic!("unknown team must be rejected"),
+            Err(error) => error,
+        };
     assert!(error.to_string().contains("does not exist"));
 }
 
@@ -191,7 +195,9 @@ async fn create_runner_record_returns_register_token() {
         claim_strategy: None,
     };
 
-    let created = create_runner_record(&pool, &req).await.expect("create");
+    let created = create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
+        .await
+        .expect("create");
     assert_eq!(created.name, "cli-runner-1");
     assert!(!created.register_token.is_empty());
     assert_eq!(created.max_concurrent_jobs, 1);
@@ -232,10 +238,11 @@ async fn create_runner_record_rejects_duplicate_name() {
         claim_strategy: None,
     };
 
-    create_runner_record(&pool, &req)
+    create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req)
         .await
         .expect("first create");
-    let second = create_runner_record(&pool, &req).await;
+    let second =
+        create_runner_record(&manager::store::exec::DbPool::from_sqlite(&pool), &req).await;
     assert!(
         second.is_err(),
         "duplicate name must fail on UNIQUE constraint"

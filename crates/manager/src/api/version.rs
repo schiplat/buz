@@ -5,12 +5,10 @@ use axum::{
 };
 use serde::Deserialize;
 use shared::version::{PRODUCT_NAME, VERSION};
-use sqlx::Row;
-use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use crate::state::AppState;
+use crate::store::health::{db_probe, jobs_backlog};
 
 /// Public plugin-marketplace linked from the Dashboard's YAML editor when
 /// `marketplace_url` is not set in manager.toml.
@@ -61,35 +59,6 @@ pub struct HealthQuery {
     pub readiness: Option<bool>,
 }
 
-/// Snapshot of non-terminal job counts — an early warning for scheduling
-/// backpressure or a stuck queue.
-async fn jobs_backlog(pool: &sqlx::SqlitePool) -> serde_json::Value {
-    let rows = sqlx::query(
-        "SELECT status, COUNT(*) AS cnt FROM jobs
-         WHERE status IN ('pending', 'running', 'queued', 'waiting_approval')
-         GROUP BY status",
-    )
-    .fetch_all(pool)
-    .await;
-
-    let counts: HashMap<String, i64> = match rows {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|r| (r.get::<String, _>(0), r.get::<i64, _>(1)))
-            .collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "health: failed to sample job backlog");
-            HashMap::new()
-        }
-    };
-    serde_json::json!({
-        "pending": counts.get("pending").copied().unwrap_or(0),
-        "running": counts.get("running").copied().unwrap_or(0),
-        "queued": counts.get("queued").copied().unwrap_or(0),
-        "waiting_approval": counts.get("waiting_approval").copied().unwrap_or(0),
-    })
-}
-
 /// Public health + version probe (no auth). Liveness semantics by default
 /// (HTTP 200 while the process responds); pass `?readiness=true` for a
 /// readiness probe that returns 503 when a dependency is unavailable.
@@ -111,12 +80,9 @@ pub async fn health(
     Query(q): Query<HealthQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // ── Database probe (SELECT 1 + latency) ──
-    let probe_start = Instant::now();
-    let db_probe = sqlx::query_scalar::<_, i64>("SELECT 1")
-        .fetch_one(&state.pool)
-        .await;
-    let latency_ms = probe_start.elapsed().as_secs_f64() * 1000.0;
-    let db_ok = db_probe.is_ok();
+    let latency = db_probe(&state.pool).await;
+    let latency_ms = latency.as_ref().copied().unwrap_or(0.0);
+    let db_ok = latency.is_ok();
 
     let (pool_max, pool_idle, pool_in_use) = if db_ok {
         let max = state.pool.size();
@@ -139,7 +105,7 @@ pub async fn health(
     let status = if db_ok { "ok" } else { "degraded" };
     // DB override (admin UI) wins over the manager.toml default.
     let marketplace_override = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_MARKETPLACE_URL,
         &state.config.marketplace_url,
     )
@@ -155,7 +121,7 @@ pub async fn health(
     // default now points beside the plugin directory, so a fresh deployment
     // (nothing cloned yet) stays honest about having no review ledger.
     let manifest_path = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST,
         &state.config.plugin_index.reviewed_manifest,
     )
@@ -165,7 +131,7 @@ pub async fn health(
     let plugin_review = serde_json::json!({
         "manifest_configured": manifest_configured,
         "require_reviewed": crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED,
             &state.config.plugin_index.require_reviewed.to_string(),
         )

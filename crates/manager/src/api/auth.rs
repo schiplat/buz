@@ -5,7 +5,6 @@ use shared::protocol::response::ApiResponse;
 use shared::protocol::{
     ChangePasswordRequest, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatusResponse,
 };
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent, Resource};
@@ -16,9 +15,7 @@ use crate::state::AppState;
 pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<SetupStatusResponse>>, AppError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.pool)
-        .await?;
+    let count = crate::store::auth::count_users(&state.pool).await?;
     Ok(Json(ApiResponse::success(SetupStatusResponse {
         needs_setup: count == 0,
     })))
@@ -57,11 +54,12 @@ pub async fn setup(
     validate_setup(&req)?;
     let username = req.username.trim().to_string();
 
-    let mut tx = state.pool.begin().await?;
+    // BEGIN IMMEDIATE: setup is a one-shot write whose re-check must not be
+    // raced. The dispatcher's DbTx owns the dialect token.
+    let db = state.db();
+    let mut tx = db.begin_immediate().await?;
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&mut *tx)
-        .await?;
+    let count = crate::store::auth::count_users_tx(&mut tx).await?;
     if count > 0 {
         return Err(AppError::Conflict(
             "setup already completed — use login".into(),
@@ -70,33 +68,15 @@ pub async fn setup(
 
     let user_id = Uuid::new_v4().to_string();
     let hash = hash_password(&req.password).map_err(AppError::Internal)?;
-    sqlx::query(
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
-         VALUES (?, ?, ?, ?, 1, 1, 1)",
-    )
-    .bind(&user_id)
-    .bind(&username)
-    .bind(&hash)
-    .bind(&username)
-    .execute(&mut *tx)
-    .await?;
+    crate::store::auth::insert_first_admin_tx(&mut tx, &user_id, &username, &hash).await?;
 
     // Attach to default team (created by bootstrap)
-    let team_id: Option<String> = sqlx::query_scalar("SELECT id FROM teams WHERE slug = 'default'")
-        .fetch_optional(&mut *tx)
-        .await?;
-    if let Some(tid) = team_id {
-        sqlx::query(
-            "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
-        )
-        .bind(&tid)
-        .bind(&user_id)
-        .execute(&mut *tx)
-        .await?;
+    if let Some(tid) = crate::store::auth::default_team_id_tx(&mut tx).await? {
+        crate::store::auth::attach_team_owner_tx(&mut tx, &tid, &user_id).await?;
     }
 
     // No actor exists yet: the first admin is a system-provisioned account.
-    audit::record_in(
+    audit::record_in_tx(
         &mut tx,
         AuditEvent::system(Action::AuthSetup)
             .on(Resource::user(&user_id, &username))
@@ -127,9 +107,7 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<ApiResponse<LoginResponse>>, AppError> {
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.pool)
-        .await?;
+    let user_count = crate::store::auth::count_users(&state.pool).await?;
     if user_count == 0 {
         return Err(AppError::AuthFailed(
             "instance not initialized — open /setup to create the first admin".into(),
@@ -141,37 +119,26 @@ pub async fn login(
         return Err(AppError::AuthFailed("invalid username or password".into()));
     }
 
-    let row = sqlx::query(
-        "SELECT id, username, password_hash, is_platform_admin, is_active, is_ops
-         FROM users WHERE username = ?",
-    )
-    .bind(username)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::AuthFailed("invalid username or password".into()))?;
+    let user = crate::store::auth::find_login_by_username(&state.pool, username)
+        .await?
+        .ok_or_else(|| AppError::AuthFailed("invalid username or password".into()))?;
 
-    let is_active: i64 = row.get(4);
-    if is_active == 0 {
+    if !user.is_active {
         return Err(AppError::AuthFailed("user is disabled".into()));
     }
 
-    let password_hash: String = row.get(2);
-    if !verify_password(&req.password, &password_hash) {
+    if !verify_password(&req.password, &user.password_hash) {
         tracing::warn!(
             username = %username,
-            hash_prefix = %password_hash.chars().take(20).collect::<String>(),
+            hash_prefix = %user.password_hash.chars().take(20).collect::<String>(),
             "login rejected: password verify failed"
         );
         return Err(AppError::AuthFailed("invalid username or password".into()));
     }
 
-    let user_id: String = row.get(0);
-    let username: String = row.get(1);
-    let is_platform_admin: i64 = row.get(3);
-    let is_ops: i64 = row.get(5);
-    let role = if is_platform_admin != 0 {
+    let role = if user.is_platform_admin {
         Role::Admin
-    } else if is_ops != 0 {
+    } else if user.is_ops {
         Role::Ops
     } else {
         Role::User
@@ -179,25 +146,25 @@ pub async fn login(
 
     let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
     let token = token_mgr
-        .create_token(&user_id, role, state.config.auth.jwt_ttl_hours)
+        .create_token(&user.id, role, state.config.auth.jwt_ttl_hours)
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
     audit::record(
         &state.pool,
-        AuditEvent::actor(&user_id, &username, Action::AuthLogin)
-            .on(Resource::user(&user_id, &username))
+        AuditEvent::actor(&user.id, &user.username, Action::AuthLogin)
+            .on(Resource::user(&user.id, &user.username))
             .after(Some(serde_json::json!({
-                "username": username.clone(),
-                "is_platform_admin": is_platform_admin != 0,
+                "username": user.username.clone(),
+                "is_platform_admin": user.is_platform_admin,
             }))),
     )
     .await;
 
     Ok(Json(ApiResponse::success(LoginResponse {
         token,
-        user_id: Some(user_id),
-        username: Some(username),
-        is_platform_admin: Some(is_platform_admin != 0),
+        user_id: Some(user.id),
+        username: Some(user.username),
+        is_platform_admin: Some(user.is_platform_admin),
     })))
 }
 
@@ -260,13 +227,10 @@ pub async fn change_password(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     validate_change_password(&req)?;
 
-    let row = sqlx::query("SELECT password_hash FROM users WHERE id = ?")
-        .bind(&auth.id)
-        .fetch_optional(&state.pool)
+    let password_hash = crate::store::auth::password_hash_of(&state.pool, &auth.id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
-    let password_hash: String = row.get(0);
     if !verify_password(&req.current_password, &password_hash) {
         return Err(AppError::ValidationFailed(
             "current password is incorrect".into(),
@@ -274,11 +238,7 @@ pub async fn change_password(
     }
 
     let new_hash = hash_password(&req.new_password).map_err(AppError::Internal)?;
-    sqlx::query("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(&new_hash)
-        .bind(&auth.id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::auth::update_password(&state.pool, &auth.id, &new_hash).await?;
     // The hash never enters the record; the event alone is the signal.
     audit::record(
         &state.pool,

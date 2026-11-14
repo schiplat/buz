@@ -11,12 +11,14 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
+use shared::error::AppError;
 use shared::sandbox_config::{
     apply_profile_exclusions, canonical_json, merge_missing_profiles, merge_missing_tiers,
     validate_default_profiles, validate_default_tiers, ResourceProfile, SandboxHostDocument,
     TierBackend,
 };
-use sqlx::{Row, SqlitePool};
+
+use crate::store::exec::DbPool;
 
 /// Stored in `platform_settings`; deliberately not part of the admin settings
 /// key registry — it is ops-owned and edited from the Sandbox Fleet page.
@@ -41,12 +43,8 @@ pub fn parse_defaults(raw: &str) -> Result<BTreeMap<String, TierBackend>, Vec<St
     }
 }
 
-pub async fn load(pool: &SqlitePool) -> Result<BTreeMap<String, TierBackend>, sqlx::Error> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT value FROM platform_settings WHERE key = ?")
-            .bind(SETTING_KEY)
-            .fetch_optional(pool)
-            .await?;
+pub async fn load(pool: &DbPool) -> Result<BTreeMap<String, TierBackend>, AppError> {
+    let raw = crate::store::platform_settings::get(pool, SETTING_KEY).await?;
     Ok(raw
         .as_deref()
         .and_then(|raw| parse_defaults(raw).ok())
@@ -54,7 +52,7 @@ pub async fn load(pool: &SqlitePool) -> Result<BTreeMap<String, TierBackend>, sq
 }
 
 pub async fn save(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tiers: &BTreeMap<String, TierBackend>,
     updated_by: &str,
 ) -> anyhow::Result<()> {
@@ -63,17 +61,9 @@ pub async fn save(
         anyhow::bail!(problems.join("; "));
     }
     let value = serde_json::to_string(tiers)?;
-    sqlx::query(
-        "INSERT INTO platform_settings (key, value, updated_by, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-           updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-    )
-    .bind(SETTING_KEY)
-    .bind(&value)
-    .bind(updated_by)
-    .execute(pool)
-    .await?;
+    crate::store::platform_settings::upsert(pool, SETTING_KEY, &value, updated_by)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 
@@ -105,7 +95,7 @@ pub struct AllDefaults {
     pub max_slots: i64,
 }
 
-pub async fn load_all_defaults(pool: &SqlitePool) -> Result<AllDefaults, sqlx::Error> {
+pub async fn load_all_defaults(pool: &DbPool) -> Result<AllDefaults, AppError> {
     let tiers = load(pool).await?;
     let profiles = load_default_profiles(pool).await?;
     let network = load_default_network(pool).await?;
@@ -119,7 +109,7 @@ pub async fn load_all_defaults(pool: &SqlitePool) -> Result<AllDefaults, sqlx::E
 }
 
 pub async fn save_all(
-    pool: &SqlitePool,
+    pool: &DbPool,
     defaults: &AllDefaults,
     updated_by: &str,
 ) -> anyhow::Result<()> {
@@ -136,12 +126,8 @@ pub const NETWORK_SETTING_KEY: &str = "sandbox_default_network";
 
 /// The stored default docker network, or `bridge` when nothing is saved yet —
 /// host documents may leave the network empty to inherit this floor.
-pub async fn load_default_network(pool: &SqlitePool) -> Result<String, sqlx::Error> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT value FROM platform_settings WHERE key = ?")
-            .bind(NETWORK_SETTING_KEY)
-            .fetch_optional(pool)
-            .await?;
+pub async fn load_default_network(pool: &DbPool) -> Result<String, AppError> {
+    let raw = crate::store::platform_settings::get(pool, NETWORK_SETTING_KEY).await?;
     let network = raw.unwrap_or_default();
     if network.trim().is_empty() {
         Ok("bridge".into())
@@ -151,7 +137,7 @@ pub async fn load_default_network(pool: &SqlitePool) -> Result<String, sqlx::Err
 }
 
 pub async fn save_default_network(
-    pool: &SqlitePool,
+    pool: &DbPool,
     network: &str,
     updated_by: &str,
 ) -> anyhow::Result<()> {
@@ -159,17 +145,9 @@ pub async fn save_default_network(
     if network.is_empty() {
         anyhow::bail!("network must not be empty (use 'bridge' unless configured)");
     }
-    sqlx::query(
-        "INSERT INTO platform_settings (key, value, updated_by, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-           updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-    )
-    .bind(NETWORK_SETTING_KEY)
-    .bind(network)
-    .bind(updated_by)
-    .execute(pool)
-    .await?;
+    crate::store::platform_settings::upsert(pool, NETWORK_SETTING_KEY, network, updated_by)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 
@@ -178,12 +156,8 @@ pub async fn save_default_network(
 pub const SLOTS_SETTING_KEY: &str = "sandbox_default_max_slots";
 
 /// 0 = unlimited; hosts with an explicit budget (>0) keep their own.
-pub async fn load_default_max_slots(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT value FROM platform_settings WHERE key = ?")
-            .bind(SLOTS_SETTING_KEY)
-            .fetch_optional(pool)
-            .await?;
+pub async fn load_default_max_slots(pool: &DbPool) -> Result<i64, AppError> {
+    let raw = crate::store::platform_settings::get(pool, SLOTS_SETTING_KEY).await?;
     Ok(raw
         .as_deref()
         .and_then(|raw| raw.parse::<i64>().ok())
@@ -192,24 +166,21 @@ pub async fn load_default_max_slots(pool: &SqlitePool) -> Result<i64, sqlx::Erro
 }
 
 pub async fn save_default_max_slots(
-    pool: &SqlitePool,
+    pool: &DbPool,
     slots: i64,
     updated_by: &str,
 ) -> anyhow::Result<()> {
     if !(0..=10_000).contains(&slots) {
         anyhow::bail!("max slots must be between 0 and 10000 (0 = unlimited)");
     }
-    sqlx::query(
-        "INSERT INTO platform_settings (key, value, updated_by, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-           updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+    crate::store::platform_settings::upsert(
+        pool,
+        SLOTS_SETTING_KEY,
+        &slots.to_string(),
+        updated_by,
     )
-    .bind(SLOTS_SETTING_KEY)
-    .bind(slots.to_string())
-    .bind(updated_by)
-    .execute(pool)
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 
@@ -298,13 +269,9 @@ pub fn parse_default_profiles(raw: &str) -> Result<BTreeMap<String, ResourceProf
 
 /// The stored catalog, or the built-in floor when nothing is saved yet.
 pub async fn load_default_profiles(
-    pool: &SqlitePool,
-) -> Result<BTreeMap<String, ResourceProfile>, sqlx::Error> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT value FROM platform_settings WHERE key = ?")
-            .bind(PROFILES_SETTING_KEY)
-            .fetch_optional(pool)
-            .await?;
+    pool: &DbPool,
+) -> Result<BTreeMap<String, ResourceProfile>, AppError> {
+    let raw = crate::store::platform_settings::get(pool, PROFILES_SETTING_KEY).await?;
     Ok(catalog_from_stored(raw.as_deref()))
 }
 
@@ -318,7 +285,7 @@ pub fn catalog_from_stored(raw: Option<&str>) -> BTreeMap<String, ResourceProfil
 }
 
 pub async fn save_default_profiles(
-    pool: &SqlitePool,
+    pool: &DbPool,
     profiles: &BTreeMap<String, ResourceProfile>,
     updated_by: &str,
 ) -> anyhow::Result<()> {
@@ -327,50 +294,29 @@ pub async fn save_default_profiles(
         anyhow::bail!(problems.join("; "));
     }
     let value = serde_json::to_string(profiles)?;
-    sqlx::query(
-        "INSERT INTO platform_settings (key, value, updated_by, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-           updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-    )
-    .bind(PROFILES_SETTING_KEY)
-    .bind(&value)
-    .bind(updated_by)
-    .execute(pool)
-    .await?;
+    crate::store::platform_settings::upsert(pool, PROFILES_SETTING_KEY, &value, updated_by)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 
 /// Bump hosts whose effective document changes because default *profiles*
 /// changed. Hosts that define an affected profile themselves are untouched.
 pub async fn bump_hosts_for_defaults(
-    pool: &SqlitePool,
+    pool: &DbPool,
     old_tiers: &BTreeMap<String, TierBackend>,
     new_tiers: &BTreeMap<String, TierBackend>,
     old_profiles: &BTreeMap<String, ResourceProfile>,
     new_profiles: &BTreeMap<String, ResourceProfile>,
     old_network: &str,
     new_network: &str,
-) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT h.host_id, h.instance_id, h.desired_version, h.applied_version,
-                c.document AS desired_document
-         FROM sandbox_hosts h
-         LEFT JOIN sandbox_host_configs c
-           ON c.host_id = h.host_id AND c.instance_id = h.instance_id
-              AND c.version = h.desired_version",
-    )
-    .fetch_all(pool)
-    .await?;
+) -> Result<Vec<String>, AppError> {
+    let rows = crate::store::ops_sandbox::host_documents_for_bump(pool).await?;
 
     let mut bumped = Vec::new();
     for row in rows {
-        let host_id: String = row.get(0);
-        let instance_id: String = row.get(1);
-        let desired_version: i64 = row.get(2);
-        let applied_version: i64 = row.get(3);
-        let raw_document: Option<String> = row.get(4);
-        let document: SandboxHostDocument = raw_document
+        let document: SandboxHostDocument = row
+            .desired_document
             .as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or_default();
@@ -381,39 +327,27 @@ pub async fn bump_hosts_for_defaults(
             continue;
         }
 
-        let version = desired_version.max(applied_version) + 1;
+        let version = row.desired_version.max(row.applied_version) + 1;
         let json = serde_json::to_string(&canonical_json(&document))
-            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let sha = shared::sandbox_config::sha256_hex(json.as_bytes());
-        sqlx::query(
-            "INSERT OR IGNORE INTO sandbox_host_configs
-             (host_id, instance_id, version, document, document_sha256, created_by)
-             VALUES (?, ?, ?, ?, ?, 'platform-defaults')",
+        crate::store::ops_sandbox::bump_host_desired_version(
+            pool,
+            &row.host_id,
+            &row.instance_id,
+            version,
+            &json,
+            &sha,
         )
-        .bind(&host_id)
-        .bind(&instance_id)
-        .bind(version)
-        .bind(&json)
-        .bind(&sha)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "UPDATE sandbox_hosts SET desired_version = ?, updated_at = datetime('now')
-             WHERE host_id = ? AND instance_id = ?",
-        )
-        .bind(version)
-        .bind(&host_id)
-        .bind(&instance_id)
-        .execute(pool)
         .await?;
         tracing::debug!(
-            host = %host_id,
-            instance = %instance_id,
-            from = desired_version,
+            host = %row.host_id,
+            instance = %row.instance_id,
+            from = row.desired_version,
             to = version,
             "sandbox host bumped by a platform defaults change"
         );
-        bumped.push(format!("{host_id}/{instance_id}"));
+        bumped.push(format!("{}/{}", row.host_id, row.instance_id));
     }
     Ok(bumped)
 }

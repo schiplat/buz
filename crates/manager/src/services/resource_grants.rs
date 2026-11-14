@@ -8,7 +8,8 @@
 
 use shared::error::AppError;
 use shared::sandbox_config::DEFAULT_PROFILE;
-use sqlx::SqlitePool;
+
+use crate::store::exec::{self, DbPool};
 
 /// Normalize a requested profile: empty / `default` → `None` (implicit).
 pub fn requested_profile(raw: &str) -> Option<&str> {
@@ -18,20 +19,20 @@ pub fn requested_profile(raw: &str) -> Option<&str> {
 
 /// `Ok(())` when the team may run jobs under `profile`.
 pub async fn ensure_team_may_use(
-    pool: &SqlitePool,
+    pool: &DbPool,
     team_id: &str,
     profile: &str,
 ) -> Result<(), AppError> {
     let Some(profile) = requested_profile(profile) else {
         return Ok(());
     };
-    let granted: bool = sqlx::query_scalar(
+    let granted = exec::fetch_scalar_i64(
+        pool,
         "SELECT EXISTS(SELECT 1 FROM team_resource_grants WHERE team_id = ? AND profile = ?)",
+        &[team_id.into(), profile.into()],
     )
-    .bind(team_id)
-    .bind(profile)
-    .fetch_one(pool)
-    .await?;
+    .await?
+        != 0;
     if granted {
         Ok(())
     } else {

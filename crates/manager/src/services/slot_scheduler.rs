@@ -14,14 +14,13 @@
 //! a profile ops removed or excluded stops dispatching before the host has
 //! even applied the removal.
 
+use crate::services::sandbox_defaults::catalog_from_stored;
+use crate::store::exec::DbTx;
 use serde_json::Value;
 use shared::protocol::RunnerExecutionMode;
 use shared::sandbox_config::{
     apply_profile_exclusions, merge_missing_profiles, SandboxHostDocument, DEFAULT_PROFILE,
 };
-use sqlx::SqliteConnection;
-
-use crate::services::sandbox_defaults::catalog_from_stored;
 
 /// How a Runner walks its candidate queue when a job does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,8 +92,14 @@ pub enum Decision {
     NotEligible { reason: String },
 }
 
+/// The store returns `AppError`; the claim path's decision surface is
+/// `sqlx::Error`, so storage failures ride through as configuration errors.
+fn storage_error(e: shared::error::AppError) -> sqlx::Error {
+    sqlx::Error::Configuration(Box::new(e))
+}
+
 async fn load_document(
-    tx: &mut SqliteConnection,
+    tx: &mut DbTx<'_>,
     host_id: &str,
     instance_id: &str,
     version: i64,
@@ -102,15 +107,9 @@ async fn load_document(
     if version <= 0 {
         return Ok(None);
     }
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ? AND version = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let raw = crate::store::ops_sandbox::config_document_at_conn(tx, host_id, instance_id, version)
+        .await
+        .map_err(|e| sqlx::Error::Configuration(Box::new(e)))?;
     Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
 }
 
@@ -119,7 +118,7 @@ async fn load_document(
 /// enforced in the poll loop before this gate); the sandbox host serves
 /// whichever runner claims through it.
 pub async fn decide(
-    tx: &mut SqliteConnection,
+    tx: &mut DbTx<'_>,
     runner: &RunnerDispatchContext,
     profile: &str,
 ) -> Result<Decision, sqlx::Error> {
@@ -161,14 +160,13 @@ pub async fn decide(
         });
     }
 
-    let host: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT max_resource_slots, desired_version, applied_version
-         FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
+    let host = crate::store::ops_sandbox::host_slot_facts(
+        tx,
+        &runner.host_id,
+        &runner.sandbox_instance_id,
     )
-    .bind(&runner.host_id)
-    .bind(&runner.sandbox_instance_id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    .await
+    .map_err(storage_error)?;
     let Some((host_max_slots, desired_version, applied_version)) = host else {
         return Ok(if is_default {
             Decision::Dispatch {
@@ -186,12 +184,9 @@ pub async fn decide(
     };
     // Effective slot budget: the host's own cap when explicitly set (>0),
     // otherwise the platform default budget (0 = unlimited).
-    let platform_max_slots: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM platform_settings WHERE key = 'sandbox_default_max_slots'",
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .unwrap_or(0);
+    let platform_max_slots = crate::store::ops_sandbox::default_max_slots_setting(tx)
+        .await
+        .map_err(storage_error)?;
     let max_slots = if host_max_slots > 0 {
         host_max_slots
     } else {
@@ -224,11 +219,9 @@ pub async fn decide(
     // exactly what the sandboxd fetch layer serves. A bare host doc (only
     // overrides, catalog delivered by a defaults publish) therefore dispatches
     // catalog profiles without a manual host-document save.
-    let stored: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    let stored = crate::store::ops_sandbox::default_profiles_setting(tx)
+        .await
+        .map_err(storage_error)?;
     let catalog = catalog_from_stored(stored.as_deref());
 
     let name = if is_default { DEFAULT_PROFILE } else { profile };
@@ -265,17 +258,15 @@ pub async fn decide(
     // Staleness: the host lags the desired version for too long → stop
     // handing out non-default envelopes until it catches up.
     if !is_default && applied_version < desired_version {
-        let stale: bool = sqlx::query_scalar(
-            "SELECT COALESCE(datetime(created_at) <= datetime('now', ? || ' seconds'), 0)
-             FROM sandbox_host_configs WHERE host_id = ? AND instance_id = ? AND version = ?",
+        let stale = crate::store::ops_sandbox::config_row_is_stale(
+            tx,
+            runner.stale_after_seconds,
+            &runner.host_id,
+            &runner.sandbox_instance_id,
+            desired_version,
         )
-        .bind(format!("-{}", runner.stale_after_seconds.max(0)))
-        .bind(&runner.host_id)
-        .bind(&runner.sandbox_instance_id)
-        .bind(desired_version)
-        .fetch_optional(&mut *tx)
-        .await?
-        .unwrap_or(false);
+        .await
+        .map_err(storage_error)?;
         if stale {
             return Ok(Decision::NotEligible {
                 reason: format!(
@@ -295,13 +286,9 @@ pub async fn decide(
                 ),
             });
         }
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs
-             WHERE status = 'running' AND sandbox_instance_id = ?",
-        )
-        .bind(&key)
-        .fetch_one(&mut *tx)
-        .await?;
+        let used = crate::store::ops_sandbox::running_slots_used(tx, &key)
+            .await
+            .map_err(storage_error)?;
         if used + slots > max_slots {
             return Ok(Decision::WaitForCapacity {
                 reason: format!(

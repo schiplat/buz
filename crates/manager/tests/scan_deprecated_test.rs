@@ -85,7 +85,11 @@ async fn scan_reports_tasks_secrets_and_files() {
     )
     .unwrap();
 
-    let report = scan_pool(&pool, Some(&dir)).await;
+    let report = scan_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        Some(&dir),
+    )
+    .await;
 
     assert_eq!(report.task_findings.len(), 1, "one affected pipeline task");
     let task = &report.task_findings[0];
@@ -156,7 +160,11 @@ async fn scan_clean_install_is_empty() {
     )
     .unwrap();
 
-    let report = scan_pool(&pool, Some(&dir)).await;
+    let report = scan_pool(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        Some(&dir),
+    )
+    .await;
     assert!(report.is_empty(), "clean install must scan empty");
 
     std::fs::remove_dir_all(&dir).ok();

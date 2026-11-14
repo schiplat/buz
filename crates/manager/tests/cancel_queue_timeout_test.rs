@@ -74,7 +74,9 @@ async fn expired_queued_job_is_cancelled_with_snapshot_annotation() {
     )
     .await;
 
-    expire_queue_timeouts(&pool).await.expect("expiry runs");
+    expire_queue_timeouts(&manager::store::exec::DbPool::from_sqlite(&pool))
+        .await
+        .expect("expiry runs");
 
     let (status, end_time) = job_status(&pool, "expired").await;
     assert_eq!(status, "cancelled", "expired queued job cancelled");
@@ -97,7 +99,9 @@ async fn fresh_queued_job_survives() {
     )
     .await;
 
-    expire_queue_timeouts(&pool).await.expect("expiry runs");
+    expire_queue_timeouts(&manager::store::exec::DbPool::from_sqlite(&pool))
+        .await
+        .expect("expiry runs");
     assert_eq!(job_status(&pool, "fresh").await.0, "queued");
     assert!(
         snapshot(&pool, "fresh")
@@ -114,7 +118,9 @@ async fn default_window_applies_when_snapshot_has_no_timeout() {
     // Legacy/empty snapshot → the 1800s save-time default; 31 minutes past.
     seed_queued_job(&pool, "legacy", "{}", "-31 minutes").await;
 
-    expire_queue_timeouts(&pool).await.expect("expiry runs");
+    expire_queue_timeouts(&manager::store::exec::DbPool::from_sqlite(&pool))
+        .await
+        .expect("expiry runs");
     assert_eq!(
         job_status(&pool, "legacy").await.0,
         "cancelled",
@@ -139,7 +145,9 @@ async fn non_queued_statuses_are_never_touched() {
         .expect("seed job");
     }
 
-    expire_queue_timeouts(&pool).await.expect("expiry runs");
+    expire_queue_timeouts(&manager::store::exec::DbPool::from_sqlite(&pool))
+        .await
+        .expect("expiry runs");
     for (id, status) in [
         ("old-pending", "pending"),
         ("old-running", "running"),
@@ -161,30 +169,46 @@ async fn cron_lease_row_is_independent_of_dispatch_row() {
 
     // Two schedulers hold their own rows simultaneously.
     assert!(
-        try_acquire_lease(&pool, JOB_DISPATCH_LEASE_ID, a)
-            .await
-            .expect("dispatch lease"),
+        try_acquire_lease(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            JOB_DISPATCH_LEASE_ID,
+            a
+        )
+        .await
+        .expect("dispatch lease"),
         "dispatch lease row is free"
     );
     assert!(
-        try_acquire_lease(&pool, CRON_TRIGGER_LEASE_ID, b)
-            .await
-            .expect("cron lease"),
+        try_acquire_lease(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            CRON_TRIGGER_LEASE_ID,
+            b
+        )
+        .await
+        .expect("cron lease"),
         "cron lease row is independent of the dispatch row"
     );
 
     // Contention: a second instance cannot take a held cron lease...
     assert!(
-        !try_acquire_lease(&pool, CRON_TRIGGER_LEASE_ID, a)
-            .await
-            .expect("contended cron lease"),
+        !try_acquire_lease(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            CRON_TRIGGER_LEASE_ID,
+            a
+        )
+        .await
+        .expect("contended cron lease"),
         "held cron lease blocks another instance"
     );
     // ...nor may the cron holder touch the dispatch row.
     assert!(
-        !try_acquire_lease(&pool, JOB_DISPATCH_LEASE_ID, b)
-            .await
-            .expect("contended dispatch lease"),
+        !try_acquire_lease(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            JOB_DISPATCH_LEASE_ID,
+            b
+        )
+        .await
+        .expect("contended dispatch lease"),
         "held dispatch lease blocks the cron instance"
     );
 }

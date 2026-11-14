@@ -31,8 +31,11 @@ runner_register_token_ttl_hours = 24
 heartbeat_timeout_seconds = 90
 
 [pipeline]
+# Import/export location for the pipeline export/import CLI commands. Pipeline
+# definitions live in the database; this directory is never watched or written
+# by the server. The default plugin index is ./pipelines/plugins.
 yaml_scan_dir = "./pipelines"
-# Pipeline YAML files are scanned flat; the default plugin index is ./pipelines/plugins
+# Retired: accepted for compatibility, no longer used.
 yaml_scan_interval_seconds = 30
 
 # [plugin_index] — OPTIONAL: every key has a default, and all three are also

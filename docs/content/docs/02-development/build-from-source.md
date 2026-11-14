@@ -75,9 +75,9 @@ on one host (e.g. a Linux VM with `make build` artifacts copied over):
    admin.
 2. Confirm **Access -> Teams** has `default` (created at bootstrap).
 3. **Hosts**: register `dev-vm-1` with SSH key / password / agent.
-4. Copy `example/pipelines/ssh-verify.yml` (and optionally `smoke-test.yml`)
-   into the Manager `yaml_scan_dir`. Wait for the scanner (~interval) or
-   restart Manager.
+4. Import `example/pipelines/` with
+   `buz-manager pipeline import --dir example/pipelines` (add `--dry-run` to
+   validate only).
 5. Pipelines list should show the YAML pipelines under team `default`.
 6. Trigger **SSH Verify**; open Job Detail - steps + live logs stream.
 7. Runner labels in Manager UI must include `linux-x64` (match YAML

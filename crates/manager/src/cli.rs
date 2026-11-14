@@ -137,6 +137,30 @@ pub enum PipelineCommand {
         #[arg(long)]
         offline: bool,
     },
+
+    /// Write every stored pipeline definition to a directory as a read-only
+    /// snapshot (one `<origin>.yml` per pipeline). Intended to be committed to
+    /// a git repository for audit and review.
+    Export {
+        /// Target directory (created if missing)
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+        dir: std::path::PathBuf,
+    },
+
+    /// Store pipeline definitions from a directory of `*.yml` / `*.yaml` files.
+    ///
+    /// Files are matched by basename: `deploy.yml` updates the pipeline stored
+    /// under that origin or creates one. Import never deletes — a definition
+    /// absent from the directory is left untouched. A file that fails
+    /// validation is reported and the command exits non-zero.
+    Import {
+        /// Source directory of `*.yml` / `*.yaml`
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+        dir: std::path::PathBuf,
+        /// Validate and report without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Write a completion script for `buz-manager` to `out`.
@@ -269,11 +293,13 @@ pub async fn gen_runner_token(
     }
 
     let config = config::load_unchecked(Some(config_path))?;
-    let pool = db::init(&config).await?;
-    db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+    let db = db::init(&config).await?;
+    if let Some(sqlite) = db.as_sqlite() {
+        db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+    }
 
     // Verify the caller is a platform admin before touching the runners table.
-    rbac::verify_cli_admin_token(&pool, &config.auth.jwt_secret, admin_token)
+    rbac::verify_cli_admin_token(&db, &config.auth.jwt_secret, admin_token)
         .await
         .map_err(|e| anyhow::anyhow!("token verification failed: {e}"))?;
 
@@ -301,7 +327,7 @@ pub async fn gen_runner_token(
         claim_strategy: None,
     };
 
-    let created = match api::runners::create_runner_record(&pool, &req).await {
+    let created = match api::runners::create_runner_record(&db, &req).await {
         Ok(c) => c,
         Err(e)
             if e.to_string()

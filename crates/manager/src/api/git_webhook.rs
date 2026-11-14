@@ -14,13 +14,13 @@ use shared::git_webhook::{
     PROVIDER_GITEE, PROVIDER_GITHUB,
 };
 use shared::protocol::response::ApiResponse;
-use sqlx::Row;
 
-use super::trigger_events::{
-    claim_delivery, finalize_event, insert_event, release_claim, ClaimResult, TriggerEventWrite,
-};
 use crate::crypto;
 use crate::state::AppState;
+use crate::store::git_hooks::find_by_hook_key;
+use crate::store::trigger_events::{
+    claim_delivery, finalize_event, insert_event, release_claim, ClaimResult, TriggerEventWrite,
+};
 
 /// POST /hooks/git/:provider/:hook_key
 pub async fn handle(
@@ -32,44 +32,32 @@ pub async fn handle(
     let provider = normalize_provider(&provider_raw)
         .ok_or_else(|| AppError::NotFound(format!("unknown git provider '{provider_raw}'")))?;
 
-    let row = sqlx::query(
-        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment, h.event_filter
-         FROM pipeline_git_hooks h
-         JOIN pipelines p ON p.id = h.pipeline_id
-         WHERE h.hook_key = ?",
-    )
-    .bind(&hook_key)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("no git hook for key '{hook_key}'")))?;
+    let hook = find_by_hook_key(&state.db(), &hook_key).await?;
 
-    let pipeline_id: String = row.get(0);
-    let secret_ct: String = row.get(1);
-    let branch_filter: String = row.get(2);
-    let enabled: i64 = row.get(3);
-    let configured_provider: String = row.get(4);
-    let pipeline_name: String = row.get(5);
-    let is_active: i64 = row.get(6);
-    let environment: String = row.get(7);
-    let event_filter: String = row.get(8);
+    let pipeline_id = hook.pipeline_id;
+    let branch_filter = hook.branch_filter;
+    let pipeline_name = hook.pipeline_name;
+    let event_filter = hook.event_filter;
+    let environment = hook.environment;
 
-    if configured_provider != provider {
+    if hook.provider != provider {
         return Err(AppError::NotFound(format!(
-            "hook is configured for '{configured_provider}', not '{provider}'"
+            "hook is configured for '{}', not '{provider}'",
+            hook.provider
         )));
     }
-    if enabled == 0 {
+    if !hook.enabled {
         return Err(AppError::Conflict(format!(
             "git hook for pipeline '{pipeline_name}' is disabled"
         )));
     }
-    if is_active == 0 {
+    if !hook.pipeline_active {
         return Err(AppError::Conflict(format!(
             "pipeline '{pipeline_name}' is deactivated"
         )));
     }
 
-    let secret = crypto::decrypt(&secret_ct, &state.config.auth.jwt_secret)
+    let secret = crypto::decrypt(&hook.secret_ciphertext, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("git hook secret decrypt failed: {e}")))?;
 
     // Verify before parse side effects
@@ -87,7 +75,7 @@ pub async fn handle(
 
     if !verified {
         let _ = insert_event(
-            &state.pool,
+            &state.db(),
             &TriggerEventWrite {
                 pipeline_id: pipeline_id.clone(),
                 source: "git".into(),
@@ -133,7 +121,7 @@ pub async fn handle(
         "",
     );
 
-    match claim_delivery(&state.pool, &claim_row).await? {
+    match claim_delivery(&state.db(), &claim_row).await? {
         ClaimResult::Existing {
             event_id,
             job_id,
@@ -186,7 +174,7 @@ async fn finish_claimed(
     environment: &str,
 ) -> Result<axum::response::Response, AppError> {
     if event.is_ping {
-        finalize_event(&state.pool, event_id, "skipped", "ping", None).await?;
+        finalize_event(&state.db(), event_id, "skipped", "ping", None).await?;
         return Ok(json_status(
             StatusCode::OK,
             serde_json::json!({
@@ -204,7 +192,7 @@ async fn finish_claimed(
     // make the provider retry them.
     if !event.ignored_reason.is_empty() {
         let reason = event.ignored_reason.clone();
-        finalize_event(&state.pool, event_id, "skipped", &reason, None).await?;
+        finalize_event(&state.db(), event_id, "skipped", &reason, None).await?;
         return Ok(json_status(
             StatusCode::OK,
             serde_json::json!({
@@ -223,7 +211,7 @@ async fn finish_claimed(
     // firing on PRs after an upgrade.
     if !event_filter_allows(event_filter, &event.event_type) {
         finalize_event(
-            &state.pool,
+            &state.db(),
             event_id,
             "skipped",
             "event_not_subscribed",
@@ -245,7 +233,7 @@ async fn finish_claimed(
     }
 
     if has_skip_ci(&event.commit_message) {
-        finalize_event(&state.pool, event_id, "skipped", "skip_ci", None).await?;
+        finalize_event(&state.db(), event_id, "skipped", "skip_ci", None).await?;
         return Ok(json_status(
             StatusCode::ACCEPTED,
             serde_json::json!({
@@ -259,7 +247,7 @@ async fn finish_claimed(
     }
 
     if !event.branch.is_empty() && !branch_matches(branch_filter, &event.branch) {
-        finalize_event(&state.pool, event_id, "skipped", "branch_mismatch", None).await?;
+        finalize_event(&state.db(), event_id, "skipped", "branch_mismatch", None).await?;
         return Ok(json_status(
             StatusCode::ACCEPTED,
             serde_json::json!({
@@ -273,7 +261,7 @@ async fn finish_claimed(
         ));
     }
     if event.branch.is_empty() && !branch_filter.trim().is_empty() && event.tag.is_empty() {
-        finalize_event(&state.pool, event_id, "skipped", "branch_mismatch", None).await?;
+        finalize_event(&state.db(), event_id, "skipped", "branch_mismatch", None).await?;
         return Ok(json_status(
             StatusCode::ACCEPTED,
             serde_json::json!({
@@ -308,7 +296,7 @@ async fn finish_claimed(
                 .and_then(|d| d.get("job_id"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            finalize_event(&state.pool, event_id, "triggered", "", job_id.as_deref()).await?;
+            finalize_event(&state.db(), event_id, "triggered", "", job_id.as_deref()).await?;
             Ok(json_status(
                 StatusCode::OK,
                 serde_json::json!({
@@ -323,7 +311,7 @@ async fn finish_claimed(
         }
         Err(e) => {
             // Release claim so platform retries can create a job.
-            if let Err(rel) = release_claim(&state.pool, event_id).await {
+            if let Err(rel) = release_claim(&state.db(), event_id).await {
                 tracing::warn!(event_id = %event_id, "failed to release webhook claim: {rel}");
             }
             tracing::warn!(

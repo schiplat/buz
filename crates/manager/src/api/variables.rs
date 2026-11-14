@@ -5,7 +5,6 @@ use axum::{
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateVariableRequest, UpdateVariableRequest};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent};
@@ -16,31 +15,28 @@ pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows =
-        sqlx::query("SELECT id, name, value, updated_at FROM platform_vars ORDER BY name ASC")
-            .fetch_all(&state.pool)
-            .await?;
+    let rows = crate::store::variables::list_all(&state.db()).await?;
 
-    let var_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
-    let binds_map = super::github_sync::variable_binds_map(&state.pool, &var_ids).await?;
+    let var_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
+    let binds_map = super::github_sync::variable_binds_map(&state, &var_ids).await?;
 
     let vars: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|r| {
-            let id: String = r.get(0);
+        .map(|(id, name, value, updated_at)| {
             // Values are frequently credentials — only platform admins read
             // them; everyone else gets metadata (names drive autocomplete).
             let value = if auth.is_platform_admin {
-                serde_json::json!(r.get::<String, _>(2))
+                serde_json::json!(value)
             } else {
                 serde_json::Value::Null
             };
+            let github_binds = binds_map.get(&id).cloned().unwrap_or_default();
             serde_json::json!({
                 "id": id,
-                "name": r.get::<String, _>(1),
+                "name": name,
                 "value": value,
-                "updated_at": r.get::<Option<String>, _>(3),
-                "github_binds": binds_map.get(&id).cloned().unwrap_or_default(),
+                "updated_at": updated_at,
+                "github_binds": github_binds,
             })
         })
         .collect();
@@ -59,23 +55,17 @@ pub async fn create(
     }
 
     // Check for duplicate
-    let existing = sqlx::query("SELECT id FROM platform_vars WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(&state.pool)
-        .await?;
-    if existing.is_some() {
+    if crate::store::variables::find_id_by_name(&state.db(), &name)
+        .await?
+        .is_some()
+    {
         return Err(AppError::Conflict(format!(
             "variable '{name}' already exists"
         )));
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO platform_vars (id, name, value) VALUES (?, ?, ?)")
-        .bind(&id)
-        .bind(&name)
-        .bind(&req.value)
-        .execute(&state.pool)
-        .await?;
+    crate::store::variables::insert(&state.db(), &id, &name, &req.value).await?;
 
     tracing::info!("Variable created: {name} ({id})");
 
@@ -100,24 +90,23 @@ pub async fn get_one(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = sqlx::query("SELECT id, name, value, updated_at FROM platform_vars WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
+    let (row_id, name, stored_value, updated_at) =
+        crate::store::variables::find_by_id(&state.db(), &id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
 
     // Same confidentiality rule as list(): values are admin-only.
     let value = if auth.is_platform_admin {
-        serde_json::json!(r.get::<String, _>(2))
+        serde_json::json!(stored_value)
     } else {
         serde_json::Value::Null
     };
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
+        "id": row_id,
+        "name": name,
         "value": value,
-        "updated_at": r.get::<Option<String>, _>(3),
+        "updated_at": updated_at,
     }))))
 }
 
@@ -127,34 +116,28 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateVariableRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let existing = sqlx::query("SELECT name, value FROM platform_vars WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let (name, old_value) = crate::store::variables::name_value(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
-
-    let name: String = existing.get(0);
-    let old_value: String = existing.get(1);
-    sqlx::query("UPDATE platform_vars SET value = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(&req.value)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::variables::update_value(&state.db(), &id, &req.value).await?;
 
     // Dirty-mark inherit GitHub binds when the platform default value changed.
     let mut github_binds_stale: u64 = 0;
     if old_value != req.value {
         github_binds_stale =
-            super::github_sync::mark_variable_binds_stale_on_default_change(&state.pool, &id)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        var_id = %id,
-                        error = %e,
-                        "github-sync: failed to mark variable binds stale"
-                    );
-                    0
-                });
+            crate::store::github_binds::mark_variable_binds_stale_on_default_change(
+                &state.db(),
+                &id,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    var_id = %id,
+                    error = %e,
+                    "github-sync: failed to mark variable binds stale"
+                );
+                0
+            });
     }
 
     tracing::info!("Variable updated: {name} ({id})");
@@ -184,18 +167,10 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let existing = sqlx::query("SELECT name, value FROM platform_vars WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let (name, old_value) = crate::store::variables::name_value(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
-
-    let name: String = existing.get(0);
-    let old_value: String = existing.get(1);
-    sqlx::query("DELETE FROM platform_vars WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::variables::delete(&state.db(), &id).await?;
 
     audit::record(
         &state.pool,

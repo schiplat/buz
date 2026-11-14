@@ -22,7 +22,6 @@
 //! so the audit row commits or rolls back with the change it describes.
 
 use serde_json::{Map, Value};
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::crypto::mask_string;
@@ -631,12 +630,49 @@ pub fn secret_snapshot(
     })
 }
 
+/// The one statement every entry point below runs. Kept as a const so the
+/// three execution paths (pool, connection, transaction) cannot drift.
+const AUDIT_INSERT_SQL: &str = "INSERT INTO audit_logs (
+            id, created_at, actor_user_id, actor_username, action,
+            resource_type, resource_id, resource_name, team_id,
+            before_json, after_json, meta_json, ip
+         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+/// The serialized, redacted column values shared by every insertion path.
+struct PreparedAudit {
+    id: String,
+    before: Option<String>,
+    after: Option<String>,
+    meta: Option<String>,
+}
+
+fn prepare(event: &AuditEvent) -> PreparedAudit {
+    PreparedAudit {
+        id: Uuid::new_v4().to_string(),
+        before: event
+            .before
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+        after: event
+            .after
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+        meta: event
+            .meta
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+    }
+}
+
 /// Persist an audit event. Errors are logged and swallowed (best effort —
 /// the audited change already committed).
-pub async fn record(pool: &SqlitePool, event: AuditEvent) {
+pub async fn record(pool: &crate::store::exec::DbPool, event: AuditEvent) {
     let action = event.action.clone();
     let resource = event.resource_id.clone();
-    if let Err(e) = insert(pool, event).await {
+    if let Err(e) = insert_pool(pool, event).await {
         tracing::warn!(
             action = %action,
             resource = %resource,
@@ -645,58 +681,56 @@ pub async fn record(pool: &SqlitePool, event: AuditEvent) {
     }
 }
 
-/// Persist an audit event inside the caller's transaction, so the record
-/// commits or rolls back with the change it describes. Propagates the error:
-/// an unauditable mutation is a failed mutation.
-pub async fn record_in(
-    conn: &mut sqlx::SqliteConnection,
+/// Persist an audit event inside a dual-backend transaction
+/// ([`crate::store::exec::DbTx`]): same statement, same redaction, executed
+/// through the dispatcher so it works on either backend.
+pub async fn record_in_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
     event: AuditEvent,
 ) -> Result<(), sqlx::Error> {
-    insert(conn, event).await
+    use crate::store::exec::SqlValue;
+
+    let prepared = prepare(&event);
+    let binds = [
+        SqlValue::from(prepared.id),
+        event.actor_user_id.into(),
+        event.actor_username.into(),
+        event.action.into(),
+        event.resource_type.into(),
+        event.resource_id.into(),
+        event.resource_name.into(),
+        event.team_id.into(),
+        prepared.before.into(),
+        prepared.after.into(),
+        prepared.meta.into(),
+        event.ip.into(),
+    ];
+    tx.execute(AUDIT_INSERT_SQL, &binds).await?;
+    Ok(())
 }
 
-/// Shared insert used by both entry points.
-async fn insert<'e, E>(executor: E, event: AuditEvent) -> Result<(), sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-{
-    let id = Uuid::new_v4().to_string();
-    let before = event
-        .before
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let after = event
-        .after
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let meta = event
-        .meta
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
+/// Pool-level insertion for [`record`].
+async fn insert_pool(
+    pool: &crate::store::exec::DbPool,
+    event: AuditEvent,
+) -> Result<(), sqlx::Error> {
+    use crate::store::exec::SqlValue;
 
-    sqlx::query(
-        "INSERT INTO audit_logs (
-            id, created_at, actor_user_id, actor_username, action,
-            resource_type, resource_id, resource_name, team_id,
-            before_json, after_json, meta_json, ip
-         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&event.actor_user_id)
-    .bind(&event.actor_username)
-    .bind(&event.action)
-    .bind(&event.resource_type)
-    .bind(&event.resource_id)
-    .bind(&event.resource_name)
-    .bind(&event.team_id)
-    .bind(&before)
-    .bind(&after)
-    .bind(&meta)
-    .bind(&event.ip)
-    .execute(executor)
-    .await?;
+    let prepared = prepare(&event);
+    let binds = [
+        SqlValue::from(prepared.id),
+        event.actor_user_id.into(),
+        event.actor_username.into(),
+        event.action.into(),
+        event.resource_type.into(),
+        event.resource_id.into(),
+        event.resource_name.into(),
+        event.team_id.into(),
+        prepared.before.into(),
+        prepared.after.into(),
+        prepared.meta.into(),
+        event.ip.into(),
+    ];
+    crate::store::exec::execute(pool, AUDIT_INSERT_SQL, &binds).await?;
     Ok(())
 }

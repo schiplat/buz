@@ -1,4 +1,4 @@
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::DbPool;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::time;
@@ -53,7 +53,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
             // dispatch scheduler on a dedicated row so the two never evict
             // each other.
             match crate::services::scheduler::try_acquire_lease(
-                &state.pool,
+                &state.db(),
                 crate::services::scheduler::CRON_TRIGGER_LEASE_ID,
                 &instance_id,
             )
@@ -67,7 +67,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                 }
             }
 
-            let pipelines = match fetch_active_cron_pipelines(&state.pool).await {
+            let pipelines = match fetch_active_cron_pipelines(&state.db()).await {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::error!("Cron scheduler query failed: {e}");
@@ -114,7 +114,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                 // rate limiter allowed. A failed `do_trigger` still consumes
                 // the stamp — that prevents tight retry loops; the next
                 // matching window retries.
-                match claim_cron_fire(&state.pool, pipeline_id, &schedule, check_interval_seconds)
+                match claim_cron_fire(&state.db(), pipeline_id, &schedule, check_interval_seconds)
                     .await
                 {
                     Ok(true) => {}
@@ -182,20 +182,21 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
 /// transaction — the persisted stamp outlives any instance crash. Exposed
 /// for testing.
 pub async fn claim_cron_fire(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     schedule: &cron::Schedule,
     check_interval_secs: u64,
 ) -> anyhow::Result<bool> {
     let now = chrono::Utc::now();
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = pool
+        .begin_immediate()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let last_raw: String =
-        sqlx::query_scalar("SELECT cron_last_fired_at FROM pipelines WHERE id = ?")
-            .bind(pipeline_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .unwrap_or_default();
+    let last_raw = crate::store::pipelines::cron_last_fired_tx(&mut tx, pipeline_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .unwrap_or_default();
     let last_fired = crate::services::scheduler::parse_sqlite_datetime(&last_raw);
     if let Some(last) = last_fired {
         let gap = (now - last).num_seconds();
@@ -221,37 +222,17 @@ pub async fn claim_cron_fire(
         return Ok(false);
     }
 
-    sqlx::query("UPDATE pipelines SET cron_last_fired_at = datetime('now') WHERE id = ?")
-        .bind(pipeline_id)
-        .execute(&mut *tx)
-        .await?;
+    crate::store::pipelines::stamp_cron_fired_tx(&mut tx, pipeline_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     tx.commit().await?;
     Ok(true)
 }
 
 pub async fn fetch_active_cron_pipelines(
-    pool: &SqlitePool,
+    pool: &DbPool,
 ) -> Result<Vec<(String, String, Option<String>, String)>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT p.id, p.name, p.cron_expr, p.cron_environment
-         FROM pipelines p
-         WHERE p.trigger_type = 'cron'
-           AND p.is_active = 1
-           AND p.cron_expr IS NOT NULL
-           AND p.cron_expr != ''",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            (
-                r.get::<String, _>(0),
-                r.get::<String, _>(1),
-                r.get::<Option<String>, _>(2),
-                r.get::<String, _>(3),
-            )
-        })
-        .collect())
+    crate::store::pipelines::active_cron_pipelines(pool)
+        .await
+        .map_err(|e| sqlx::Error::Configuration(Box::new(e)))
 }

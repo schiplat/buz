@@ -20,12 +20,12 @@ use shared::api_token::{self, ApiTokenScope};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateApiTokenRequest, CreateApiTokenResponse};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::PlatformAdmin;
 use crate::state::AppState;
+use crate::store::api_tokens as token_store;
 
 /// POST /api-tokens — create a token bound to the calling admin. Super admins
 /// can then list/revoke every token platform-wide.
@@ -72,17 +72,15 @@ pub async fn create(
     let hash = api_token::hash_token(&token);
     let prefix = api_token::display_prefix(&token);
 
-    sqlx::query(
-        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scope)
-         VALUES (?, ?, ?, ?, ?, ?)",
+    token_store::insert(
+        &state.pool,
+        &id,
+        &auth.id,
+        name,
+        &hash,
+        &prefix,
+        scope.as_str(),
     )
-    .bind(&id)
-    .bind(&auth.id)
-    .bind(name)
-    .bind(&hash)
-    .bind(&prefix)
-    .bind(scope.as_str())
-    .execute(&state.pool)
     .await?;
 
     audit::record(
@@ -115,47 +113,11 @@ pub async fn list(
     auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let rows = if auth.is_super_admin {
-        sqlx::query(
-            "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
-                    t.created_at, t.last_used_at, t.revoked_at, t.scope
-             FROM api_tokens t
-             LEFT JOIN users u ON u.id = t.user_id
-             ORDER BY t.created_at DESC",
-        )
-        .fetch_all(&state.pool)
-        .await?
-    } else {
-        sqlx::query(
-            "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
-                    t.created_at, t.last_used_at, t.revoked_at, t.scope
-             FROM api_tokens t
-             LEFT JOIN users u ON u.id = t.user_id
-             WHERE t.user_id = ?
-             ORDER BY t.created_at DESC",
-        )
-        .bind(&auth.id)
-        .fetch_all(&state.pool)
-        .await?
-    };
-
-    let items: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "user_id": r.get::<String, _>(1),
-                "username": r.get::<String, _>(2),
-                "name": r.get::<String, _>(3),
-                "prefix": r.get::<String, _>(4),
-                "created_at": r.get::<String, _>(5),
-                "last_used_at": r.get::<Option<String>, _>(6),
-                "revoked_at": r.get::<Option<String>, _>(7),
-                "revoked": r.get::<Option<String>, _>(7).is_some(),
-                "scope": r.get::<String, _>(8),
-            })
-        })
-        .collect();
+    let items = token_store::list(
+        &state.pool,
+        (!auth.is_super_admin).then_some(auth.id.as_str()),
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(
         serde_json::json!({ "items": items }),
@@ -168,15 +130,9 @@ pub async fn revoke(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let row =
-        sqlx::query("SELECT user_id, name FROM api_tokens WHERE id = ? AND revoked_at IS NULL")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound("api token not found".into()))?;
-
-    let owner_id: String = row.get(0);
-    let name: String = row.get(1);
+    let (owner_id, name) = token_store::find_active(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("api token not found".into()))?;
 
     if !auth.is_super_admin && owner_id != auth.id {
         return Err(AppError::Forbidden(
@@ -184,10 +140,7 @@ pub async fn revoke(
         ));
     }
 
-    sqlx::query("UPDATE api_tokens SET revoked_at = datetime('now') WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    token_store::revoke(&state.pool, &id).await?;
 
     audit::record(
         &state.pool,

@@ -97,9 +97,13 @@ async fn accepts_platform_admin_token() {
     insert_user(&pool, &admin_id, "admin", 1, 1).await;
     let token = mint_token(Role::Admin, &admin_id);
 
-    let user = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .expect("admin token accepted");
+    let user = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .expect("admin token accepted");
     assert!(user.is_platform_admin);
     assert_eq!(user.id, admin_id);
 }
@@ -112,9 +116,13 @@ async fn accepts_platform_admin_user_role_token() {
     insert_user(&pool, &admin_id, "boss", 1, 1).await;
     let token = mint_token(Role::User, &admin_id);
 
-    let user = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .expect("user-role token of platform admin accepted");
+    let user = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .expect("user-role token of platform admin accepted");
     assert!(user.is_platform_admin);
 }
 
@@ -125,9 +133,13 @@ async fn rejects_non_admin_user() {
     insert_user(&pool, &user_id, "pleb", 0, 1).await;
     let token = mint_token(Role::User, &user_id);
 
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
@@ -135,18 +147,26 @@ async fn rejects_non_admin_user() {
 async fn rejects_runner_role_token() {
     let pool = test_pool().await;
     let token = mint_token(Role::Runner, "runner-1");
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::AuthFailed(_)), "{err:?}");
 }
 
 #[tokio::test]
 async fn rejects_garbage_token() {
     let pool = test_pool().await;
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, "not-a-jwt")
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        "not-a-jwt",
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::AuthFailed(_)), "{err:?}");
 }
 
@@ -159,9 +179,13 @@ async fn rejects_token_signed_with_different_secret() {
         .create_token(&admin_id, Role::Admin, 1)
         .expect("mint token");
 
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::AuthFailed(_)), "{err:?}");
 }
 
@@ -172,9 +196,13 @@ async fn rejects_disabled_user() {
     insert_user(&pool, &user_id, "disabled", 1, 0).await;
     let token = mint_token(Role::Admin, &user_id);
 
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &token,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::AuthFailed(_)), "{err:?}");
 }
 
@@ -193,7 +221,9 @@ async fn load_auth_user_exposes_super_admin_flag() {
     .await
     .expect("insert super admin");
 
-    let user = load_auth_user(&pool, &admin_id).await.expect("load user");
+    let user = load_auth_user(&manager::store::exec::DbPool::from_sqlite(&pool), &admin_id)
+        .await
+        .expect("load user");
     assert!(user.is_platform_admin);
     assert!(user.is_super_admin);
 }
@@ -206,7 +236,9 @@ async fn load_auth_user_defaults_super_admin_false() {
     let admin_id = Uuid::new_v4().to_string();
     insert_user(&pool, &admin_id, "regular", 1, 1).await;
 
-    let user = load_auth_user(&pool, &admin_id).await.expect("load user");
+    let user = load_auth_user(&manager::store::exec::DbPool::from_sqlite(&pool), &admin_id)
+        .await
+        .expect("load user");
     assert!(user.is_platform_admin);
     assert!(!user.is_super_admin);
 }
@@ -230,9 +262,13 @@ async fn accepts_admin_api_token() {
     .await
     .expect("insert api token");
 
-    let user = verify_cli_admin_token(&pool, JWT_SECRET, &raw)
-        .await
-        .expect("admin api token accepted");
+    let user = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &raw,
+    )
+    .await
+    .expect("admin api token accepted");
     assert!(user.is_platform_admin);
     assert_eq!(user.id, admin_id);
 }
@@ -256,9 +292,13 @@ async fn rejects_api_token_of_non_admin_user() {
     .await
     .expect("insert api token");
 
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &raw)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &raw,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
@@ -281,8 +321,12 @@ async fn rejects_revoked_api_token() {
     .await
     .expect("insert revoked api token");
 
-    let err = verify_cli_admin_token(&pool, JWT_SECRET, &raw)
-        .await
-        .unwrap_err();
+    let err = verify_cli_admin_token(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        JWT_SECRET,
+        &raw,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, AppError::AuthFailed(_)), "{err:?}");
 }

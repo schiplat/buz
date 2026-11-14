@@ -39,7 +39,7 @@ pub async fn list_sources(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = plugin_pool::list_sources(&state.pool)
+    let items = plugin_pool::list_sources(&state.db())
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -79,21 +79,18 @@ pub async fn create_source(
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO plugin_sources (id, name, url, mirror_url, auto_enable, enabled, created_by)
-         VALUES (?, ?, ?, ?, ?, 1, ?)",
+    crate::store::plugin_sources::insert(
+        &state.db(),
+        &id,
+        &name,
+        &url,
+        mirror_url.as_deref(),
+        body.auto_enable,
+        &auth.username,
     )
-    .bind(&id)
-    .bind(&name)
-    .bind(&url)
-    .bind(&mirror_url)
-    .bind(body.auto_enable as i64)
-    .bind(&auth.username)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
     audit::record(
-        &state.pool,
+        &state.db(),
         AuditEvent::new(Action::PluginSourceCreate, &auth)
             .on(Resource::plugin_source(&id, &name))
             .after(Some(json!({
@@ -107,16 +104,16 @@ pub async fn create_source(
 
     // Sync runs in the background: the API returns the staged source
     // immediately and the UI polls the list for last_synced_at / error.
-    let pool = state.pool.clone();
+    let pool = state.db();
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source disappeared after insert".into()))?;
@@ -146,7 +143,7 @@ pub async fn check_mirror(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
@@ -154,7 +151,7 @@ pub async fn check_mirror(
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     let http = plugin_pool::http_client(timeout_secs);
-    let report = plugin_pool::check_mirror(&http, &state.pool, &id)
+    let report = plugin_pool::check_mirror(&http, &state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(
@@ -168,13 +165,13 @@ pub async fn sync_source(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source not found".into()))?;
-    let pool = state.pool.clone();
+    let pool = state.db();
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
@@ -182,7 +179,7 @@ pub async fn sync_source(
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     audit::record(
-        &state.pool,
+        &state.db(),
         AuditEvent::new(Action::PluginSourceSync, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
             .meta(Some(json!({ "trigger": "manual" }))),
@@ -211,20 +208,13 @@ pub async fn reset_index_watermark(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound("source not found".into()))?;
-    sqlx::query(
-        "UPDATE plugin_sources SET last_index_sequence = NULL, last_index_sha256 = NULL, \
-         last_index_issued_at = NULL WHERE id = ?",
-    )
-    .bind(&id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    crate::store::plugin_sources::reset_index_watermark(&state.db(), &id).await?;
     audit::record(
-        &state.pool,
+        &state.db(),
         AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
             .changes(
@@ -267,17 +257,13 @@ pub async fn delete_source(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     // Snapshot before deleting: once the row is gone (CASCADE also drops its
     // pool rows) the audit record is the only remaining description of it.
-    let removed = plugin_pool::get_source(&state.pool, &id)
+    let removed = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("DELETE FROM plugin_sources WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    crate::store::plugin_sources::delete(&state.db(), &id).await?;
     if let Some(removed) = &removed {
         audit::record(
-            &state.pool,
+            &state.db(),
             AuditEvent::new(Action::PluginSourceDelete, &auth)
                 .on(Resource::plugin_source(&removed.id, &removed.name))
                 .before(Some(json!({
@@ -293,16 +279,8 @@ pub async fn delete_source(
     // (typically the official site is unreachable); remember it so the
     // startup migration does not re-seed it on every boot.
     if id == "official" {
-        sqlx::query(
-            "INSERT INTO platform_settings (key, value, updated_by, updated_at) \
-             VALUES ('plugin_official_source_dismissed', 'true', ?, datetime('now')) \
-             ON CONFLICT(key) DO UPDATE SET value = 'true', updated_by = excluded.updated_by, \
-               updated_at = excluded.updated_at",
-        )
-        .bind(&auth.username)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        crate::store::plugin_sources::mark_official_source_dismissed(&state.db(), &auth.username)
+            .await?;
     }
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
@@ -317,7 +295,7 @@ pub async fn refresh_plugin(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let http = plugin_pool::http_client(
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
@@ -327,7 +305,7 @@ pub async fn refresh_plugin(
     );
     let rows = plugin_pool::refresh_plugin(
         &http,
-        &state.pool,
+        &state.db(),
         &namespace,
         &plugin_id,
         shared::version::VERSION,
@@ -335,7 +313,7 @@ pub async fn refresh_plugin(
     .await
     .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     audit::record(
-        &state.pool,
+        &state.db(),
         AuditEvent::new(Action::PluginPoolRefresh, &auth)
             .on(Resource::plugin_pool_entry(&namespace, &plugin_id))
             .meta(Some(json!({ "versions": rows.len() }))),
@@ -349,7 +327,7 @@ pub async fn list_pool(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = plugin_pool::list_pool(&state.pool)
+    let items = plugin_pool::list_pool(&state.db())
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -370,7 +348,7 @@ pub async fn toggle_pool_entry(
         plugin_pool::verify_entry(
             &plugin_pool::http_client(
                 crate::services::platform_settings::effective(
-                    &state.pool,
+                    &state.db(),
                     crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
                     &state.config.plugin_index.sync_timeout_seconds.to_string(),
                 )
@@ -378,7 +356,7 @@ pub async fn toggle_pool_entry(
                 .parse()
                 .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
             ),
-            &state.pool,
+            &state.db(),
             &namespace,
             &plugin_id,
             &version,
@@ -387,53 +365,16 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     }
-    // One transaction: the state change, its provenance (who/when) and the
-    // audit record land together or not at all.
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let previous_enabled: Option<i64> = sqlx::query_scalar(
-        "SELECT enabled FROM plugin_pool \
-         WHERE namespace = ? AND plugin_id = ? AND version = ?",
+    // State change, provenance and audit land together (store owns the tx).
+    crate::store::plugin_sources::toggle_pool_entry(
+        &state.db(),
+        &namespace,
+        &plugin_id,
+        &version,
+        body.enabled,
+        &auth,
     )
-    .bind(&namespace)
-    .bind(&plugin_id)
-    .bind(&version)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    let result = sqlx::query(
-        "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
-         WHERE namespace = ? AND plugin_id = ? AND version = ?",
-    )
-    .bind(body.enabled as i64)
-    .bind(&auth.username)
-    .bind(&namespace)
-    .bind(&plugin_id)
-    .bind(&version)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    if result.rows_affected() == 0 {
-        tx.rollback().await.ok();
-        return Err(AppError::NotFound("pool entry not found".into()));
-    }
-    audit::record_in(
-        &mut tx,
-        AuditEvent::new(Action::PluginPoolToggle, &auth)
-            .on(Resource::plugin_pool(&namespace, &plugin_id, &version))
-            .changes(
-                Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),
-                Some(json!({ "enabled": body.enabled })),
-            ),
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
     Ok(Json(ApiResponse::success(json!({
         "namespace": namespace, "plugin_id": plugin_id,
         "version": version, "enabled": body.enabled,

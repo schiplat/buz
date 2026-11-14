@@ -6,20 +6,14 @@ use serde::Deserialize;
 use shared::error::AppError;
 use shared::protocol::redact_input_map;
 use shared::protocol::response::ApiResponse;
-use shared::rbac::{Perm, TeamRole};
-use sqlx::Row;
+use shared::rbac::Perm;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{pipeline_team_id, team_in_clause};
 use crate::state::AppState;
-
-/// Return current UTC timestamp in SQLite format ("2026-07-27 10:30:00")
-pub(crate) fn now_utc() -> String {
-    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
-}
+use crate::store::jobs::now_utc;
 
 /// Redact masking input values in API-facing trigger_params using snapshot.masking_input_keys.
 /// Does not decrypt — sealed (`buzenc:v1:…`) or legacy plaintext values are replaced with `***`.
@@ -53,74 +47,18 @@ pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let base = "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
-                j.status, j.trigger_by, j.retry_times,
-                j.step_statuses, j.snapshot,
-                j.start_time, j.end_time, j.created_at, j.updated_at,
-                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id,
-                j.run_number
-         FROM jobs j
-         JOIN pipelines p ON j.pipeline_id = p.id
-         WHERE 1=1";
-
-    let team_filter = team_in_clause(&auth, "p.team_id");
     // Debug (unredacted) jobs must never surface to non-admins in any job
     // listing — their logs are admin-only, so the record itself is hidden too.
-    let debug_filter = if auth.is_platform_admin {
-        String::new()
-    } else {
-        "AND j.debug_unredact = 0".to_string()
-    };
-    let sql = match &team_filter {
-        None => format!("{base} {debug_filter} ORDER BY j.created_at DESC LIMIT 200"),
+    let team_filter = match team_in_clause(&auth, "p.team_id") {
+        // No visible teams: an empty list, never an unrestricted query.
         Some((clause, _)) if clause == "AND 1=0" => {
             return Ok(Json(ApiResponse::success(vec![])));
         }
-        Some((clause, _)) => {
-            format!("{base} {clause} {debug_filter} ORDER BY j.created_at DESC LIMIT 200")
-        }
+        other => other,
     };
 
-    let mut q = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_filter {
-        for id in ids {
-            q = q.bind(id);
-        }
-    }
-
-    let rows = q.fetch_all(&state.pool).await?;
-
-    let jobs: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let step_statuses_raw: String = r.get(7);
-            let step_statuses: serde_json::Value =
-                serde_json::from_str(&step_statuses_raw).unwrap_or_default();
-            let snapshot_raw: String = r.get(8);
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&snapshot_raw).unwrap_or_default();
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "runner_id": r.get::<Option<String>, _>(3),
-                "status": r.get::<String, _>(4),
-                "trigger_by": r.get::<String, _>(5),
-                "retry_times": r.get::<i64, _>(6),
-                "step_statuses": step_statuses,
-                "snapshot": snapshot,
-                "start_time": r.get::<Option<String>, _>(9),
-                "end_time": r.get::<Option<String>, _>(10),
-                "created_at": r.get::<Option<String>, _>(11),
-                "updated_at": r.get::<Option<String>, _>(12),
-                "team_id": r.get::<String, _>(13),
-                "verbose_logs": r.get::<i64, _>(14) != 0,
-                "debug_unredact": r.get::<i64, _>(15) != 0,
-                "trigger_user_id": r.get::<Option<String>, _>(16),
-                "run_number": r.get::<i64, _>(17),
-            })
-        })
-        .collect();
+    let jobs =
+        crate::store::jobs::list_jobs(&state.db(), &team_filter, !auth.is_platform_admin).await?;
 
     Ok(Json(ApiResponse::success(jobs)))
 }
@@ -158,16 +96,6 @@ fn dashboard_team_scope(
         )));
     }
     Ok(team_in_clause(auth, "p.team_id"))
-}
-
-/// Debug (unredacted) jobs are admin-only records — hidden from every stats
-/// endpoint for non-admins, matching the job list/get handlers.
-fn dashboard_debug_filter(auth: &AuthUser) -> &'static str {
-    if auth.is_platform_admin {
-        ""
-    } else {
-        "AND j.debug_unredact = 0"
-    }
 }
 
 /// Assemble a zero-filled daily series covering the last `days` days (UTC),
@@ -217,45 +145,14 @@ pub async fn stats_trend(
         .checked_sub_signed(chrono::Duration::days(days))
         .map(|d| d.format("%Y-%m-%d 00:00:00").to_string())
         .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
-    let debug_filter = dashboard_debug_filter(&auth);
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
-    let empty = serde_json::json!({
-        "days": days,
-        "points": build_trend_points(&HashMap::new(), days),
-    });
-
-    let sql = match &team_scope {
-        None => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE j.created_at >= ? {debug_filter}
-             GROUP BY date(j.created_at), j.status"
-        ),
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(empty)));
-        }
-        Some((clause, _)) => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE j.created_at >= ? {clause} {debug_filter}
-             GROUP BY date(j.created_at), j.status"
-        ),
-    };
-
-    let mut q2 = sqlx::query(&sql).bind(&cutoff);
-    if let Some((_, ids)) = &team_scope {
-        for id in ids {
-            q2 = q2.bind(id);
-        }
-    }
-    let rows = q2.fetch_all(&state.pool).await?;
+    let rows =
+        crate::store::jobs::trend_rows(&state.db(), &cutoff, &team_scope, !auth.is_platform_admin)
+            .await?;
 
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    for r in rows {
-        let day: String = r.get(0);
-        let status: String = r.get(1);
-        let cnt: i64 = r.get(2);
+    for (day, status, cnt) in rows {
         counts.entry(day).or_default().insert(status, cnt);
     }
 
@@ -280,54 +177,11 @@ pub async fn recent(
     Query(q): Query<RecentQuery>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let limit = q.limit.unwrap_or(10).clamp(1, 50);
-    let debug_filter = dashboard_debug_filter(&auth);
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
-    let sql = match &team_scope {
-        None => format!(
-            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
-                    j.trigger_by, p.team_id, j.created_at
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE 1=1 {debug_filter}
-             ORDER BY j.created_at DESC, j.id DESC
-             LIMIT ?"
-        ),
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(vec![])));
-        }
-        Some((clause, _)) => format!(
-            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
-                    j.trigger_by, p.team_id, j.created_at
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE 1=1 {clause} {debug_filter}
-             ORDER BY j.created_at DESC, j.id DESC
-             LIMIT ?"
-        ),
-    };
-
-    let mut q2 = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_scope {
-        for id in ids {
-            q2 = q2.bind(id);
-        }
-    }
-    q2 = q2.bind(limit);
-    let rows = q2.fetch_all(&state.pool).await?;
-
-    let jobs: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "status": r.get::<String, _>(3),
-                "trigger_by": r.get::<String, _>(4),
-                "team_id": r.get::<String, _>(5),
-                "created_at": r.get::<Option<String>, _>(6),
-            })
-        })
-        .collect();
+    let jobs =
+        crate::store::jobs::recent_rows(&state.db(), limit, &team_scope, !auth.is_platform_admin)
+            .await?;
 
     tracing::info!(
         user = %auth.username,
@@ -339,126 +193,74 @@ pub async fn recent(
     Ok(Json(ApiResponse::success(jobs)))
 }
 
-/// Step orders whose streamed output hit the truncation marker
-/// (`chunk_index % 10_000 == LOG_STEP_TRUNCATED`). Per-step 10_000-wide
-/// windows make the modulo exact; negatives (runner banner) never match.
-async fn truncated_steps(pool: &sqlx::SqlitePool, job_id: &str) -> Vec<i64> {
-    // Written by the Runner's terminal report: job metadata, so it survives
-    // job_log_retention deleting the marker chunk.
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-    if let Some(raw) = stored {
-        if let Ok(mut steps) = serde_json::from_str::<Vec<i64>>(&raw) {
-            if !steps.is_empty() {
-                steps.sort_unstable();
-                steps.dedup();
-                return steps;
-            }
-        }
-    }
-
-    // Legacy fallback (jobs finished before the column existed): the marker
-    // chunk in the step's 10_000-wide window. Correct only while logs remain.
-    let mut steps: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT step_order FROM job_logs
-         WHERE job_id = ? AND chunk_index >= 0
-           AND chunk_index % 10000 = ?",
-    )
-    .bind(job_id)
-    .bind(shared::protocol::LOG_STEP_TRUNCATED)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    steps.sort_unstable();
-    steps
-}
-
 pub async fn get_one(
     auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = sqlx::query(
-        "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
-                j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
-                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
-                j.trigger_user_id, j.run_number, j.run_attempt,
-                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id,
-                j.dispatch_reason
-         FROM jobs j
-         LEFT JOIN pipelines p ON j.pipeline_id = p.id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let r = crate::store::jobs::job_detail_row(&state.db(), &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
-    let pipeline_id: String = r.get(1);
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &r.pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     // Debug (unredacted) jobs are admin-only records — non-admins must not
     // even see the metadata. 404 (not 403) so the existence of a debug job
     // is indistinguishable from a missing job, matching the `list` endpoint.
-    let debug_unredact: i64 = r.get(14);
-    if debug_unredact != 0 && !auth.is_platform_admin {
+    if r.debug_unredact && !auth.is_platform_admin {
         return Err(AppError::NotFound("job not found".into()));
     }
 
-    let trigger_params: Option<String> = r.get(6);
-    let snapshot_raw: Option<String> = r.get(7);
-    let snapshot: serde_json::Value = snapshot_raw
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let snapshot: serde_json::Value = r
+        .snapshot_raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
-    let step_statuses_raw: Option<String> = r.get(8);
-    let step_statuses: serde_json::Value = step_statuses_raw
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let step_statuses: serde_json::Value = r
+        .step_statuses_raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    let trigger_params_safe = redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
-    let approvals = list_job_approvals_json(&state.pool, &id).await?;
+    let trigger_params_safe = redact_trigger_params_for_api(r.trigger_params.as_deref(), &snapshot);
+    let approvals = crate::store::jobs::list_job_approvals(&state.db(), &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "pipeline_id": r.get::<String, _>(1),
-        "pipeline_name": r.get::<Option<String>, _>(2),
-        "runner_id": r.get::<Option<String>, _>(3),
-        "status": r.get::<String, _>(4),
-        "trigger_by": r.get::<String, _>(5),
+        "id": r.id,
+        "pipeline_id": r.pipeline_id,
+        "pipeline_name": r.pipeline_name,
+        "runner_id": r.runner_id,
+        "status": r.status,
+        "trigger_by": r.trigger_by,
         "trigger_params": trigger_params_safe,
         "snapshot": snapshot,
         "step_statuses": step_statuses,
-        "retry_times": r.get::<i64, _>(9),
-        "start_time": r.get::<Option<String>, _>(10),
-        "end_time": r.get::<Option<String>, _>(11),
-        "created_at": r.get::<Option<String>, _>(12),
-        "updated_at": r.get::<Option<String>, _>(13),
-        "debug_unredact": r.get::<i64, _>(14) != 0,
-        "verbose_logs": r.get::<i64, _>(15) != 0,
-        "trigger_user_id": r.get::<Option<String>, _>(16),
-        "run_number": r.get::<i64, _>(17),
-        "run_attempt": r.get::<i64, _>(18),
+        "retry_times": r.retry_times,
+        "start_time": r.start_time,
+        "end_time": r.end_time,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "debug_unredact": r.debug_unredact,
+        "verbose_logs": r.verbose_logs,
+        "trigger_user_id": r.trigger_user_id,
+        "run_number": r.run_number,
+        "run_attempt": r.run_attempt,
         "team_id": team_id,
         "approvals": approvals,
         // Requested profile ('' = default) frozen at trigger; slots/spec and
         // the dispatching sandbox instance are filled at claim.
-        "resource_profile": r.get::<String, _>(19),
-        "resource_slots": r.get::<i64, _>(20),
-        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(21))
+        "resource_profile": r.resource_profile,
+        "resource_slots": r.resource_slots,
+        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.resource_spec_raw)
             .unwrap_or(serde_json::json!({})),
-        "sandbox_instance_id": r.get::<String, _>(22),
+        "sandbox_instance_id": r.sandbox_instance_id,
         // Why the last poller skipped this job while pending ('' once claimed).
-        "dispatch_reason": r.get::<String, _>(23),
+        "dispatch_reason": r.dispatch_reason,
         // Steps whose streamed output overflowed the per-step log window —
         // the UI badges them without downloading every chunk. The offset
         // (9991) is the shared LOG_STEP_TRUNCATED layout constant.
-        "truncated_steps": truncated_steps(&state.pool, &id).await,
+        "truncated_steps": crate::store::jobs::truncated_steps(&state.db(), &id).await,
     }))))
 }
 
@@ -467,51 +269,28 @@ pub async fn cancel(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let ctx = sqlx::query("SELECT j.pipeline_id, p.name FROM jobs j LEFT JOIN pipelines p ON p.id = j.pipeline_id WHERE j.id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let (pipeline_id, pipeline_name) = crate::store::jobs::job_pipeline_name(&state.db(), &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
-    let (pipeline_id, pipeline_name) = match ctx {
-        Some(row) => (
-            row.get::<String, _>(0),
-            row.try_get::<Option<String>, _>(1).ok().flatten(),
-        ),
-        None => return Err(AppError::NotFound("job not found".into())),
-    };
-
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let Some(cancelled) = cancel_job_in_tx(&mut tx, &id, &auth.id, &auth.username).await? else {
-        tx.rollback().await?;
-        return Err(AppError::NotFound(
-            "job not found or already finished".into(),
-        ));
-    };
-    audit::record_in(
-        &mut tx,
-        AuditEvent::new(Action::JobCancel, &auth)
-            .on(Resource::job(
-                &id,
-                pipeline_name.as_deref().unwrap_or(&pipeline_id),
-            ))
-            .team(Some(team_id.clone()))
-            .changes(
-                Some(serde_json::json!({ "status": cancelled.old_status })),
-                Some(serde_json::json!({ "status": "cancelled" })),
-            ),
+    let prev_status = crate::store::jobs::cancel(
+        &state.db(),
+        &auth,
+        &id,
+        &pipeline_id,
+        pipeline_name.as_deref(),
+        &team_id,
     )
     .await?;
-    tx.commit().await?;
-    crate::services::poll_events::wake_all();
 
     tracing::info!(
         operator = %auth.username,
         job_id = %id,
         pipeline = ?pipeline_name,
-        prev_status = %cancelled.old_status,
+        prev_status = %prev_status,
         "Job cancelled by operator"
     );
 
@@ -520,166 +299,10 @@ pub async fn cancel(
     Ok(Json(ApiResponse::success(())))
 }
 
-/// A job flipped to `cancelled` inside the caller's transaction.
-pub(crate) struct CancelledJob {
-    pub old_status: String,
-}
-
-/// Transaction-internal core of job cancellation: flips one non-terminal job
-/// (`pending` / `running` / `queued` / `waiting_approval`) to `cancelled`,
-/// marks the currently running step cancelled and records the approval
-/// outcome for `waiting_approval` jobs. Returns `None` when the job is
-/// missing or already terminal, so batch callers can skip instead of fail.
-/// The caller owns the transaction (BEGIN IMMEDIATE) and handles post-commit
-/// notify + WebSocket broadcast.
-pub(crate) async fn cancel_job_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    job_id: &str,
-    operator_id: &str,
-    operator_username: &str,
-) -> Result<Option<CancelledJob>, AppError> {
-    let current = sqlx::query("SELECT status, step_statuses, snapshot FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let Some(current) = current else {
-        return Ok(None);
-    };
-    let old_status: String = current.get(0);
-    if !matches!(
-        old_status.as_str(),
-        "pending" | "running" | "queued" | "waiting_approval"
-    ) {
-        return Ok(None);
-    }
-    let step_statuses_str: String = current.get(1);
-    let mut snapshot: serde_json::Value =
-        serde_json::from_str(&current.get::<String, _>(2)).unwrap_or(serde_json::json!({}));
-
-    // If a step is currently "running" in step_statuses, flip it to "cancelled".
-    let mut step_statuses: Vec<serde_json::Value> =
-        serde_json::from_str(&step_statuses_str).unwrap_or_default();
-    for s in &mut step_statuses {
-        if s["status"].as_str() == Some("running") {
-            s["status"] = serde_json::json!("cancelled");
-            s["finished_at"] = serde_json::json!(now_utc());
-            break;
-        }
-    }
-    if old_status == "waiting_approval" {
-        let received = snapshot
-            .get("approval")
-            .and_then(|approval| approval.get("received"))
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        set_snapshot_approval(&mut snapshot, received, Some("cancelled"));
-    }
-
-    let result = sqlx::query(
-        "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?,
-         cancel_ack_pending = ?,
-         end_time = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')",
-    )
-    .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
-    .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
-    .bind(i64::from(old_status == "running"))
-    .bind(job_id)
-    .execute(&mut **tx)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Ok(None);
-    }
-    if old_status == "waiting_approval" {
-        sqlx::query(
-            "INSERT OR IGNORE INTO job_approvals (id, job_id, user_id, username, action, comment)
-             VALUES (?, ?, ?, ?, 'cancel', '')",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(job_id)
-        .bind(operator_id)
-        .bind(operator_username)
-        .execute(&mut **tx)
-        .await?;
-    }
-    let _ = step_statuses; // still written into the row above; no longer returned
-    Ok(Some(CancelledJob { old_status }))
-}
-
 #[derive(Debug, Deserialize, Default)]
 pub struct ApprovalCommentRequest {
     #[serde(default)]
     pub comment: String,
-}
-
-fn parse_min_approve_role(snapshot: &serde_json::Value) -> TeamRole {
-    snapshot
-        .get("protection")
-        .and_then(|p| p.get("min_approve_role"))
-        .and_then(|v| v.as_str())
-        .and_then(TeamRole::parse)
-        .unwrap_or(TeamRole::Maintainer)
-}
-
-fn protection_require_approvals(snapshot: &serde_json::Value) -> i64 {
-    snapshot
-        .get("protection")
-        .and_then(|p| p.get("require_approvals"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(1)
-        .max(1)
-}
-
-fn protection_forbid_self_approve(snapshot: &serde_json::Value) -> bool {
-    snapshot
-        .get("protection")
-        .and_then(|p| p.get("forbid_self_approve"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true)
-}
-
-fn set_snapshot_approval(snapshot: &mut serde_json::Value, received: i64, outcome: Option<&str>) {
-    let mut approval = serde_json::json!({
-        "required": true,
-        "received": received,
-    });
-    if let Some(o) = outcome {
-        if let Some(map) = approval.as_object_mut() {
-            map.insert("outcome".into(), serde_json::json!(o));
-        }
-    }
-    if let Some(map) = snapshot.as_object_mut() {
-        map.insert("approval".into(), approval);
-    }
-}
-
-async fn list_job_approvals_json(
-    pool: &sqlx::SqlitePool,
-    job_id: &str,
-) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, user_id, username, action, comment, created_at
-         FROM job_approvals
-         WHERE job_id = ?
-         ORDER BY created_at ASC, id ASC",
-    )
-    .bind(job_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "user_id": r.get::<String, _>(1),
-                "username": r.get::<String, _>(2),
-                "action": r.get::<String, _>(3),
-                "comment": r.get::<String, _>(4),
-                "created_at": r.get::<Option<String>, _>(5),
-            })
-        })
-        .collect())
 }
 
 fn broadcast_job_status(state: &AppState, job_id: &str, pipeline_id: &str, status: &str) {
@@ -712,204 +335,14 @@ pub async fn approve(
 
     tracing::info!(job_id = %id, actor = %auth.username, "environments: approve started");
 
-    let row = sqlx::query(
-        "SELECT j.status, j.pipeline_id, j.snapshot, j.trigger_user_id, p.team_id, p.name,
-                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
-         FROM jobs j
-         JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-
-    let status: String = row.get(0);
-    if status != "waiting_approval" {
-        return Err(AppError::Conflict(format!(
-            "job is not waiting for approval (status={status})"
-        )));
-    }
-
-    let pipeline_id: String = row.get(1);
-    let snapshot_raw: String = row.get(2);
-    let trigger_user_id: Option<String> = row.get(3);
-    let team_id: String = row.get(4);
-    let pipeline_name: String = row.get(5);
-    let concurrency_group: Option<String> = row.get(6);
-    let concurrency_mode: String = row.get(7);
-    let concurrency_max_queue: i64 = row.get(8);
-
-    let mut snapshot: serde_json::Value =
-        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
-    let min_approve = parse_min_approve_role(&snapshot);
-    auth.check_team_role(&team_id, min_approve)?;
-
-    if !auth.is_platform_admin
-        && protection_forbid_self_approve(&snapshot)
-        && trigger_user_id.as_deref() == Some(auth.id.as_str())
-    {
-        return Err(AppError::Forbidden(
-            "self-approval is forbidden for this environment".into(),
-        ));
-    }
-
-    let approval_id = Uuid::new_v4().to_string();
-    let mut approval_tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let current_status: Option<String> = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&mut *approval_tx)
-        .await?;
-    if current_status.as_deref() != Some("waiting_approval") {
-        approval_tx.rollback().await?;
-        return Err(AppError::Conflict(
-            "job is no longer waiting for approval".into(),
-        ));
-    }
-    let insert = sqlx::query(
-        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
-         VALUES (?, ?, ?, ?, 'approve', ?)",
-    )
-    .bind(&approval_id)
-    .bind(&id)
-    .bind(&auth.id)
-    .bind(&auth.username)
-    .bind(&comment)
-    .execute(&mut *approval_tx)
-    .await;
-
-    if let Err(e) = insert {
-        if let sqlx::Error::Database(db) = &e {
-            if db.message().contains("UNIQUE") {
-                return Err(AppError::Conflict(
-                    "you have already approved this job".into(),
-                ));
-            }
-        }
-        return Err(e.into());
-    }
-
-    let received: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM job_approvals WHERE job_id = ? AND action = 'approve'",
-    )
-    .bind(&id)
-    .fetch_one(&mut *approval_tx)
-    .await?;
-
-    let required = protection_require_approvals(&snapshot);
-    let mut new_status = status.clone();
-
-    if received >= required {
-        match super::pipelines::resolve_concurrency_status_in_tx(
-            &mut approval_tx,
-            &pipeline_id,
-            concurrency_group.as_deref(),
-            &concurrency_mode,
-            concurrency_max_queue,
-        )
-        .await
-        {
-            Ok(next) => {
-                set_snapshot_approval(&mut snapshot, received, Some("approved"));
-                let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-                let result = sqlx::query(
-                    "UPDATE jobs SET status = ?, snapshot = ?, updated_at = datetime('now')
-                     WHERE id = ? AND status = 'waiting_approval'",
-                )
-                .bind(next)
-                .bind(&snapshot_str)
-                .bind(&id)
-                .execute(&mut *approval_tx)
-                .await?;
-                if result.rows_affected() == 0 {
-                    approval_tx.rollback().await?;
-                    return Err(AppError::Conflict(
-                        "job is no longer waiting for approval".into(),
-                    ));
-                }
-                approval_tx.commit().await?;
-                if next == "pending" {
-                    crate::services::poll_events::wake_all();
-                }
-                new_status = next.to_string();
-                broadcast_job_status(&state, &id, &pipeline_id, next);
-            }
-            Err(AppError::Conflict(msg)) => {
-                // Keep waiting_approval; approval is recorded but concurrency blocked.
-                set_snapshot_approval(&mut snapshot, received, None);
-                let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-                let result = sqlx::query(
-                    "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') \
-                     WHERE id = ? AND status = 'waiting_approval'",
-                )
-                .bind(&snapshot_str)
-                .bind(&id)
-                .execute(&mut *approval_tx)
-                .await?;
-                if result.rows_affected() == 0 {
-                    approval_tx.rollback().await?;
-                    return Err(AppError::Conflict(
-                        "job is no longer waiting for approval".into(),
-                    ));
-                }
-                approval_tx.commit().await?;
-                tracing::warn!(
-                    job_id = %id,
-                    pipeline = %pipeline_name,
-                    error = %msg,
-                    "environments: approve recorded but concurrency blocked"
-                );
-                return Err(AppError::Conflict(msg));
-            }
-            Err(e) => return Err(e),
-        }
-    } else {
-        set_snapshot_approval(&mut snapshot, received, None);
-        let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-        let result = sqlx::query(
-            "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') \
-             WHERE id = ? AND status = 'waiting_approval'",
-        )
-        .bind(&snapshot_str)
-        .bind(&id)
-        .execute(&mut *approval_tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            approval_tx.rollback().await?;
-            return Err(AppError::Conflict(
-                "job is no longer waiting for approval".into(),
-            ));
-        }
-        approval_tx.commit().await?;
-    }
-
-    audit::record(
-        &state.pool,
-        AuditEvent::from_auth(&auth, Action::JobApprove)
-            .resource("job", &id, &pipeline_name)
-            .team(Some(team_id))
-            .after(Some(serde_json::json!({
-                "received": received,
-                "required": required,
-                "status": new_status,
-            }))),
-    )
-    .await;
-
-    tracing::info!(
-        job_id = %id,
-        actor = %auth.username,
-        received,
-        required,
-        status = %new_status,
-        "environments: approve complete"
-    );
+    let outcome = crate::store::jobs::approve(&state.db(), &auth, &id, &comment).await?;
+    broadcast_job_status(&state, &id, &outcome.pipeline_id, &outcome.new_status);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "job_id": id,
-        "status": new_status,
-        "approvals_received": received,
-        "approvals_required": required,
+        "status": outcome.new_status,
+        "approvals_received": outcome.received,
+        "approvals_required": outcome.required,
     }))))
 }
 
@@ -926,128 +359,9 @@ pub async fn reject(
 
     tracing::info!(job_id = %id, actor = %auth.username, "environments: reject started");
 
-    let row = sqlx::query(
-        "SELECT j.status, j.pipeline_id, j.snapshot, j.trigger_user_id, p.team_id, p.name
-         FROM jobs j
-         JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-
-    let status: String = row.get(0);
-    if status != "waiting_approval" {
-        return Err(AppError::Conflict(format!(
-            "job is not waiting for approval (status={status})"
-        )));
-    }
-
-    let pipeline_id: String = row.get(1);
-    let snapshot_raw: String = row.get(2);
-    let trigger_user_id: Option<String> = row.get(3);
-    let team_id: String = row.get(4);
-    let pipeline_name: String = row.get(5);
-
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
-    let min_approve = parse_min_approve_role(&snapshot);
-    auth.check_team_role(&team_id, min_approve)?;
-
-    if !auth.is_platform_admin
-        && protection_forbid_self_approve(&snapshot)
-        && trigger_user_id.as_deref() == Some(auth.id.as_str())
-    {
-        return Err(AppError::Forbidden(
-            "self-approval is forbidden for this environment".into(),
-        ));
-    }
-
-    let mut reject_tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let current = sqlx::query("SELECT status, snapshot FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&mut *reject_tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    let current_status: Option<String> = current.get(0);
-    if current_status.as_deref() != Some("waiting_approval") {
-        reject_tx.rollback().await?;
-        return Err(AppError::Conflict(
-            "job is no longer waiting for approval".into(),
-        ));
-    }
-    // Re-read the snapshot inside the transaction: an approval recorded after
-    // our first read must not be clobbered by the reject.
-    let mut snapshot: serde_json::Value =
-        serde_json::from_str(&current.get::<String, _>(1)).unwrap_or(serde_json::json!({}));
-    let received: i64 = snapshot
-        .get("approval")
-        .and_then(|approval| approval.get("received"))
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(0);
-    set_snapshot_approval(&mut snapshot, received, Some("rejected"));
-    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-    let result = sqlx::query(
-        "UPDATE jobs SET status = 'cancelled', snapshot = ?,
-                end_time = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status = 'waiting_approval'",
-    )
-    .bind(&snapshot_str)
-    .bind(&id)
-    .execute(&mut *reject_tx)
-    .await?;
-    if result.rows_affected() == 0 {
-        reject_tx.rollback().await?;
-        return Err(AppError::Conflict(
-            "job is no longer waiting for approval".into(),
-        ));
-    }
-
-    let approval_id = Uuid::new_v4().to_string();
-    let insert = sqlx::query(
-        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
-         VALUES (?, ?, ?, ?, 'reject', ?)",
-    )
-    .bind(&approval_id)
-    .bind(&id)
-    .bind(&auth.id)
-    .bind(&auth.username)
-    .bind(&comment)
-    .execute(&mut *reject_tx)
-    .await;
-    if let Err(e) = insert {
-        if let sqlx::Error::Database(db) = &e {
-            if db.message().contains("UNIQUE") {
-                reject_tx.rollback().await?;
-                return Err(AppError::Conflict(
-                    "you have already acted on this job".into(),
-                ));
-            }
-        }
-        return Err(e.into());
-    }
-    reject_tx.commit().await?;
-    crate::services::poll_events::wake_all();
-
+    let pipeline_id = crate::store::jobs::job_pipeline_id(&state.db(), &id).await?;
+    crate::store::jobs::reject(&state.db(), &auth, &id, &comment).await?;
     broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
-
-    audit::record(
-        &state.pool,
-        AuditEvent::from_auth(&auth, Action::JobReject)
-            .resource("job", &id, &pipeline_name)
-            .team(Some(team_id))
-            .after(Some(
-                serde_json::json!({ "status": "cancelled", "outcome": "rejected" }),
-            )),
-    )
-    .await;
-
-    tracing::info!(
-        job_id = %id,
-        actor = %auth.username,
-        "environments: reject complete"
-    );
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "job_id": id,
@@ -1068,36 +382,24 @@ pub async fn rerun(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query(
-        "SELECT j.status, j.pipeline_id, j.trigger_params, j.snapshot,
-                j.environment_id, j.debug_unredact, j.verbose_logs,
-                j.run_number, j.run_attempt, j.resource_profile,
-                p.team_id, p.name, p.is_active,
-                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
-         FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let src = crate::store::jobs::rerun_source(&state.db(), &id).await?;
 
-    let status: String = row.get(0);
-    let pipeline_id: String = row.get(1);
-    let trigger_params_raw: Option<String> = row.get(2);
-    let snapshot_raw: String = row.get(3);
-    let environment_id: Option<String> = row.get(4);
-    let debug_unredact = row.get::<i64, _>(5) != 0;
-    let verbose_logs = row.get::<i64, _>(6) != 0;
-    let run_number: i64 = row.get(7);
-    let run_attempt: i64 = row.get(8);
-    let resource_profile: String = row.get(9);
-    let team_id: String = row.get(10);
-    let pipeline_name: String = row.get(11);
-    let is_active = row.get::<i64, _>(12) != 0;
-    let concurrency_group: Option<String> = row.get(13);
-    let concurrency_mode: String = row.get(14);
-    let concurrency_max_queue: i64 = row.get(15);
+    let status: String = src.status;
+    let pipeline_id: String = src.pipeline_id;
+    let trigger_params_raw: Option<String> = src.trigger_params_raw;
+    let snapshot_raw: String = src.snapshot_raw;
+    let environment_id: Option<String> = src.environment_id;
+    let debug_unredact = src.debug_unredact;
+    let verbose_logs = src.verbose_logs;
+    let run_number: i64 = src.run_number;
+    let run_attempt: i64 = src.run_attempt;
+    let resource_profile: String = src.resource_profile;
+    let team_id: String = src.team_id;
+    let pipeline_name: String = src.pipeline_name;
+    let is_active = src.pipeline_active;
+    let concurrency_group: Option<String> = src.concurrency_group;
+    let concurrency_mode: String = src.concurrency_mode;
+    let concurrency_max_queue: i64 = src.concurrency_max_queue;
 
     // Debug (unredacted) records are admin-only end to end — a non-admin
     // must not even learn the job exists (404, matching get_one/list).
@@ -1123,7 +425,7 @@ pub async fn rerun(
 
     // Same authorization subject as trigger: the job's resolved team.
     crate::services::resource_grants::ensure_team_may_use(
-        &state.pool,
+        &state.db(),
         &team_id,
         resource_profile.trim(),
     )
@@ -1133,24 +435,21 @@ pub async fn rerun(
     // gates the re-run (protection belongs to the environment, not to the
     // historical snapshot). A deleted environment is a clear 404.
     let env =
-        super::environments::resolve_environment(&state.pool, environment_id.as_deref()).await?;
+        super::environments::resolve_environment(&state.db(), environment_id.as_deref()).await?;
     let job_status: &str = match env.as_ref().map(|e| &e.protection) {
         Some(p) if p.enabled => {
             auth.check_team_role(&team_id, p.min_trigger_role)?;
             "waiting_approval"
         }
         _ => {
-            let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-            let st = super::pipelines::resolve_concurrency_status_in_tx(
-                &mut tx,
+            crate::store::pipelines::resolve_concurrency_status(
+                &state.db(),
                 &pipeline_id,
                 concurrency_group.as_deref(),
                 &concurrency_mode,
                 concurrency_max_queue,
             )
-            .await?;
-            tx.commit().await?;
-            st
+            .await?
         }
     };
 
@@ -1194,71 +493,30 @@ pub async fn rerun(
     }
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into());
 
-    let job_id = Uuid::new_v4().to_string();
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    // Re-check is_active inside the transaction: closes the check-to-insert
-    // race with a concurrent pipeline disable (same as do_trigger).
-    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
-        .bind(&pipeline_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-    {
-        None => return Err(AppError::NotFound("pipeline not found".into())),
-        Some(0) => {
-            return Err(AppError::Conflict(
-                "pipeline is disabled — enable it before re-running".into(),
-            ));
-        }
-        Some(_) => {}
-    }
-    sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
-                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
-                           run_number, run_attempt, resource_profile, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-    )
-    .bind(&job_id)
-    .bind(&pipeline_id)
-    .bind(job_status)
-    .bind(&auth.username)
-    .bind(&trigger_params_raw) // sealed verbatim from the source job
-    .bind(&snapshot_str)
-    .bind(i64::from(debug_unredact))
-    .bind(i64::from(verbose_logs))
-    .bind(&environment_id)
-    .bind(&auth.id)
-    .bind(run_number)
-    .bind(new_attempt)
-    .bind(resource_profile.trim())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    audit::record_in(
-        &mut tx,
-        AuditEvent::from_auth(&auth, Action::JobRerun)
-            .resource("job", &job_id, &pipeline_name)
-            .team(Some(team_id.clone()))
-            .after(Some(serde_json::json!({
-                "rerun_of": id,
-                "run_number": run_number,
-                "run_attempt": new_attempt,
-                "status": job_status,
-            }))),
+    let job_id = crate::store::jobs::insert_rerun(
+        &state.db(),
+        &crate::store::jobs::RerunInsert {
+            source_job_id: &id,
+            pipeline_id: &pipeline_id,
+            pipeline_name: &pipeline_name,
+            team_id: &team_id,
+            job_status,
+            trigger_by: &auth.username,
+            trigger_user_id: &auth.id,
+            trigger_params_raw: trigger_params_raw.as_deref(),
+            snapshot_str: &snapshot_str,
+            debug_unredact,
+            verbose_logs,
+            environment_id: environment_id.as_deref(),
+            run_number,
+            run_attempt: new_attempt,
+            resource_profile: resource_profile.trim(),
+        },
+        &auth,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    crate::services::poll_events::wake_all();
-    super::trigger_events::record_simple_trigger(
-        &state.pool,
+    crate::store::trigger_events::record_simple_trigger(
+        &state.db(),
         &pipeline_id,
         "rerun",
         &auth.username,
@@ -1297,27 +555,13 @@ pub async fn delete(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Fetch job context before deletion for logging
-    let ctx = sqlx::query(
-        "SELECT j.status, j.pipeline_id, p.name
-         FROM jobs j
-         LEFT JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let ctx = crate::store::jobs::job_context(&state.db(), &id).await?;
 
     match ctx {
-        Some(row) => {
-            let status: String = row.get(0);
-            let pipeline_id: String = row.get(1);
-            let pipeline: Option<String> = row.try_get(2).ok();
-            let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+        Some((status, pipeline_id, pipeline)) => {
+            let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
             auth.check_team(&team_id, Perm::PipelineWrite)?;
-            sqlx::query("DELETE FROM jobs WHERE id = ?")
-                .bind(&id)
-                .execute(&state.pool)
-                .await?;
+            crate::store::jobs::delete_job(&state.db(), &id).await?;
             audit::record(
                 &state.pool,
                 AuditEvent::new(Action::JobDelete, &auth)
@@ -1361,21 +605,10 @@ pub async fn status_check(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    // Runner↔job binding enforced in the store (only poll()'s owner polls).
+    let status = crate::store::jobs::runner_job_status(&state.db(), &auth.runner_id, &id)
         .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-
-    // Runner↔job binding: a runner may only poll jobs poll() dispatched to it.
-    let owner: Option<String> = row.get(1);
-    if owner.as_deref() != Some(auth.runner_id.as_str()) {
-        return Err(AppError::Forbidden(
-            "job is not assigned to this runner".into(),
-        ));
-    }
-
-    let status: String = row.get(0);
+        .unwrap_or_default();
     Ok(Json(ApiResponse::success(serde_json::json!({
         "status": status,
     }))))
@@ -1401,174 +634,23 @@ pub async fn update_status(
     State(state): State<AppState>,
     Json(req): Json<shared::protocol::UpdateJobStatusRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    // If the job has been manually cancelled via the UI, silently ignore
-    // Runner status updates so the cancellation sticks.
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let outcome = crate::store::jobs::apply_runner_status(
+        &state.db(),
+        &auth.runner_id,
+        &job_id,
+        &crate::store::jobs::RunnerStatusReport {
+            status: req.status.clone(),
+            step_order: req.step_order,
+            truncated_steps: req.truncated_steps.clone(),
+        },
+    )
+    .await?;
 
-    // Runner↔job binding: only the runner poll() dispatched the job to may
-    // update it — a leaked runner JWT must not be able to touch other jobs.
-    let owner: Option<String> = row.get(1);
-    if owner.as_deref() != Some(auth.runner_id.as_str()) {
-        tx.rollback().await?;
-        return Err(AppError::Forbidden(
-            "job is not assigned to this runner".into(),
-        ));
-    }
-
-    let current_status: String = row.get(0);
-
-    // Terminal states win — don't let the Runner overwrite a cancellation or completion.
-    if matches!(
-        current_status.as_str(),
-        "cancelled" | "success" | "failed" | "timeout"
-    ) {
-        tx.rollback().await?;
-        return Ok(Json(ApiResponse::success(())));
-    }
-
-    if let Some(step_order) = req.step_order {
-        // Per-step status update
-        let row2 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
-            .bind(&job_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-
-        let raw: String = row2.get(0);
-        let mut statuses: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-        let now = now_utc();
-
-        // Upsert
-        if let Some(existing) = statuses
-            .iter_mut()
-            .find(|s| s["step_order"].as_i64() == Some(step_order as i64))
-        {
-            existing["status"] = serde_json::json!(&req.status);
-            // Record started_at when a step transitions to "running"
-            if req.status == "running" {
-                existing["started_at"] = serde_json::json!(now);
-            }
-            // Record finished_at when a step reaches a terminal state
-            if matches!(req.status.as_str(), "success" | "failed" | "cancelled") {
-                existing["finished_at"] = serde_json::json!(now);
-            }
-        } else {
-            let mut entry = serde_json::json!({
-                "step_order": step_order,
-                "status": &req.status,
-            });
-            if req.status == "running" {
-                entry["started_at"] = serde_json::json!(now);
-            }
-            if matches!(req.status.as_str(), "success" | "failed" | "cancelled") {
-                entry["finished_at"] = serde_json::json!(now);
-            }
-            statuses.push(entry);
-        }
-
-        let updated = serde_json::to_string(&statuses).unwrap_or_else(|_| "[]".into());
-        sqlx::query("UPDATE jobs SET step_statuses = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(&updated)
-            .bind(&job_id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        // Overall status update
-        let now = "datetime('now')";
-        let end_expr = if matches!(
-            req.status.as_str(),
-            "success" | "failed" | "cancelled" | "timeout"
-        ) {
-            format!("end_time = {now},")
-        } else {
-            String::new()
-        };
-
-        let query = format!(
-            "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 \
-             WHERE id = ? AND status NOT IN ('cancelled', 'success', 'failed', 'timeout')"
-        );
-
-        let result = sqlx::query(&query)
-            .bind(&req.status)
-            .bind(&job_id)
-            .execute(&mut *tx)
-            .await?;
-
-        if result.rows_affected() == 0 {
-            tx.rollback().await?;
-            return Ok(Json(ApiResponse::success(())));
-        }
-
-        // Safety net: if the job transitions to a terminal state, mark any
-        // step still reported as "running" as "failed" so the UI never hangs.
-        if matches!(req.status.as_str(), "failed") {
-            let row3 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
-                .bind(&job_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-            if let Some(row3) = row3 {
-                let raw: String = row3.get(0);
-                let mut step_statuses: Vec<serde_json::Value> =
-                    serde_json::from_str(&raw).unwrap_or_default();
-                let mut changed = false;
-                for s in &mut step_statuses {
-                    if s.get("status").and_then(|v| v.as_str()) == Some("running") {
-                        s["status"] = serde_json::json!("failed");
-                        s["finished_at"] = serde_json::json!(now_utc());
-                        changed = true;
-                    }
-                }
-                if changed {
-                    let updated = serde_json::to_string(&step_statuses).unwrap_or_default();
-                    sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")
-                        .bind(&updated)
-                        .bind(&job_id)
-                        .execute(&mut *tx)
-                        .await?;
-                }
-            }
-        }
-    }
-
-    // Truncation is a fact about the job, not about its log rows: persist it so
-    // it survives job_log_retention sweeping the marker chunk.
-    // Union, never assignment: a DAG job reports several steps truncating
-    // concurrently, and a late per-step report must not erase earlier ones.
-    // Read-merge-write is safe here — the surrounding BEGIN IMMEDIATE holds
-    // the single SQLite writer.
-    if !req.truncated_steps.is_empty() {
-        let existing: String = sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
-            .bind(&job_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let mut merged: Vec<i32> = serde_json::from_str(&existing).unwrap_or_default();
-        merged.extend(req.truncated_steps.iter().copied());
-        merged.sort_unstable();
-        merged.dedup();
-        let encoded = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".into());
-        sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = ?")
-            .bind(&encoded)
-            .bind(&job_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-
-    tx.commit().await?;
-    let job_terminal = matches!(
-        req.status.as_str(),
-        "success" | "failed" | "cancelled" | "timeout"
+    tracing::info!(
+        "Job status updated: {job_id} → {} (applied={})",
+        req.status,
+        outcome.applied
     );
-    if job_terminal {
-        crate::services::poll_events::wake_all();
-    }
-
-    tracing::info!("Job status updated: {job_id} → {}", req.status);
 
     // Per-step updates never notify (the job's own terminal transition will);
     // the broadcast payload is re-read from the row either way.

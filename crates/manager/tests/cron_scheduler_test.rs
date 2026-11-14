@@ -117,7 +117,9 @@ async fn fetch_active_cron_pipelines_returns_configured_environment() {
     seed("cron-no-expr", None, "nightly", 1).await;
     seed("cron-manual", None, "", 1).await;
 
-    let rows = fetch_active_cron_pipelines(&pool).await.expect("fetch");
+    let rows = fetch_active_cron_pipelines(&manager::store::exec::DbPool::from_sqlite(&pool))
+        .await
+        .expect("fetch");
     let mut found: Vec<(String, String)> = rows
         .into_iter()
         .map(|(id, _name, _expr, env)| (id, env))
@@ -179,9 +181,14 @@ async fn first_claim_fires_and_stamps() {
     seed_cron_pipeline(&pool, "p-cron", "default").await;
 
     let schedule = every_second();
-    let fired = claim_cron_fire(&pool, "p-cron", &schedule, 30)
-        .await
-        .expect("first claim");
+    let fired = claim_cron_fire(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "p-cron",
+        &schedule,
+        30,
+    )
+    .await
+    .expect("first claim");
     assert!(fired, "never-fired pipeline fires");
 
     let stamp: String =
@@ -198,16 +205,26 @@ async fn second_claim_within_gap_is_refused() {
     seed_cron_pipeline(&pool, "p-cron", "default").await;
     let schedule = every_second();
 
-    assert!(claim_cron_fire(&pool, "p-cron", &schedule, 30)
-        .await
-        .unwrap());
+    assert!(claim_cron_fire(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "p-cron",
+        &schedule,
+        30
+    )
+    .await
+    .unwrap());
     // Leadership-flip simulation: a fresh claimer immediately after the fire
     // must see the persisted stamp and refuse — the old in-memory limiter
     // allowed a re-fire exactly here.
     assert!(
-        !claim_cron_fire(&pool, "p-cron", &schedule, 30)
-            .await
-            .unwrap(),
+        !claim_cron_fire(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            "p-cron",
+            &schedule,
+            30
+        )
+        .await
+        .unwrap(),
         "persisted stamp blocks the immediate re-fire"
     );
 }
@@ -222,9 +239,14 @@ async fn gap_expiry_allows_the_next_window() {
         .execute(&pool)
         .await
         .expect("backdate stamp");
-    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 30)
-        .await
-        .expect("claim after gap");
+    let fired = claim_cron_fire(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "p-cron",
+        &every_second(),
+        30,
+    )
+    .await
+    .expect("claim after gap");
     assert!(fired, "gap expired → fires again");
 }
 
@@ -235,9 +257,14 @@ async fn empty_window_never_fires() {
 
     // check_interval = 0 makes the window empty (next_fire > now && <= now),
     // so no schedule can fire — the window bound is what gates, not luck.
-    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 0)
-        .await
-        .expect("claim with empty window");
+    let fired = claim_cron_fire(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "p-cron",
+        &every_second(),
+        0,
+    )
+    .await
+    .expect("claim with empty window");
     assert!(!fired);
 
     // Garbage stamp (unparseable) behaves like "never fired".
@@ -245,8 +272,13 @@ async fn empty_window_never_fires() {
         .execute(&pool)
         .await
         .expect("corrupt stamp");
-    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 30)
-        .await
-        .expect("claim with garbage stamp");
+    let fired = claim_cron_fire(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        "p-cron",
+        &every_second(),
+        30,
+    )
+    .await
+    .expect("claim with garbage stamp");
     assert!(fired, "unparseable stamp falls back to never-fired");
 }

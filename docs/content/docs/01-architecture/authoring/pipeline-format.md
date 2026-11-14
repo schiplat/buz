@@ -357,7 +357,7 @@ Optional string that acts as a **concurrency group key**. When set, only **one j
 
 Team **slug** this pipeline belongs to (Phase 2 RBAC). Alias: `owner_group`.
 
-The YAML scanner resolves the slug to `teams.id`. If omitted or unknown, it falls back to the bootstrapped `default` team.
+Saving the definition resolves the slug to `teams.id`. If omitted, it falls back to the bootstrapped `default` team; an unknown slug is rejected.
 
 | | |
 |---|---|

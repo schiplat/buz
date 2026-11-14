@@ -19,7 +19,7 @@ impl FromRequestParts<AppState> for AuthUser {
     ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
         let user =
-            crate::rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token)
+            crate::rbac::authenticate_user_token(&state.db(), &state.config.auth.jwt_secret, token)
                 .await
                 .map_err(|e| match e {
                     shared::error::AppError::AuthFailed(msg) => auth_err(&msg),
@@ -149,16 +149,12 @@ impl FromRequestParts<AppState> for SandboxdClaims {
             return Err(forbidden_err("sandboxd token required"));
         }
         let token_hash = shared::api_token::hash_token(token);
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT host_id, instance_id FROM sandbox_hosts WHERE token_hash = ? AND token_hash != ''",
-        )
-        .bind(&token_hash)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("sandboxd token lookup failed: {e}");
-            auth_err("invalid or revoked token")
-        })?;
+        let row = crate::store::ops_sandbox::sandbox_host_for_token_hash(&state.db(), &token_hash)
+            .await
+            .map_err(|e| {
+                tracing::error!("sandboxd token lookup failed: {e}");
+                auth_err("invalid or revoked token")
+            })?;
         let Some((host_id, instance_id)) = row else {
             return Err(auth_err("invalid or revoked token"));
         };

@@ -104,120 +104,87 @@ fn generate_token() -> String {
 }
 
 async fn load_host(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     host_id: &str,
     instance_id: &str,
-) -> Result<sqlx::sqlite::SqliteRow, AppError> {
-    sqlx::query(
-        "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
-                applied_version, applied_sha256, applied_at, last_fetch_at,
-                last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
-                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
-         FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))
+) -> Result<crate::store::ops_sandbox::HostState, AppError> {
+    crate::store::ops_sandbox::host_state_of(&state.db(), host_id, instance_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))
 }
 
-fn host_json(r: &sqlx::sqlite::SqliteRow) -> Value {
-    use sqlx::Row;
-    let desired: i64 = r.get(4);
-    let applied: i64 = r.get(5);
+fn host_json(h: &crate::store::ops_sandbox::HostState) -> Value {
     json!({
-        "host_id": r.get::<String, _>(0),
-        "instance_id": r.get::<String, _>(1),
-        "status": r.get::<String, _>(2),
-        "max_resource_slots": r.get::<i64, _>(3),
-        "desired_version": desired,
-        "applied_version": applied,
+        "host_id": h.host_id,
+        "instance_id": h.instance_id,
+        "status": h.status,
+        "max_resource_slots": h.max_resource_slots,
+        "desired_version": h.desired_version,
+        "applied_version": h.applied_version,
         // True once sandboxd has fetched AND applied the latest desired
         // version; false means a published version is still in flight.
-        "pushed": desired > 0 && applied >= desired,
-        "applied_sha256": r.get::<String, _>(6),
-        "applied_at": r.get::<Option<String>, _>(7),
-        "last_fetch_at": r.get::<Option<String>, _>(8),
-        "last_fetch_error": r.get::<Option<String>, _>(9),
-        "consecutive_fetch_failures": r.get::<i64, _>(10),
-        "created_at": r.get::<Option<String>, _>(11),
-        "updated_at": r.get::<Option<String>, _>(12),
+        "pushed": h.desired_version > 0 && h.applied_version >= h.desired_version,
+        "applied_sha256": h.applied_sha256,
+        "applied_at": h.applied_at,
+        "last_fetch_at": h.last_fetch_at,
+        "last_fetch_error": h.last_fetch_error,
+        "consecutive_fetch_failures": h.consecutive_fetch_failures,
+        "created_at": h.created_at,
+        "updated_at": h.updated_at,
         // Server-derived liveness: sandboxd long-polls config (45s max wait),
         // so a fetch within the last 5 minutes means the daemon is reachable.
         // Computed against DB time — immune to client clock skew.
-        "live": r.get::<i64, _>(13) != 0,
+        "live": h.live,
     })
 }
 
 async fn current_document(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     host_id: &str,
     instance_id: &str,
 ) -> Result<Option<SandboxHostDocument>, AppError> {
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ?
-         ORDER BY version DESC LIMIT 1",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(pool)
-    .await?;
+    let raw =
+        crate::store::sandboxd_config::latest_config_document(&state.db(), host_id, instance_id)
+            .await?;
     Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
 }
 
 /// Apply a validated document as the next desired version and record the
 /// history row. Caller has already validated and audited.
 async fn apply_document(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     host_id: &str,
     instance_id: &str,
     document: &SandboxHostDocument,
     created_by: &str,
 ) -> Result<i64, AppError> {
-    let (desired_version, applied_version): (i64, i64) = sqlx::query_as(
-        "SELECT desired_version, applied_version FROM sandbox_hosts
-         WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_one(pool)
-    .await?;
+    let (desired_version, applied_version) =
+        crate::store::ops_sandbox::host_versions(&state.db(), host_id, instance_id).await?;
     let version = desired_version.max(applied_version) + 1;
     let json = serde_json::to_string(&sandbox_config::canonical_json(document))
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let sha = sandbox_config::sha256_hex(json.as_bytes());
 
-    sqlx::query(
-        "INSERT INTO sandbox_host_configs (host_id, instance_id, version, document, document_sha256, created_by)
-         VALUES (?, ?, ?, ?, ?, ?)",
+    crate::store::ops_sandbox::insert_config_version(
+        &state.db(),
+        host_id,
+        instance_id,
+        version,
+        &json,
+        &sha,
+        created_by,
     )
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .bind(&json)
-    .bind(&sha)
-    .bind(created_by)
-    .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE sandbox_hosts SET desired_version = ?, updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(version)
-    .bind(host_id)
-    .bind(instance_id)
-    .execute(pool)
-    .await?;
+    crate::store::ops_sandbox::bump_desired_version(&state.db(), host_id, instance_id, version)
+        .await?;
     // Wake every sandboxd long-poll; each re-checks its own desired version.
     crate::services::sandbox_config_events::wake_all();
     Ok(version)
 }
 
-async fn require_approval_enabled(pool: &sqlx::SqlitePool) -> Result<bool, AppError> {
+async fn require_approval_enabled(state: &AppState) -> Result<bool, AppError> {
     let raw = platform_settings::effective(
-        pool,
+        &state.db(),
         platform_settings::KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL,
         "false",
     )
@@ -228,9 +195,9 @@ async fn require_approval_enabled(pool: &sqlx::SqlitePool) -> Result<bool, AppEr
 /// Grants have their own approval switch: they are high-frequency ops
 /// actions, and teams may want the two-person flow here without turning it
 /// on for host-config changes (or vice versa).
-async fn grants_require_approval_enabled(pool: &sqlx::SqlitePool) -> Result<bool, AppError> {
+async fn grants_require_approval_enabled(state: &AppState) -> Result<bool, AppError> {
     let raw = platform_settings::effective(
-        pool,
+        &state.db(),
         platform_settings::KEY_GRANTS_REQUIRE_APPROVAL,
         "false",
     )
@@ -245,15 +212,7 @@ pub async fn list_hosts(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
-                applied_version, applied_sha256, applied_at, last_fetch_at,
-                last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
-                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
-         FROM sandbox_hosts ORDER BY host_id, instance_id",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::ops_sandbox::list_host_states(&state.db()).await?;
     let mut hosts: Vec<Value> = rows.iter().map(host_json).collect();
     // Attach each host's latest (desired) document — mirrors get_host so the
     // ops UI can read profile inventory and the editor's current text without
@@ -261,44 +220,30 @@ pub async fn list_hosts(
     // platform default tiers and profiles merged under the host's own
     // definitions, exactly what dispatch offers — a single source of truth
     // for the ops UI (grants table, job-size chips).
-    let tier_defaults = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let tier_defaults = crate::services::sandbox_defaults::load(&state.db()).await?;
     let profile_defaults =
-        crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_profiles(&state.db()).await?;
     let network_default =
-        crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_network(&state.db()).await?;
     let docs: std::collections::HashMap<String, serde_json::Value> =
-        sqlx::query_as::<_, (String, String, String)>(
-            "SELECT c.host_id, c.instance_id, c.document
-             FROM sandbox_host_configs c
-             JOIN (SELECT host_id, instance_id, MAX(version) AS version
-                   FROM sandbox_host_configs GROUP BY host_id, instance_id) latest
-               ON c.host_id = latest.host_id
-              AND c.instance_id = latest.instance_id
-              AND c.version = latest.version",
-        )
-        .fetch_all(&state.pool)
-        .await?
-        .into_iter()
-        .filter_map(|(host_id, instance_id, raw)| {
-            let document: shared::sandbox_config::SandboxHostDocument =
-                serde_json::from_str(&raw).ok()?;
-            let effective = crate::services::sandbox_defaults::effective_document(
-                &document,
-                &tier_defaults,
-                &profile_defaults,
-                &network_default,
-            );
-            Some((format!("{host_id}/{instance_id}"), effective))
-        })
-        .collect();
+        crate::store::ops_sandbox::latest_documents_all(&state.db())
+            .await?
+            .into_iter()
+            .filter_map(|(host_id, instance_id, raw)| {
+                let document: shared::sandbox_config::SandboxHostDocument =
+                    serde_json::from_str(&raw).ok()?;
+                let effective = crate::services::sandbox_defaults::effective_document(
+                    &document,
+                    &tier_defaults,
+                    &profile_defaults,
+                    &network_default,
+                );
+                Some((format!("{host_id}/{instance_id}"), effective))
+            })
+            .collect();
     // Runners bound to each (host_id, sandbox_instance_id) pair — drives the
     // ops UI's runner count and the delete guard.
-    let runner_rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT host_id, sandbox_instance_id, name FROM runners
-         WHERE host_id != '' ORDER BY name",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let runner_rows = crate::store::ops_sandbox::attached_runners_all(&state.db()).await?;
     let mut runners_by_pair: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for (host, instance, name) in runner_rows {
@@ -334,21 +279,13 @@ pub async fn enroll_host(
     let token = generate_token();
     let token_hash = shared::api_token::hash_token(&token);
 
-    sqlx::query(
-        "INSERT INTO sandbox_hosts (host_id, instance_id, status, max_resource_slots, token_hash)
-         VALUES (?, ?, 'enrolled', ?, ?)
-         ON CONFLICT(host_id, instance_id) DO UPDATE SET
-           token_hash = excluded.token_hash,
-           max_resource_slots = CASE WHEN excluded.max_resource_slots > 0
-                                     THEN excluded.max_resource_slots
-                                     ELSE sandbox_hosts.max_resource_slots END,
-           updated_at = datetime('now')",
+    crate::store::ops_sandbox::enroll_host(
+        &state.db(),
+        &host_id,
+        &instance_id,
+        req.max_resource_slots as i64,
+        &token_hash,
     )
-    .bind(&host_id)
-    .bind(&instance_id)
-    .bind(req.max_resource_slots as i64)
-    .bind(&token_hash)
-    .execute(&state.pool)
     .await?;
 
     audit::record(
@@ -377,18 +314,12 @@ pub async fn get_host(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    let row = load_host(&state.pool, &host_id, &instance_id).await?;
-    let document = current_document(&state.pool, &host_id, &instance_id).await?;
+    let row = load_host(&state, &host_id, &instance_id).await?;
+    let document = current_document(&state, &host_id, &instance_id).await?;
     let mut body = host_json(&row);
     body["document"] = serde_json::to_value(&document).unwrap_or(Value::Null);
     // Runners reporting this host (PR #5 wires the heartbeat side).
-    let runners: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM runners WHERE host_id = ? ORDER BY name")
-            .bind(&host_id)
-            .fetch_all(&state.pool)
-            .await?
-            .into_iter()
-            .collect();
+    let runners = crate::store::ops_sandbox::runner_names_for_host(&state.db(), &host_id).await?;
     body["attached_runners"] = json!(runners);
     Ok(Json(ApiResponse::success(body)))
 }
@@ -403,34 +334,16 @@ pub async fn delete_host(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    load_host(&state.pool, &host_id, &instance_id).await?;
-    let bound: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM runners WHERE host_id = ? AND sandbox_instance_id = ?",
-    )
-    .bind(&host_id)
-    .bind(&instance_id)
-    .fetch_one(&state.pool)
-    .await?;
+    load_host(&state, &host_id, &instance_id).await?;
+    let bound =
+        crate::store::ops_sandbox::runner_count_for_pair(&state.db(), &host_id, &instance_id)
+            .await?;
     if bound > 0 {
         return Err(AppError::ValidationFailed(format!(
             "{bound} runner(s) still bound to {host_id}/{instance_id} — detach them before deleting the enrollment"
         )));
     }
-    let mut tx = state.pool.begin().await?;
-    for table in [
-        "sandbox_config_changes",
-        "sandbox_host_configs",
-        "sandbox_hosts",
-    ] {
-        sqlx::query(&format!(
-            "DELETE FROM {table} WHERE host_id = ? AND instance_id = ?"
-        ))
-        .bind(&host_id)
-        .bind(&instance_id)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
+    crate::store::ops_sandbox::delete_host_cascade(&state.db(), &host_id, &instance_id).await?;
 
     audit::record(
         &state.pool,
@@ -471,10 +384,10 @@ pub async fn get_defaults(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let tiers = crate::services::sandbox_defaults::load(&state.pool).await?;
-    let profiles = crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
-    let network = crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
-    let max_slots = crate::services::sandbox_defaults::load_default_max_slots(&state.pool).await?;
+    let tiers = crate::services::sandbox_defaults::load(&state.db()).await?;
+    let profiles = crate::services::sandbox_defaults::load_default_profiles(&state.db()).await?;
+    let network = crate::services::sandbox_defaults::load_default_network(&state.db()).await?;
+    let max_slots = crate::services::sandbox_defaults::load_default_max_slots(&state.db()).await?;
     Ok(Json(ApiResponse::success(json!({
         "tiers": tiers,
         "profiles": profiles,
@@ -533,7 +446,7 @@ pub async fn put_defaults(
         return Err(AppError::ValidationFailed(problems.join("; ")));
     }
 
-    let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
+    let before = crate::services::sandbox_defaults::load_all_defaults(&state.db()).await?;
     let after = crate::services::sandbox_defaults::AllDefaults {
         tiers: tiers.clone(),
         profiles: profiles.clone(),
@@ -544,18 +457,15 @@ pub async fn put_defaults(
     let before_json =
         serde_json::to_value(&before).map_err(|e| AppError::Internal(e.to_string()))?;
 
-    if require_approval_enabled(&state.pool).await? {
+    if require_approval_enabled(&state).await? {
         let change_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO sandbox_config_changes
-             (id, host_id, instance_id, status, requested_by, before_document, after_document)
-             VALUES (?, 'platform-defaults', 'defaults', 'pending', ?, ?, ?)",
+        crate::store::ops_sandbox::insert_defaults_pending_change(
+            &state.db(),
+            &change_id,
+            &auth.username,
+            &serde_json::to_string(&before_json).unwrap_or_default(),
+            &serde_json::to_string(&after_json).map_err(|e| AppError::Internal(e.to_string()))?,
         )
-        .bind(&change_id)
-        .bind(&auth.username)
-        .bind(serde_json::to_string(&before_json).unwrap_or_default())
-        .bind(serde_json::to_string(&after_json).map_err(|e| AppError::Internal(e.to_string()))?)
-        .execute(&state.pool)
         .await?;
         audit::record(
             &state.pool,
@@ -572,11 +482,11 @@ pub async fn put_defaults(
         }))));
     }
 
-    crate::services::sandbox_defaults::save_all(&state.pool, &after, &auth.username)
+    crate::services::sandbox_defaults::save_all(&state.db(), &after, &auth.username)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
-        &state.pool,
+        &state.db(),
         &before.tiers,
         &after.tiers,
         &before.profiles,
@@ -615,15 +525,14 @@ pub async fn put_config(
     Json(req): Json<PutConfigRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    load_host(&state.pool, &host_id, &instance_id).await?;
+    load_host(&state, &host_id, &instance_id).await?;
 
     let (document, warnings) = sandbox_config::validate(&req.document)
         .map_err(|problems| AppError::ValidationFailed(problems.join("; ")))?;
 
     if let Some(if_match) = headers.get(&IF_MATCH).and_then(|v| v.to_str().ok()) {
-        let row = load_host(&state.pool, &host_id, &instance_id).await?;
-        use sqlx::Row;
-        let desired: i64 = row.get(4);
+        let row = load_host(&state, &host_id, &instance_id).await?;
+        let desired: i64 = row.desired_version;
         let expected: i64 = if_match
             .trim()
             .parse()
@@ -635,21 +544,18 @@ pub async fn put_config(
         }
     }
 
-    if require_approval_enabled(&state.pool).await? {
-        let before = current_document(&state.pool, &host_id, &instance_id).await?;
+    if require_approval_enabled(&state).await? {
+        let before = current_document(&state, &host_id, &instance_id).await?;
         let change_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO sandbox_config_changes
-             (id, host_id, instance_id, status, requested_by, before_document, after_document)
-             VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+        crate::store::ops_sandbox::insert_host_pending_change(
+            &state.db(),
+            &change_id,
+            &host_id,
+            &instance_id,
+            &auth.username,
+            &serde_json::to_string(&before).unwrap_or_default(),
+            &serde_json::to_string(&document).map_err(|e| AppError::Internal(e.to_string()))?,
         )
-        .bind(&change_id)
-        .bind(&host_id)
-        .bind(&instance_id)
-        .bind(&auth.username)
-        .bind(serde_json::to_string(&before).unwrap_or_default())
-        .bind(serde_json::to_string(&document).map_err(|e| AppError::Internal(e.to_string()))?)
-        .execute(&state.pool)
         .await?;
         audit::record(
             &state.pool,
@@ -672,14 +578,7 @@ pub async fn put_config(
         }))));
     }
 
-    let version = apply_document(
-        &state.pool,
-        &host_id,
-        &instance_id,
-        &document,
-        &auth.username,
-    )
-    .await?;
+    let version = apply_document(&state, &host_id, &instance_id, &document, &auth.username).await?;
     tracing::info!(
         host = %host_id,
         instance = %instance_id,
@@ -730,16 +629,8 @@ pub async fn list_versions(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
-        "SELECT version, document_sha256, created_by, created_at, document
-         FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ?
-         ORDER BY version DESC",
-    )
-    .bind(&host_id)
-    .bind(&instance_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows =
+        crate::store::ops_sandbox::config_versions(&state.db(), &host_id, &instance_id).await?;
     let versions: Vec<Value> = rows
         .into_iter()
         .map(|(version, sha, by, at, document)| {
@@ -764,28 +655,19 @@ pub async fn rollback(
     Json(req): Json<RollbackRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    let raw: String = sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ? AND version = ?",
+    let raw = crate::store::ops_sandbox::config_document_at(
+        &state.db(),
+        &host_id,
+        &instance_id,
+        req.version,
     )
-    .bind(&host_id)
-    .bind(&instance_id)
-    .bind(req.version)
-    .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("no such config version".into()))?;
     let document: SandboxHostDocument = serde_json::from_str(&raw)
         .map_err(|e| AppError::Internal(format!("stored document unreadable: {e}")))?;
     let (document, warnings) = sandbox_config::validate(&document)
         .map_err(|problems| AppError::ValidationFailed(problems.join("; ")))?;
-    let version = apply_document(
-        &state.pool,
-        &host_id,
-        &instance_id,
-        &document,
-        &auth.username,
-    )
-    .await?;
+    let version = apply_document(&state, &host_id, &instance_id, &document, &auth.username).await?;
     tracing::info!(
         host = %host_id,
         instance = %instance_id,
@@ -818,16 +700,14 @@ pub async fn rotate_token(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
-    load_host(&state.pool, &host_id, &instance_id).await?;
+    load_host(&state, &host_id, &instance_id).await?;
     let token = generate_token();
-    sqlx::query(
-        "UPDATE sandbox_hosts SET token_hash = ?, updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
+    crate::store::ops_sandbox::update_token_hash(
+        &state.db(),
+        &host_id,
+        &instance_id,
+        &shared::api_token::hash_token(&token),
     )
-    .bind(shared::api_token::hash_token(&token))
-    .bind(&host_id)
-    .bind(&instance_id)
-    .execute(&state.pool)
     .await?;
     // The token itself never reaches the log — only the fact of rotation.
     tracing::info!(
@@ -861,15 +741,13 @@ pub async fn update_budget(
                 .into(),
         ));
     }
-    load_host(&state.pool, &host_id, &instance_id).await?;
-    sqlx::query(
-        "UPDATE sandbox_hosts SET max_resource_slots = ?, updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
+    load_host(&state, &host_id, &instance_id).await?;
+    crate::store::ops_sandbox::update_max_slots(
+        &state.db(),
+        &host_id,
+        &instance_id,
+        req.max_resource_slots,
     )
-    .bind(req.max_resource_slots)
-    .bind(&host_id)
-    .bind(&instance_id)
-    .execute(&state.pool)
     .await?;
     tracing::info!(
         host = %host_id,
@@ -894,22 +772,6 @@ pub async fn update_budget(
     }))))
 }
 
-/// One `sandbox_config_changes` row as the approval queue lists it:
-/// (id, host_id, instance_id, status, requested_by, after_document,
-/// created_at, decided_at).
-type ChangeRow = (
-    String,         // id
-    String,         // host_id
-    String,         // instance_id
-    String,         // status
-    String,         // requested_by
-    String,         // after_document
-    Option<String>, // created_at
-    Option<String>, // decided_at
-    Option<String>, // approved_by
-    Option<String>, // decision_comment
-);
-
 /// GET /ops/sandbox-changes?status=pending — approval queue.
 pub async fn list_changes(
     _auth: OpsAdmin,
@@ -918,16 +780,8 @@ pub async fn list_changes(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let status = q.status.unwrap_or_else(|| "pending".into());
     // `decided` = approved + rejected merged (the queue's History tab).
-    let (where_clause, status_filter): (String, Vec<String>) = if status == "decided" {
-        (
-            "WHERE status IN ('approved', 'rejected')".to_string(),
-            vec![],
-        )
-    } else {
-        ("WHERE status = ?".to_string(), vec![status.clone()])
-    };
-    // History can grow unbounded — the inbox pages it (pending stays single-page).
     let decided = status == "decided";
+    // History can grow unbounded — the inbox pages it (pending stays single-page).
     let page = if decided {
         q.page.unwrap_or(1).max(1)
     } else {
@@ -938,25 +792,8 @@ pub async fn list_changes(
     } else {
         20
     };
-    let total: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM sandbox_config_changes {where_clause}"
-    ))
-    .bind(status_filter.first())
-    .fetch_one(&state.pool)
-    .await?;
-    let sql = format!(
-        "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at,
-                approved_by, decision_comment
-         FROM sandbox_config_changes {where_clause}
-         ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC
-         LIMIT {} OFFSET {}",
-        page_size,
-        (page - 1) * page_size,
-    );
-    let rows: Vec<ChangeRow> = sqlx::query_as(&sql)
-        .bind(status_filter.first())
-        .fetch_all(&state.pool)
-        .await?;
+    let (total, rows) =
+        crate::store::ops_sandbox::list_changes(&state.db(), &status, page, page_size).await?;
     let changes: Vec<Value> = rows
         .into_iter()
         .map(
@@ -993,13 +830,7 @@ pub async fn approve_change(
     State(state): State<AppState>,
     Json(req): Json<ChangeDecisionRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT status, requested_by, host_id, instance_id, after_document
-         FROM sandbox_config_changes WHERE id = ?",
-    )
-    .bind(&change_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let row = crate::store::ops_sandbox::change_facts(&state.db(), &change_id).await?;
     let Some((status, requested_by, host_id, instance_id, after_document)) = row else {
         return Err(AppError::NotFound("change not found".into()));
     };
@@ -1020,47 +851,29 @@ pub async fn approve_change(
         let team_id = after["team_id"].as_str().unwrap_or_default().to_string();
         let profile = after["profile"].as_str().unwrap_or_default().to_string();
         let granted = after["granted"].as_bool().unwrap_or(false);
-        let pipelines: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pipelines WHERE team_id = ? AND resource_profile = ?",
-        )
-        .bind(&team_id)
-        .bind(&profile)
-        .fetch_one(&state.pool)
-        .await?;
-        let queued_jobs: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
-               AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
-               AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
-        )
-        .bind(&team_id)
-        .bind(&profile)
-        .fetch_one(&state.pool)
-        .await?;
+        let pipelines =
+            crate::store::ops_sandbox::pipeline_count_for_profile(&state.db(), &team_id, &profile)
+                .await?;
+        let queued_jobs =
+            crate::store::ops_sandbox::queued_jobs_for_profile(&state.pool, &team_id, &profile)
+                .await?;
         if granted {
-            sqlx::query(
-                "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
-                 VALUES (?, ?, ?)",
+            crate::store::ops_sandbox::replace_grant(
+                &state.pool,
+                &team_id,
+                &profile,
+                &requested_by,
             )
-            .bind(&team_id)
-            .bind(&profile)
-            .bind(&requested_by)
-            .execute(&state.pool)
             .await?;
         } else {
-            sqlx::query("DELETE FROM team_resource_grants WHERE team_id = ? AND profile = ?")
-                .bind(&team_id)
-                .bind(&profile)
-                .execute(&state.pool)
-                .await?;
+            crate::store::ops_sandbox::delete_grant(&state.db(), &team_id, &profile).await?;
         }
-        sqlx::query(
-            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
-                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
+        crate::store::ops_sandbox::approve_change_row(
+            &state.db(),
+            &change_id,
+            &auth.username,
+            req.comment.clone().as_deref(),
         )
-        .bind(&auth.username)
-        .bind(req.comment.clone())
-        .bind(&change_id)
-        .execute(&state.pool)
         .await?;
         tracing::info!(
             change = %change_id,
@@ -1106,12 +919,12 @@ pub async fn approve_change(
         if !problems.is_empty() {
             return Err(AppError::Internal(problems.join("; ")));
         }
-        let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
-        crate::services::sandbox_defaults::save_all(&state.pool, &catalog, &requested_by)
+        let before = crate::services::sandbox_defaults::load_all_defaults(&state.db()).await?;
+        crate::services::sandbox_defaults::save_all(&state.db(), &catalog, &requested_by)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
-            &state.pool,
+            &state.db(),
             &before.tiers,
             &catalog.tiers,
             &before.profiles,
@@ -1122,14 +935,12 @@ pub async fn approve_change(
         .await?;
         crate::services::sandbox_config_events::wake_all();
         let version = bumped.len() as i64;
-        sqlx::query(
-            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
-                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
+        crate::store::ops_sandbox::approve_change_row(
+            &state.db(),
+            &change_id,
+            &auth.username,
+            req.comment.clone().as_deref(),
         )
-        .bind(&auth.username)
-        .bind(req.comment.clone())
-        .bind(&change_id)
-        .execute(&state.pool)
         .await?;
         tracing::info!(
             change = %change_id,
@@ -1155,22 +966,13 @@ pub async fn approve_change(
         .map_err(|e| AppError::Internal(format!("pending document unreadable: {e}")))?;
     let (document, _) = sandbox_config::validate(&document)
         .map_err(|problems| AppError::Internal(problems.join("; ")))?;
-    let version = apply_document(
-        &state.pool,
-        &host_id,
-        &instance_id,
-        &document,
+    let version = apply_document(&state, &host_id, &instance_id, &document, &auth.username).await?;
+    crate::store::ops_sandbox::approve_change_row(
+        &state.db(),
+        &change_id,
         &auth.username,
+        req.comment.clone().as_deref(),
     )
-    .await?;
-    sqlx::query(
-        "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
-                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&auth.username)
-    .bind(req.comment.clone())
-    .bind(&change_id)
-    .execute(&state.pool)
     .await?;
     tracing::info!(
         change = %change_id,
@@ -1203,13 +1005,7 @@ pub async fn reject_change(
     State(state): State<AppState>,
     Json(req): Json<ChangeDecisionRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT status, requested_by, host_id, instance_id, after_document
-         FROM sandbox_config_changes WHERE id = ?",
-    )
-    .bind(&change_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let row = crate::store::ops_sandbox::change_facts(&state.db(), &change_id).await?;
     let Some((status, requested_by, host_id, instance_id, after_document)) = row else {
         return Err(AppError::NotFound("change not found".into()));
     };
@@ -1227,14 +1023,12 @@ pub async fn reject_change(
         let profile = after["profile"].as_str().unwrap_or_default().to_string();
         let granted = after["granted"].as_bool().unwrap_or(false);
         if !granted {
-            sqlx::query(
-                "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
-                 VALUES (?, ?, ?)",
+            crate::store::ops_sandbox::replace_grant(
+                &state.pool,
+                &team_id,
+                &profile,
+                &requested_by,
             )
-            .bind(&team_id)
-            .bind(&profile)
-            .bind(&requested_by)
-            .execute(&state.pool)
             .await?;
             grant_restored = true;
             tracing::info!(
@@ -1247,14 +1041,12 @@ pub async fn reject_change(
         }
     }
 
-    sqlx::query(
-        "UPDATE sandbox_config_changes SET status = 'rejected', approved_by = ?,
-            decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
+    crate::store::ops_sandbox::reject_change_row(
+        &state.db(),
+        &change_id,
+        &auth.username,
+        req.comment.clone().as_deref(),
     )
-    .bind(&auth.username)
-    .bind(req.comment.clone())
-    .bind(&change_id)
-    .execute(&state.pool)
     .await?;
     tracing::info!(
         change = %change_id,
@@ -1288,13 +1080,7 @@ pub async fn list_grants(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT g.team_id, t.name, g.profile, g.created_at
-         FROM team_resource_grants g JOIN teams t ON t.id = g.team_id
-         ORDER BY t.name, g.profile",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::ops_sandbox::list_grants(&state.db()).await?;
     let grants: Vec<Value> = rows
         .into_iter()
         .map(|(team_id, team_name, profile, created_at)| {
@@ -1333,10 +1119,7 @@ pub async fn upsert_grant(
             "profile name '{profile}' is invalid (expected [a-z0-9][a-z0-9-]{{0,31}})"
         )));
     }
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
-        .bind(&team_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let exists = crate::store::ops_sandbox::team_exists(&state.db(), &team_id).await?;
     if !exists {
         return Err(AppError::ValidationFailed(format!(
             "team '{team_id}' does not exist"
@@ -1344,31 +1127,22 @@ pub async fn upsert_grant(
     }
     // Request-time blast radius: the requester (and later the approver) should
     // see how many pipelines this unlocks before the change is approved.
-    let pipeline_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pipelines WHERE team_id = ? AND resource_profile = ?",
-    )
-    .bind(&team_id)
-    .bind(&profile)
-    .fetch_one(&state.pool)
-    .await?;
+    let pipeline_count =
+        crate::store::ops_sandbox::pipeline_count_for_profile(&state.db(), &team_id, &profile)
+            .await?;
 
-    if grants_require_approval_enabled(&state.pool).await? {
+    if grants_require_approval_enabled(&state).await? {
         let change_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO sandbox_config_changes
-             (id, host_id, instance_id, status, requested_by, before_document, after_document)
-             VALUES (?, 'resource-grants', 'grant', 'pending', ?, '{}', ?)",
-        )
-        .bind(&change_id)
-        .bind(&auth.username)
-        .bind(
-            serde_json::to_string(&json!({
+        crate::store::ops_sandbox::insert_grant_pending_change(
+            &state.db(),
+            &change_id,
+            &auth.username,
+            &serde_json::to_string(&json!({
                 "team_id": team_id, "profile": profile, "granted": true,
                 "pipelines": pipeline_count,
             }))
             .map_err(|e| AppError::Internal(e.to_string()))?,
         )
-        .execute(&state.pool)
         .await?;
         tracing::info!(
             team = %team_id,
@@ -1393,16 +1167,8 @@ pub async fn upsert_grant(
             "pipelines": pipeline_count,
         }))));
     }
-    sqlx::query(
-        "INSERT INTO team_resource_grants (team_id, profile, granted_by)
-         VALUES (?, ?, ?)
-         ON CONFLICT(team_id, profile) DO NOTHING",
-    )
-    .bind(&team_id)
-    .bind(&profile)
-    .bind(&auth.username)
-    .execute(&state.pool)
-    .await?;
+    crate::store::ops_sandbox::insert_grant_ignore(&state.db(), &team_id, &profile, &auth.username)
+        .await?;
     tracing::info!(
         team = %team_id,
         profile = %profile,
@@ -1431,50 +1197,32 @@ pub async fn delete_grant(
     Path((team_id, profile)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let result = sqlx::query("DELETE FROM team_resource_grants WHERE team_id = ? AND profile = ?")
-        .bind(&team_id)
-        .bind(&profile)
-        .execute(&state.pool)
-        .await?;
-    if result.rows_affected() == 0 {
+    let deleted = crate::store::ops_sandbox::delete_grant(&state.db(), &team_id, &profile).await?;
+    if !deleted {
         return Err(AppError::NotFound("grant not found".into()));
     }
 
     // Revocation impact: queued jobs with this (team, profile) fail terminally
     // at claim — the approver should see that number before deciding.
-    let queued_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
-           AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
-           AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
-    )
-    .bind(&team_id)
-    .bind(&profile)
-    .fetch_one(&state.pool)
-    .await?;
+    let queued_jobs =
+        crate::store::ops_sandbox::queued_jobs_for_profile(&state.pool, &team_id, &profile).await?;
 
-    if grants_require_approval_enabled(&state.pool).await? {
+    if grants_require_approval_enabled(&state).await? {
         let change_id = Uuid::new_v4().to_string();
         // The revoke already removed the row above — approval is what it
         // stays removed for; a reject restores it. That keeps the revocation
         // effective-immediately semantics the operator asked for while the
         // paperwork catches up.
-        sqlx::query(
-            "INSERT INTO sandbox_config_changes
-             (id, host_id, instance_id, status, requested_by, before_document, after_document)
-             VALUES (?, 'resource-grants', 'revoke', 'pending', ?, ?, ?)",
-        )
-        .bind(&change_id)
-        .bind(&auth.username)
-        .bind(
-            serde_json::to_string(&json!({ "team_id": team_id, "profile": profile }))
+        crate::store::ops_sandbox::insert_revoke_pending_change(
+            &state.db(),
+            &change_id,
+            &auth.username,
+            &serde_json::to_string(&json!({ "team_id": team_id, "profile": profile }))
                 .map_err(|e| AppError::Internal(e.to_string()))?,
-        )
-        .bind(
-            serde_json::to_string(&json!({ "team_id": team_id, "profile": profile,
+            &serde_json::to_string(&json!({ "team_id": team_id, "profile": profile,
                                            "granted": false, "queued_jobs": queued_jobs }))
             .map_err(|e| AppError::Internal(e.to_string()))?,
         )
-        .execute(&state.pool)
         .await?;
         tracing::info!(
             team = %team_id,
