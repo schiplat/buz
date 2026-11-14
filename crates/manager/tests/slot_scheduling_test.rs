@@ -380,7 +380,9 @@ async fn concurrent_polls_cannot_oversell_the_budget() {
     assert_eq!(claimed, 1, "exactly one large job may run on a 4-slot host");
     let running: i64 = exec::fetch_optional(
         &pool,
-        "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs WHERE status = 'running'",
+        // CAST: Postgres evaluates SUM as NUMERIC, undecodable as i64.
+        "SELECT CAST(COALESCE(SUM(resource_slots), 0) AS BIGINT) FROM jobs
+         WHERE status = 'running'",
         &[],
     )
     .await

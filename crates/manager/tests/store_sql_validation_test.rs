@@ -306,6 +306,10 @@ async fn postgres_statements_are_declared() {
         "snapshot::jsonb ->> 'resource_profile'",                   // queued_jobs_for_profile
         "(j.snapshot::jsonb ->> 'team_id')",                        // claim_candidate_tx
         "jsonb_array_elements_text(h.labels::jsonb) AS host_label", // pipelines host labels
+        // slot-gate serialization: FOR UPDATE on the host row (Postgres arm
+        // of the slot scheduler's slot-occupancy reconcile; see
+        // ops_sandbox::reconcile_running_slots_tx)
+        "SELECT running_slots FROM sandbox_hosts WHERE host_id = $1 AND instance_id = $2 FOR UPDATE",
     ];
     // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
     // dynamic fragment — the extraction routes it here by the `$1` marker.
@@ -350,7 +354,7 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "INSERT INTO sandbox_config_changes (id, host_id, instance_id, status, requested_by, before_document, after_document) VALUES (?, 'resource-grants', 'grant', 'pending', ?, '{}', ?)",
     "SELECT COUNT(*) FROM sandbox_config_changes {where_clause}",
     "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at, approved_by, decision_comment FROM sandbox_config_changes {where_clause} ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC LIMIT {} OFFSET {}",
-    "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels, p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active, p.source, p.team_id, p.owner_group, p.created_at, p.updated_at, j.id as latest_job_id, j.status as latest_job_status, j.start_time as latest_job_start, COALESCE(js.job_total, 0) as job_total, COALESCE(js.job_success, 0) as job_success, p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds, p.yaml_path, p.environments FROM pipelines p LEFT JOIN ( SELECT pipeline_id, MAX(created_at) as max_created FROM jobs {debug_scope}GROUP BY pipeline_id ) latest ON p.id = latest.pipeline_id LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created LEFT JOIN ( SELECT pipeline_id, COUNT(*) as job_total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success FROM jobs {debug_scope}GROUP BY pipeline_id ) js ON p.id = js.pipeline_id WHERE 1=1",
+    "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels, p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active, p.source, p.team_id, p.owner_group, p.created_at, p.updated_at, j.id as latest_job_id, j.status as latest_job_status, j.start_time as latest_job_start, COALESCE(js.job_total, 0) as job_total, COALESCE(js.job_success, 0) as job_success, p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds, p.yaml_path, p.environments FROM pipelines p LEFT JOIN ( SELECT pipeline_id, MAX(created_at) as max_created FROM jobs {debug_scope}GROUP BY pipeline_id ) latest ON p.id = latest.pipeline_id LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created LEFT JOIN ( SELECT pipeline_id, COUNT(*) as job_total, CAST(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS BIGINT) as job_success FROM jobs {debug_scope}GROUP BY pipeline_id ) js ON p.id = js.pipeline_id WHERE 1=1",
     "UPDATE runners SET {column} = ?, updated_at = datetime('now') WHERE id = ?",
     "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels, j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type, j.environment_id, j.run_number, j.run_attempt, CAST(strftime('%s', 'now') - strftime('%s', j.created_at) AS INTEGER) AS waited_seconds FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id WHERE j.status = 'pending' AND (? IS NULL OR json_extract(j.snapshot, '$.team_id') = ?) AND ( j.environment_id IS NULL OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress' OR j.seq = ( SELECT MAX(latest.seq) FROM jobs latest WHERE latest.environment_id = j.environment_id AND latest.status = 'pending' ) ) AND NOT ( COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') = 'queue' AND EXISTS (SELECT 1 FROM jobs running WHERE running.environment_id = j.environment_id AND running.status = 'running') ) AND NOT ( COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress' AND EXISTS (SELECT 1 FROM jobs running WHERE running.pipeline_id = j.pipeline_id AND running.environment_id = j.environment_id AND running.status = 'running') ) ORDER BY j.created_at ASC, j.seq ASC LIMIT 50",
     "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'), json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'), COALESCE(json_extract(j.value, '$.host_id'), ''), COALESCE(json_extract(j.value, '$.host_names'), ''), COALESCE(json_extract(j.value, '$.host_labels'), ''), COALESCE(json_extract(j.value, '$.command_template'), ''), COALESCE(json_extract(j.value, '$.work_dir'), ''), COALESCE(json_extract(j.value, '$.retry_count'), 0), COALESCE(json_extract(j.value, '$.timeout_seconds'), 0), COALESCE(json_extract(j.value, '$.fail_strategy'), 'stop'), COALESCE(json_extract(j.value, '$.step_secrets'), ''), COALESCE(json_extract(j.value, '$.step_env'), '{}'), COALESCE(json_extract(j.value, '$.image'), ''), COALESCE(json_extract(j.value, '$.volumes'), '[]'), COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'), COALESCE(json_extract(j.value, '$.privileged'), 0), COALESCE(json_extract(j.value, '$.capabilities'), '[]'), COALESCE(json_extract(j.value, '$.hosts_max_parallel'), NULL), COALESCE(json_extract(j.value, '$.needs'), '[]') FROM json_each(?, '$.tasks') j ORDER BY json_extract(j.value, '$.step_order')",
@@ -423,6 +427,10 @@ const FORBIDDEN_TOKENS: &[&str] = &[
 
 #[test]
 fn shared_statements_use_portable_syntax_only() {
+    // Aggregate decoding hazard: Postgres evaluates SUM(bigint) as NUMERIC,
+    // which the row cascade cannot decode as i64 (it silently becomes 0).
+    // Shared statements must spell `CAST(SUM(…) AS BIGINT)`; the FOR UPDATE
+    // lock read is exempt (it selects no aggregate).
     let mut violations = Vec::new();
     for (label, source) in store_sources() {
         let pairs = manager::store::sql::dual_bodies(&source);
@@ -442,13 +450,22 @@ fn shared_statements_use_portable_syntax_only() {
             if literal.contains("$1") {
                 continue;
             }
+            let lowered = literal.to_ascii_lowercase();
             for token in FORBIDDEN_TOKENS {
-                if literal.to_ascii_lowercase().contains(token) {
+                if lowered.contains(token) {
                     violations.push(format!(
                         "{label}: shared statement contains `{token}`:\n  {}",
                         literal.trim()
                     ));
                 }
+            }
+            if lowered.contains("sum(") && !lowered.contains("as bigint") {
+                violations.push(format!(
+                    "{label}: bare SUM( in a shared statement — wrap it: \
+                     CAST(… AS BIGINT) (Postgres evaluates SUM as NUMERIC,\
+                     which the i64 cascade cannot decode):\n  {}",
+                    literal.trim()
+                ));
             }
         }
     }

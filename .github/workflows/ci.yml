@@ -178,12 +178,11 @@ jobs:
       - name: Schema parity between SQLite and Postgres
         run: cargo test -p manager --features postgres --test schema_parity_test
 
-      # The dual-backend fixture matrix: every converted suite runs
-      # unmodified on Postgres via BUZ_TEST_DB=pg. slot_scheduling_test is
-      # excluded until the slot-gate write skew under Postgres is fixed
-      # (see KNOWN_ISSUES.md); SQLite-only suites (migration-chain tests,
-      # cluster_mode, schema_dump, run_number, rotate_jwt_key, step_resolver)
-      # and the pg_* suites are not part of the matrix.
+      # The dual-backend fixture matrix: every converted suite (incl.
+      # slot_scheduling via the guarded host-row reconcile) runs unmodified
+      # on Postgres via BUZ_TEST_DB=pg. SQLite-only suites (migration-chain
+      # tests, cluster_mode, schema_dump, run_number, rotate_jwt_key,
+      # step_resolver) and the pg_* suites are not part of the matrix.
       - name: Fixture matrix (BUZ_TEST_DB=pg)
         run: |
           BUZ_TEST_DB=pg cargo test -p manager --features postgres \
@@ -227,6 +226,7 @@ jobs:
             --test runner_standalone_register_test \
             --test runner_terminal_status_test \
             --test sandboxd_config_test \
+            --test slot_scheduling_test \
             --test verbose_trigger_test \
             --test version_test \
             --test webhook_environment_test \

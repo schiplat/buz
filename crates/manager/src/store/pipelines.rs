@@ -1189,7 +1189,7 @@ pub async fn list_rows(
          LEFT JOIN (
              SELECT pipeline_id,
                     COUNT(*) as job_total,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
+                    CAST(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS BIGINT) as job_success
              FROM jobs {debug_scope}GROUP BY pipeline_id
          ) js ON p.id = js.pipeline_id
          WHERE 1=1"
@@ -1229,7 +1229,7 @@ pub async fn list_rows(
          LEFT JOIN (
              SELECT pipeline_id,
                     COUNT(*) as job_total,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
+                    CAST(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS BIGINT) as job_success
              FROM jobs {debug_scope}GROUP BY pipeline_id
          ) js ON p.id = js.pipeline_id
          WHERE 1=1"
