@@ -20,21 +20,16 @@ use crate::config::{DatabaseConfig, StorageKind};
 /// otherwise the legacy `[database] path`. The startup gate refuses other
 /// schemes before this is reached.
 fn sqlite_file(database: &DatabaseConfig) -> String {
-    match &database.url {
-        Some(url) if url.trim().to_lowercase().starts_with("sqlite:") => url.trim()
-            [("sqlite:".len())..]
-            .trim_start_matches("//")
-            .to_string(),
-        _ => database.path.clone(),
-    }
+    database.sqlite_path()
 }
 
-/// Refuse to start when `[cluster] mode` and the storage backend contradict
-/// each other, or when the configured backend cannot be served yet.
+/// Refuse to start when `[cluster] mode` is not served by this build, or when
+/// the configured backend cannot be served.
 ///
-/// - `multi` + SQLite is refused: SQLite has no cross-instance coordination
-///   (a single writer, no row locks), so two Managers on one file would
-///   corrupt scheduling state. `multi` needs the Postgres backend.
+/// - `multi` is refused for every backend: this build holds a single-instance
+///   lock on its storage (SQLite flock, Postgres session advisory lock), so a
+///   second Manager would fail to start and active-active serving is not
+///   implemented. SQLite additionally has no cross-instance coordination.
 /// - Postgres is served when the binary was built with the `postgres`
 ///   feature; without it the startup fails closed rather than pretending
 ///   to serve a backend it cannot answer.
@@ -42,13 +37,12 @@ pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> an
     let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
     match (mode, kind) {
         (ClusterMode::Single, StorageKind::Sqlite) => Ok(()),
-        (ClusterMode::Multi, StorageKind::Sqlite) => Err(anyhow::anyhow!(
-            "[cluster] mode = \"multi\" requires the Postgres backend: SQLite has no \
-             cross-instance coordination (single writer, no row locks), so two Manager \
-             instances on one SQLite file would corrupt scheduling state. Point \
-             [database] url at postgres:, or keep mode = \"single\"."
+        (ClusterMode::Single, StorageKind::Postgres) => postgres_gate(),
+        (ClusterMode::Multi, _) => Err(anyhow::anyhow!(
+            "[cluster] mode = \"multi\" is not served by this build — keep mode = \"single\". \
+             SQLite has no cross-instance coordination, and the Postgres backend currently \
+             serves one Manager instance under a session advisory lock."
         )),
-        (_, StorageKind::Postgres) => postgres_gate(),
     }
 }
 
@@ -480,6 +474,15 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
 const MIGRATIONS: &[i64] = &[1, 2, 3];
+
+/// Highest SQLite schema version this build applies. The SQLite → Postgres
+/// migration tool requires its source to be at this version: the copy
+/// enumerates source columns, so a database last booted by an older build
+/// would silently leave newer columns on their Postgres defaults (for
+/// example `pipelines.yaml_source`).
+pub fn latest_sqlite_schema_version() -> i64 {
+    *MIGRATIONS.last().expect("MIGRATIONS is non-empty")
+}
 
 /// Versioned migration runner: applies each migration at most once per
 /// database, recording it in `schema_migrations`.

@@ -14,10 +14,11 @@
 //! - A function that must be atomic either opens its own transaction or
 //!   takes `&mut Transaction` and says so in its doc comment. Post-commit
 //!   fan-out (notify, WebSocket, `wake_all`) never happens inside.
-//! - The dialect stays SQLite for now; the Postgres port replaces bodies,
-//!   not signatures (see
-//!   `docs/content/docs/01-architecture/execution/transaction-boundaries.md`
-//!   for the per-site lock translation).
+//! - Both backends are served: SQLite is the default build, Postgres is
+//!   behind the `postgres` feature. The Postgres port changes statement
+//!   bodies, not signatures; read-then-write sites take an explicit row or
+//!   advisory lock through [`locks`] (see
+//!   `docs/content/docs/01-architecture/execution/transaction-boundaries.md`).
 //!
 //! Enforcement: `scripts/check_store_boundary.sh` fails CI when `api/`
 //! contains SQL again — the allowlist file lists files still to migrate,
@@ -35,6 +36,7 @@ pub mod github_binds;
 pub mod health;
 pub mod hosts;
 pub mod jobs;
+pub mod locks;
 pub mod logs;
 pub mod metrics;
 pub mod ops_sandbox;

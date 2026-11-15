@@ -185,3 +185,23 @@ async fn same_key_and_weak_key_are_rejected() {
         .unwrap_err();
     assert!(err.contains("new secret rejected"), "{err}");
 }
+
+/// A Manager configured for Postgres must be refused before any file access:
+/// the legacy SQLite path may be stale, and rotating it would leave the live
+/// PG ciphertexts on the old secret.
+#[tokio::test]
+async fn refuses_a_postgres_configured_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("manager.toml");
+    std::fs::write(
+        &config_path,
+        "[database]\nurl = \"postgres://user:pass@db.internal:5432/buz\"\n\
+         [auth]\njwt_secret = \"old-secret-0123456789abcdef\"\n",
+    )
+    .unwrap();
+
+    let err = rotate_key::run(config_path.to_str().unwrap(), None, false, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("SQLite backend"), "{err}");
+}

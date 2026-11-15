@@ -4,7 +4,9 @@
 //! Flow (mirrors the ops runbook in `storage-cluster.md`):
 //!
 //! 1. Open the source SQLite database read-only and verify it is a fully
-//!    migrated Manager database (38 application tables).
+//!    migrated Manager database (38 application tables, and a
+//!    `schema_migrations` high-water mark at this build's version — an older
+//!    source would silently lose columns added since it was last booted).
 //! 2. Point the Postgres target at an *empty* database, apply the baseline
 //!    (idempotent migration runner), then refuse when any application table
 //!    already carries rows — the tool never overwrites.
@@ -181,7 +183,20 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let sqlite_path = match sqlite_path_override {
         Some(p) => std::path::PathBuf::from(p),
-        None => std::path::PathBuf::from(config.database.path.clone()),
+        None => {
+            // Never guess from `[database] path` when the config points at
+            // Postgres: after an in-place switch that path is a stale file,
+            // and migrating it would report success on the wrong database.
+            if config.database.storage_kind().map_err(anyhow::Error::msg)?
+                == crate::config::StorageKind::Postgres
+            {
+                anyhow::bail!(
+                    "[database] url points at Postgres and --sqlite-path was not given — \
+                     pass the SQLite source explicitly"
+                );
+            }
+            std::path::PathBuf::from(config.database.sqlite_path())
+        }
     };
     if !sqlite_path.exists() {
         anyhow::bail!("sqlite database not found: {}", sqlite_path.display());
@@ -246,6 +261,45 @@ pub async fn migrate(
             "source is not a migrated Manager database — missing tables: {missing:?}. \
              Start the Manager once against this file so the migration chain completes first."
         );
+    }
+
+    // Version guard: the copy enumerates columns from the source, so a source
+    // last booted by an older build would leave newer PostgreSQL columns on
+    // their defaults (pipelines.yaml_source is the one that loses data).
+    let versioned: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+    )
+    .fetch_optional(sqlite)
+    .await
+    .context("read sqlite_master for schema_migrations")?;
+    if versioned.is_none() {
+        anyhow::bail!(
+            "source has no schema_migrations table — start this Manager build once against \
+             the SQLite file (mode = \"single\") so the migration chain completes, then stop \
+             it and retry"
+        );
+    }
+    let source_version: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(sqlite)
+            .await
+            .context("read source schema version")?;
+    let expected_version = crate::db::latest_sqlite_schema_version();
+    match source_version {
+        Some(v) if v == expected_version => {}
+        Some(v) if v < expected_version => anyhow::bail!(
+            "source schema is v{v}, this build expects v{expected_version} — start this \
+             Manager build once against the SQLite file (mode = \"single\") so the migration \
+             chain completes, then stop it and retry"
+        ),
+        Some(v) => anyhow::bail!(
+            "source schema is v{v}, newer than this build (v{expected_version}) — use the \
+             matching buz-manager binary"
+        ),
+        None => anyhow::bail!(
+            "source schema_migrations is empty — start this Manager build once against the \
+             SQLite file (mode = \"single\") so the migration chain completes, then retry"
+        ),
     }
 
     use crate::store::sql::Sql;

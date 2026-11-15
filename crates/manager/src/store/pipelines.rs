@@ -34,6 +34,11 @@ pub async fn resolve_concurrency_status_in_tx(
     concurrency_mode: &str,
     concurrency_max_queue: i64,
 ) -> Result<&'static str, AppError> {
+    // The counts below are a read-then-write decision per pipeline. SQLite's
+    // writer lock serialises it; Postgres needs the row lock (callers inside
+    // reserve_job/approve already hold it — re-locking the same row in the
+    // same transaction is a no-op).
+    crate::store::locks::lock_pipeline_tx(tx, pipeline_id).await?;
     let Some(group) = concurrency_group.filter(|g| !g.is_empty()) else {
         return Ok("pending");
     };
@@ -1273,6 +1278,10 @@ pub async fn disable(
         .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Lock order: pipeline before any job rows (see store::locks). This is
+    // what serialises the disable against a concurrent trigger's is_active
+    // re-check on Postgres.
+    crate::store::locks::lock_pipeline_tx(&mut tx, pipeline_id).await?;
     let (name, was_active) = name_active_tx(&mut tx, pipeline_id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;

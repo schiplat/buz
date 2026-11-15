@@ -58,6 +58,10 @@ pub async fn setup(
     // raced. The dispatcher's DbTx owns the dialect token.
     let db = state.db();
     let mut tx = db.begin_immediate().await?;
+    // Serialise first-admin creation on both backends: SQLite holds the
+    // BEGIN IMMEDIATE writer lock; Postgres takes a transaction-scoped
+    // advisory lock (there is no user row to lock yet).
+    crate::store::locks::lock_first_admin_setup_tx(&mut tx).await?;
 
     let count = crate::store::auth::count_users_tx(&mut tx).await?;
     if count > 0 {

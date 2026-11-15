@@ -12,10 +12,15 @@
 //! released explicitly on every path (a pooled session that merely returned
 //! its connection would otherwise keep holding it).
 //!
-//! NOT yet wired into startup: `validate_cluster_mode` still refuses
-//! `postgres:` fail-closed until the runtime wiring lands (store modules on
-//! the dispatcher + pool selection). This runner is the piece that wiring
-//! will call.
+//! Startup wiring: `db::init` builds the pool and calls this runner before any
+//! request is served; `validate_cluster_mode` refuses a Postgres url when the
+//! binary was built without the `postgres` feature.
+//!
+//! Version 1 is the fresh baseline translated from the fully migrated SQLite
+//! template (38 application tables, indexes, `datetime()` shims;
+//! `schema_migrations` is the runner's own). Later versions patch runtime
+//! behaviour — version 2 makes the `seq` triggers concurrency-safe on
+//! Postgres. There is no incremental replay of the SQLite chain.
 
 #[cfg(feature = "postgres")]
 use sqlx::Connection as _;
@@ -24,12 +29,13 @@ use sqlx::Connection as _;
 pub const ADVISORY_LOCK_KEY: i64 = 0x6275_7A6D_6772_3031; // "buzmgr01"
 
 #[cfg(feature = "postgres")]
-/// `(version, sql)` pairs, ascending. Version 1 is the fresh baseline
-/// translated from the fully migrated SQLite template (38 application tables,
-/// indexes, 2 seq triggers, `datetime()` shims; `schema_migrations` is the
-/// runner's own) — new PG deployments apply the merged baseline; there is no
-/// incremental replay of the SQLite chain.
-pub const PG_MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("migrations/pg/001_baseline.sql"))];
+/// `(version, sql)` pairs, ascending. New PG deployments apply every entry in
+/// order; deployed databases skip the versions already recorded in
+/// `schema_migrations`. Never edit a version that has shipped — add a new one.
+pub const PG_MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("migrations/pg/001_baseline.sql")),
+    (2, include_str!("migrations/pg/002_seq_trigger_locks.sql")),
+];
 
 #[cfg(feature = "postgres")]
 pub async fn run_pg_migrations(pool: &sqlx::PgPool) -> anyhow::Result<()> {

@@ -23,11 +23,15 @@
 //! `pipeline_git_hooks.secret_ciphertext`,
 //! `environment_secret_overrides.value`, `hosts.credential_data`, and
 //! `buzenc:v1:`-prefixed values inside `jobs.trigger_params`.
+//!
+//! SQLite-only by design: the command opens the file directly and refuses a
+//! Postgres-configured Manager (see `run`). Postgres key rotation is not
+//! implemented.
 
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 
-use crate::config;
+use crate::config::{self, StorageKind};
 use crate::crypto;
 
 /// CLI entry: resolve config (same chain as the service → the CURRENT
@@ -47,7 +51,18 @@ pub async fn run(
         );
     }
 
-    let db_path = db_path_override.unwrap_or(&cfg.database.path);
+    // This command rewrites the SQLite tables directly. Refuse when the
+    // configured backend is Postgres: opening the legacy path would rotate a
+    // stale file and the returned secret would make every PG ciphertext
+    // undecryptable.
+    if cfg.database.storage_kind().map_err(anyhow::Error::msg)? != StorageKind::Sqlite {
+        anyhow::bail!(
+            "rotate-jwt-key only supports the SQLite backend — [database] url points at \
+             Postgres, and Postgres key rotation is not implemented"
+        );
+    }
+    let sqlite_path = cfg.database.sqlite_path();
+    let db_path = db_path_override.unwrap_or(&sqlite_path);
 
     // Generate the new secret up front so plan validates the REAL pair.
     let generated;
@@ -69,7 +84,10 @@ pub async fn run(
 
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}?mode=rwc", db_path))
+        // `rw` (not `rwc`): rotation must read the live database. Creating a
+        // missing file here would "succeed" on an empty database while the
+        // Manager keeps using another one.
+        .connect(&format!("sqlite://{}?mode=rw", db_path))
         .await
         .map_err(|e| anyhow::anyhow!("cannot open {db_path}: {e}"))?;
 

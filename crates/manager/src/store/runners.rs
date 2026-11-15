@@ -142,6 +142,9 @@ pub async fn delete_runner(pool: &DbPool, id: &str) -> Result<bool, AppError> {
 /// both read the same value and write the same result.
 pub async fn toggle_freeze(pool: &DbPool, id: &str) -> Result<(String, bool, bool), AppError> {
     let mut tx = pool.begin_immediate().await?;
+    // Read-modify-write: the runner row lock is what serialises two toggles
+    // (and any concurrent claim) on Postgres.
+    crate::store::locks::lock_runner_tx(&mut tx, id).await?;
     let row = tx
         .fetch_optional(
             "SELECT name, is_frozen FROM runners WHERE id = ?",
@@ -744,6 +747,9 @@ pub async fn move_team(
         .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Claims take this same lock before they start a job, so the
+    // running-job guard below cannot be raced on Postgres.
+    crate::store::locks::lock_runner_tx(&mut tx, id).await?;
     let current = tx
         .fetch_optional("SELECT team_id FROM runners WHERE id = ?", &[id.into()])
         .await?
@@ -1834,6 +1840,8 @@ pub async fn change_execution_mode(
         .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Serialise the transition validation with concurrent mode changes.
+    crate::store::locks::lock_runner_tx(&mut tx, runner_id).await?;
 
     let current = tx
         .fetch_optional(

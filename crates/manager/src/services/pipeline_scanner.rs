@@ -192,6 +192,10 @@ pub async fn upsert_from_yaml(
             ))));
         }
         let mut tx = pool.begin_immediate().await?;
+        // Serialise with trigger reservation: the team-change guard below
+        // counts active jobs, and reserve_job locks this same row before it
+        // inserts one on Postgres.
+        crate::store::locks::lock_pipeline_tx(&mut tx, &id).await?;
         // Optimistic concurrency. The etag comparison plus the guarded
         // UPDATE (yaml_update_tx re-verifies the observed source in its
         // WHERE) close the check-to-write window on both backends — SQLite

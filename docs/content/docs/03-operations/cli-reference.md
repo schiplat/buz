@@ -34,6 +34,32 @@ buz-manager rotate-jwt-key --apply    # snapshot + re-encrypt + verify
 Stop the Manager service first. The current secret is resolved from the
 same config chain the service uses (`-c` / `BUZ_JWT_SECRET`).
 
+**SQLite only.** The command opens the SQLite file directly (resolving
+`[database] url` first) and refuses a Manager configured for Postgres instead
+of rotating a stale file. Postgres key rotation is not implemented.
+
+## migrate-sqlite-to-pg
+
+Copies a fully migrated SQLite database into an empty Postgres target for an
+in-place `single`-mode backend switch. Build the binary with
+`--features postgres`.
+
+```bash
+# Plan only — prints per-table counts, writes nothing to Postgres rows
+buz-manager migrate-sqlite-to-pg --config manager.toml \
+  --pg-url postgres://buz:secret@db.internal:5432/buz
+
+# Apply — one transaction, count verification before commit
+buz-manager migrate-sqlite-to-pg --config manager.toml \
+  --pg-url postgres://… --apply
+```
+
+`--pg-url` falls back to `BUZ_PG_URL` so the password need not appear on argv.
+When the config already points at Postgres, pass `--sqlite-path` explicitly.
+The source must be at this build's SQLite schema version: start the new
+Manager once against it before migrating. See
+[Storage & Cluster Mode](./storage-cluster.md) for the full runbook.
+
 ## gen-runner-token
 
 Creates a runner record locally and prints its one-shot register token —

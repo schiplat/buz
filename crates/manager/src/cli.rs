@@ -113,13 +113,14 @@ pub enum Command {
     /// writes. The Postgres target must carry no rows; the copy runs in one
     /// transaction and verifies per-table counts before committing.
     MigrateSqliteToPg {
-        /// Override the sqlite database path (default: database.path from
-        /// the config)
+        /// Override the SQLite database path (default: the `[database] path`,
+        /// or the file in a `sqlite:` url when `[database] url` is set)
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
         sqlite_path: Option<String>,
 
-        /// Postgres target connection url (schema/database must exist)
-        #[arg(long)]
+        /// Postgres target connection url (schema/database must exist).
+        /// Falls back to BUZ_PG_URL so the password need not appear on argv.
+        #[arg(long, env = "BUZ_PG_URL")]
         pg_url: String,
 
         /// Perform the migration. Without this flag: plan only, zero writes.

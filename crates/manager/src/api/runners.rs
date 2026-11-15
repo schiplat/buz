@@ -942,6 +942,9 @@ async fn poll_once(
         // so another poller must re-evaluate after this transaction commits.
         let db = state.db();
         let mut tx = db.begin_immediate().await?;
+        // Claims serialise per runner: team-binding moves and freeze toggles
+        // take the same row lock before reading the running-job state.
+        crate::store::locks::lock_runner_tx(&mut tx, &auth.runner_id).await?;
         let Some(candidate) =
             crate::store::runners::claim_candidate_tx(&mut tx, &auth.runner_id, &job_id).await?
         else {

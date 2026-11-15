@@ -10,6 +10,10 @@ SHA-256). Rotating it invalidates every stored ciphertext — unless the
 ciphertexts are re-encrypted under the new key at the same time.
 `buz-manager rotate-jwt-key` performs exactly that.
 
+> **SQLite only.** The command rewrites the SQLite tables in place and refuses
+> a Manager configured for Postgres (rather than opening a stale legacy file).
+> Postgres key rotation is not implemented.
+
 ## When to rotate
 
 - The current secret may have been exposed (shared logs, backups, team

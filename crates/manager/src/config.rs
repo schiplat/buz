@@ -9,8 +9,8 @@ pub struct Config {
     #[serde(default)]
     pub database: DatabaseConfig,
     /// `[cluster] mode` — single (default): this process is the only Manager
-    /// serving its storage and takes an exclusive lock on it; multi: several
-    /// Managers serve active-active, which requires the Postgres backend.
+    /// serving its storage and takes an exclusive lock on it. `multi` is
+    /// parsed for forward compatibility but refused at startup by this build.
     #[serde(default)]
     pub cluster: ClusterConfig,
     #[serde(default)]
@@ -168,9 +168,10 @@ impl ServerConfig {
 pub struct DatabaseConfig {
     #[serde(default = "default_db_path")]
     pub path: String,
-    /// Explicit connection target — `sqlite:<path>` today; `postgres:<…>` is
-    /// refused at startup until the PG backend lands. Empty/absent keeps the
-    /// legacy `[database] path` working (it stays the compatibility alias).
+    /// Explicit connection target. `sqlite:<path>` is the default build;
+    /// `postgres:` requires a binary built with the `postgres` feature (the
+    /// startup gate fails closed otherwise). Empty/absent keeps the legacy
+    /// `[database] path` working as the compatibility alias.
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default = "default_max_connections")]
@@ -204,6 +205,22 @@ impl DatabaseConfig {
             }
         }
     }
+
+    /// The SQLite file this config points at: the `sqlite:<path>` url when
+    /// set, otherwise the legacy `[database] path`. Callers that open the
+    /// file directly (instance lock, key rotation, the SQLite→PG migration)
+    /// must use this — reading `path` alone ignores the url override and can
+    /// operate on a stale database. Only meaningful for
+    /// [`StorageKind::Sqlite`].
+    pub fn sqlite_path(&self) -> String {
+        match &self.url {
+            Some(url) if url.trim().to_lowercase().starts_with("sqlite:") => url.trim()
+                [("sqlite:".len())..]
+                .trim_start_matches("//")
+                .to_string(),
+            _ => self.path.clone(),
+        }
+    }
 }
 
 impl Default for DatabaseConfig {
@@ -217,8 +234,9 @@ impl Default for DatabaseConfig {
 }
 
 /// `[cluster] mode` — `single` (default): this process is the only Manager
-/// serving its storage and holds an exclusive lock on it; `multi`: several
-/// Managers serve active-active against one Postgres backend.
+/// serving its storage and holds an exclusive lock on it. `multi` is parsed
+/// for forward compatibility but **refused at startup by this build**; the
+/// startup gate keeps every deployment on the single-writer model.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClusterMode {
