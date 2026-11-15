@@ -72,12 +72,17 @@ const entries = computed(() =>
 const uiVersion = __APP_VERSION__
 const managerVersion = ref<string | null>(null)
 
-const versionLabel = computed(() => {
-  if (managerVersion.value && managerVersion.value !== uiVersion) {
-    return `UI v${uiVersion} · Manager v${managerVersion.value}`
-  }
-  return `v${managerVersion.value || uiVersion}`
-})
+const REPO_URL = 'https://github.com/schiplat/buz'
+const DOCS_URL = 'https://buz.docs.sconts.com/'
+
+// Manager version is authoritative for the badge; the UI package version is
+// only a fallback (offline / starting) and the tooltip when they differ.
+const versionLabel = computed(() => `v${managerVersion.value || uiVersion}`)
+const versionTitle = computed(() =>
+  managerVersion.value && managerVersion.value !== uiVersion
+    ? `UI v${uiVersion} · Manager v${managerVersion.value}`
+    : `v${uiVersion}`,
+)
 
 onMounted(async () => {
   try {
@@ -225,11 +230,28 @@ function onLogoClick(e: MouseEvent) {
 
     <!-- Footer -->
     <div v-if="!ui.isCollapsed" class="px-4 pb-4">
-      <p class="px-1 text-xs leading-relaxed text-muted-foreground/80">
-        © 2026 Buzproject
-      </p>
-      <p class="px-1 font-mono text-xs text-muted-foreground/60" :title="versionLabel">
-        {{ versionLabel }}
+      <p
+        class="flex items-center gap-1.5 whitespace-nowrap px-1 text-xs leading-relaxed text-muted-foreground/60"
+      >
+        <a
+          :href="REPO_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="transition-colors hover:text-foreground"
+        >
+          Powered by Buz <span aria-hidden="true">↗</span>
+        </a>
+        <span aria-hidden="true">·</span>
+        <span :title="versionTitle">{{ versionLabel }}</span>
+        <span aria-hidden="true">·</span>
+        <a
+          :href="DOCS_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="transition-colors hover:text-foreground"
+        >
+          Docs <span aria-hidden="true">↗</span>
+        </a>
       </p>
     </div>
   </aside>
