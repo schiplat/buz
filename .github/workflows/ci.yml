@@ -5,14 +5,17 @@ on:
     branches: [main, master, dev]
     # Docs-only commits (README edits, screenshots, the docs site itself)
     # cannot affect the build — the docs deploy workflow handles them.
+    # FUNDING.yml is repository metadata and has no build impact either.
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.github/FUNDING.yml'
   pull_request:
     branches: [main, master, dev]
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.github/FUNDING.yml'
 
 env:
   CARGO_TERM_COLOR: always
