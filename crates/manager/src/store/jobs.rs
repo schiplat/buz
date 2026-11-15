@@ -35,6 +35,12 @@ pub(crate) async fn cancel_job_in_tx(
     operator_id: &str,
     operator_username: &str,
 ) -> Result<Option<CancelledJob>, AppError> {
+    // Lock before reading: the snapshot rewrite below must not race a
+    // concurrent approve/reject promotion. SQLite's writer lock serialises
+    // this; Postgres needs the job row lock, otherwise the read can observe
+    // `waiting_approval`, wait behind the approver's commit, and overwrite the
+    // promoted `approved` outcome with `cancelled`.
+    crate::store::locks::lock_job_tx(tx, job_id).await?;
     let current = tx
         .fetch_optional(
             "SELECT status, step_statuses, snapshot FROM jobs WHERE id = ?",
