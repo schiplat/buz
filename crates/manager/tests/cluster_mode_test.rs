@@ -2,8 +2,8 @@
 //! lock.
 //!
 //! The invariants under test:
-//! - `multi` + SQLite is refused — SQLite has no cross-instance coordination,
-//!   so two Managers on one file would corrupt scheduling state;
+//! - `multi` is refused for every backend — this build serves one Manager per
+//!   storage (active-active coordination is not implemented);
 //! - a Postgres url is served when the binary carries the `postgres` feature
 //!   and fails closed when it does not;
 //! - `single` takes an exclusive `<db>.lock` flock for its lifetime: a second
@@ -101,25 +101,32 @@ fn multi_on_sqlite_is_refused_with_the_reason() {
     let err = manager::db::validate_cluster_mode(ClusterMode::Multi, &db).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("multi"), "{msg}");
-    assert!(msg.contains("Postgres"), "must name the requirement: {msg}");
+    assert!(msg.contains("single"), "must name the served mode: {msg}");
 }
 
 #[test]
 fn postgres_url_is_gated_on_the_build_feature_only() {
     let db = database_with_url(Some("postgres://user@host/buz"));
-    for mode in [ClusterMode::Single, ClusterMode::Multi] {
-        let result = manager::db::validate_cluster_mode(mode, &db);
-        #[cfg(feature = "postgres")]
-        assert!(
-            result.is_ok(),
-            "Postgres serves both modes once the feature is built in: {result:?}"
-        );
-        #[cfg(not(feature = "postgres"))]
-        {
-            let err = result.expect_err("a binary without the feature must fail closed");
-            assert!(err.to_string().to_lowercase().contains("postgres"), "{err}");
-        }
+    let result = manager::db::validate_cluster_mode(ClusterMode::Single, &db);
+    #[cfg(feature = "postgres")]
+    assert!(
+        result.is_ok(),
+        "Postgres is served by a feature build: {result:?}"
+    );
+    #[cfg(not(feature = "postgres"))]
+    {
+        let err = result.expect_err("a binary without the feature must fail closed");
+        assert!(err.to_string().to_lowercase().contains("postgres"), "{err}");
     }
+}
+
+#[test]
+fn multi_is_refused_on_postgres_too() {
+    let db = database_with_url(Some("postgres://user@host/buz"));
+    let err = manager::db::validate_cluster_mode(ClusterMode::Multi, &db).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("multi"), "{msg}");
+    assert!(msg.contains("single"), "{msg}");
 }
 
 // ── single-instance lock ────────────────────────────────────────────────

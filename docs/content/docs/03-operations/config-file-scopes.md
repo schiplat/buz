@@ -60,7 +60,8 @@ Override rule: **env vars beat TOML** (`BUZ_JWT_SECRET`, `BUZ_MARKETPLACE_URL`, 
 | `server.host` / `server.port` | `manager.toml → [server]` | API/UI listener | — |
 | `server.tls_cert` / `tls_key` | `manager.toml → [server]` | API/UI TLS | — |
 | `server.public_base_url` | `manager.toml → [server]` | Notify deep links (`BUZ_JOB_URL`) | — |
-| `database.path` / `max_connections` | `manager.toml → [database]` | SQLite location / pool | — |
+| `database.url` / `database.path` / `max_connections` | `manager.toml → [database]` | Backend target (`url` wins) / pool | — |
+| `cluster.mode` | `manager.toml → [cluster]` | `single` only; `multi` refused at startup | — |
 | `auth.jwt_secret` (`BUZ_JWT_SECRET`) | `manager.toml → [auth]` | Signs JWTs **and** encrypts secrets | env |
 | `auth.jwt_ttl_hours` | `manager.toml → [auth]` | UI/API session tokens | — |
 | `auth.runner_register_token_ttl_hours` | `manager.toml → [auth]` | Runner registration tokens | — |

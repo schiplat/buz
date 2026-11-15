@@ -310,6 +310,12 @@ async fn postgres_statements_are_declared() {
         // of the slot scheduler's slot-occupancy reconcile; see
         // ops_sandbox::reconcile_running_slots_tx)
         "SELECT running_slots FROM sandbox_hosts WHERE host_id = $1 AND instance_id = $2 FOR UPDATE",
+        // store::locks — explicit serialisation of read-then-write invariants
+        // (SQLite gets these from BEGIN IMMEDIATE).
+        "SELECT id FROM pipelines WHERE id = $1 FOR UPDATE",
+        "SELECT id FROM jobs WHERE id = $1 FOR UPDATE",
+        "SELECT id FROM runners WHERE id = $1 FOR UPDATE",
+        "SELECT pg_advisory_xact_lock($1)", // first-admin setup
     ];
     // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
     // dynamic fragment — the extraction routes it here by the `$1` marker.

@@ -180,10 +180,52 @@ async fn migration_copies_every_table_and_verifies() {
         "source schema guard: {err}"
     );
 
+    // 5. Version guard: a source last booted by an older build has the 38
+    //    tables but lacks columns added since (pipelines.yaml_source). It must
+    //    be refused instead of silently copying defaults.
+    let stale = seeded_sqlite().await;
+    sqlx::query("DELETE FROM schema_migrations WHERE version >= 2")
+        .execute(&stale)
+        .await
+        .unwrap();
+    let err = manager::db::migrate_sqlite_to_pg::migrate(&stale, &pg, false)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("start this Manager build once"),
+        "version guard: {err}"
+    );
+    let _ = stale.close().await;
+
     let _ = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&admin)
         .await;
     let _ = pg.close().await;
     let _ = admin.close().await;
     let _ = sqlite.close().await;
+}
+
+/// A config that already points at Postgres must not silently fall back to a
+/// stale legacy `[database] path` — the operator has to name the source.
+#[tokio::test]
+async fn run_refuses_a_postgres_config_without_an_explicit_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("manager.toml");
+    std::fs::write(
+        &config_path,
+        "[database]\nurl = \"postgres://user:pass@127.0.0.1:1/buz\"\n\
+         [auth]\njwt_secret = \"test-secret-0123456789abcdef\"\n",
+    )
+    .unwrap();
+    let config = manager::config::load_unchecked(Some(config_path.to_str().unwrap())).unwrap();
+
+    let err = manager::db::migrate_sqlite_to_pg::run(
+        &config,
+        None,
+        "postgres://user:pass@127.0.0.1:1/buz",
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("--sqlite-path"), "{err}");
 }

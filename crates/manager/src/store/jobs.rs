@@ -238,6 +238,10 @@ pub async fn approve(
 
     let approval_id = Uuid::new_v4().to_string();
     let mut approval_tx = pool.begin_immediate().await?;
+    // Lock order: pipeline, then job. Holding the job row serialises the
+    // count-then-promote decision across concurrent approvers on Postgres.
+    crate::store::locks::lock_pipeline_tx(&mut approval_tx, &pipeline_id).await?;
+    crate::store::locks::lock_job_tx(&mut approval_tx, job_id).await?;
     let current_status = approval_tx
         .fetch_optional("SELECT status FROM jobs WHERE id = ?", &[job_id.into()])
         .await?
@@ -447,6 +451,9 @@ pub async fn reject(
     }
 
     let mut reject_tx = pool.begin_immediate().await?;
+    // Same lock order as approve: pipeline first, then the job row.
+    crate::store::locks::lock_pipeline_tx(&mut reject_tx, &pipeline_id).await?;
+    crate::store::locks::lock_job_tx(&mut reject_tx, job_id).await?;
     let current = reject_tx
         .fetch_optional(
             "SELECT status, snapshot FROM jobs WHERE id = ?",
@@ -584,6 +591,10 @@ pub async fn apply_runner_status(
     report: &RunnerStatusReport,
 ) -> Result<StatusReportOutcome, AppError> {
     let mut tx = pool.begin_immediate().await?;
+    // Serialise with operator cancellation: the terminal-state read below and
+    // the step-status update are one decision (SQLite's writer lock does this
+    // on the other backend).
+    crate::store::locks::lock_job_tx(&mut tx, job_id).await?;
     let row = tx
         .fetch_optional(
             "SELECT status, runner_id FROM jobs WHERE id = ?",
@@ -771,8 +782,15 @@ pub struct RerunInsert<'a> {
     pub pipeline_id: &'a str,
     pub pipeline_name: &'a str,
     pub team_id: &'a str,
-    /// `pending` or `waiting_approval` — gates decided by the caller.
+    /// `waiting_approval` when the environment gate already stopped the job;
+    /// otherwise the concurrency decision is re-computed inside the
+    /// transaction (the caller's pre-check is only a fast path).
     pub job_status: &'a str,
+    /// Concurrency inputs for the authoritative decision inside the write
+    /// transaction. Ignored when `job_status` is `waiting_approval`.
+    pub concurrency_group: Option<&'a str>,
+    pub concurrency_mode: &'a str,
+    pub concurrency_max_queue: i64,
     pub trigger_by: &'a str,
     pub trigger_user_id: &'a str,
     /// Sealed `trigger_params` copied verbatim from the source job.
@@ -786,17 +804,30 @@ pub struct RerunInsert<'a> {
     pub resource_profile: &'a str,
 }
 
-/// Insert a re-run attempt atomically: `is_active` is re-checked inside the
-/// transaction (closing the check-to-insert race with a concurrent disable,
-/// same as `reserve_job`), the row and its audit record land together.
-/// Returns the new job id. Poller wake happens after commit.
+/// Result of an inserted re-run attempt.
+pub struct RerunOutcome {
+    pub job_id: String,
+    /// The status actually stored: the in-transaction concurrency decision can
+    /// turn the caller's `pending` into `queued`.
+    pub status: String,
+}
+
+/// Insert a re-run attempt atomically: `is_active` and the concurrency
+/// decision are re-checked inside the transaction (closing the check-to-insert
+/// race with a concurrent disable or a simultaneous rerun, same as
+/// `reserve_job`), and the row plus its audit record land together.
+/// Returns the new job id and its stored status. Poller wake happens after
+/// commit.
 pub async fn insert_rerun(
     pool: &DbPool,
     insert: &RerunInsert<'_>,
     actor: &crate::middleware::AuthUser,
-) -> Result<String, AppError> {
+) -> Result<RerunOutcome, AppError> {
     let job_id = Uuid::new_v4().to_string();
     let mut tx = pool.begin_immediate().await?;
+    // Same lock as reserve_job: serialises with disable (is_active re-check)
+    // and with the concurrency decision below.
+    crate::store::locks::lock_pipeline_tx(&mut tx, insert.pipeline_id).await?;
     match tx
         .fetch_optional(
             "SELECT is_active FROM pipelines WHERE id = ?",
@@ -812,6 +843,22 @@ pub async fn insert_rerun(
         }
         Some(_) => {}
     }
+
+    // Authoritative concurrency decision (the caller's earlier resolve ran in
+    // a different transaction and cannot stop two concurrent reruns).
+    let status: &str = if insert.job_status == "waiting_approval" {
+        insert.job_status
+    } else {
+        super::pipelines::resolve_concurrency_status_in_tx(
+            &mut tx,
+            insert.pipeline_id,
+            insert.concurrency_group,
+            insert.concurrency_mode,
+            insert.concurrency_max_queue,
+        )
+        .await?
+    };
+
     tx.execute(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
                            debug_unredact, verbose_logs, environment_id, trigger_user_id,
@@ -820,7 +867,7 @@ pub async fn insert_rerun(
         &[
             job_id.as_str().into(),
             insert.pipeline_id.into(),
-            insert.job_status.into(),
+            status.into(),
             insert.trigger_by.into(),
             insert.trigger_params_raw.into(),
             insert.snapshot_str.into(),
@@ -845,7 +892,7 @@ pub async fn insert_rerun(
                 "rerun_of": insert.source_job_id,
                 "run_number": insert.run_number,
                 "run_attempt": insert.run_attempt,
-                "status": insert.job_status,
+                "status": status,
             }))),
     )
     .await?;
@@ -854,7 +901,10 @@ pub async fn insert_rerun(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     crate::services::poll_events::wake_all();
-    Ok(job_id)
+    Ok(RerunOutcome {
+        job_id,
+        status: status.to_string(),
+    })
 }
 
 // ── Read paths ──────────────────────────────────────────────────────────────

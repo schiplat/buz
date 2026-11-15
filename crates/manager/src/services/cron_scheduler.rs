@@ -192,6 +192,11 @@ pub async fn claim_cron_fire(
         .begin_immediate()
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Serialise the last-fired read and stamp per pipeline. On SQLite the
+    // writer lock covers this; on Postgres the row lock does.
+    crate::store::locks::lock_pipeline_tx(&mut tx, pipeline_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let last_raw = crate::store::pipelines::cron_last_fired_tx(&mut tx, pipeline_id)
         .await

@@ -19,7 +19,14 @@ port = 8080
 
 [database]
 path = "./data/buz.db"
+# Explicit target; wins over `path`. `sqlite:` works in the default build,
+# `postgres://…` requires the `postgres` cargo feature.
+# url = "postgres://buz:secret@db.internal:5432/buz"
 max_connections = 8
+
+[cluster]
+# single is the only served mode; `multi` is refused at startup.
+mode = "single"
 
 [auth]
 jwt_secret = ""                     # required — or set BUZ_JWT_SECRET (openssl rand -hex 32)

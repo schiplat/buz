@@ -493,7 +493,7 @@ pub async fn rerun(
     }
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into());
 
-    let job_id = crate::store::jobs::insert_rerun(
+    let outcome = crate::store::jobs::insert_rerun(
         &state.db(),
         &crate::store::jobs::RerunInsert {
             source_job_id: &id,
@@ -501,6 +501,9 @@ pub async fn rerun(
             pipeline_name: &pipeline_name,
             team_id: &team_id,
             job_status,
+            concurrency_group: concurrency_group.as_deref(),
+            concurrency_mode: &concurrency_mode,
+            concurrency_max_queue,
             trigger_by: &auth.username,
             trigger_user_id: &auth.id,
             trigger_params_raw: trigger_params_raw.as_deref(),
@@ -515,6 +518,8 @@ pub async fn rerun(
         &auth,
     )
     .await?;
+    let job_id = outcome.job_id;
+    let job_status = outcome.status;
     crate::store::trigger_events::record_simple_trigger(
         &state.db(),
         &pipeline_id,
@@ -539,7 +544,7 @@ pub async fn rerun(
         "rerun_of": id,
         "run_number": run_number,
         "run_attempt": new_attempt,
-        "status": job_status,
+        "status": &job_status,
     });
     if job_status == "waiting_approval" {
         if let Some(map) = resp.as_object_mut() {
