@@ -157,11 +157,29 @@ async fn start_sshd() -> Option<Sshd> {
         return None;
     }
 
-    let pid: u32 = std::fs::read_to_string(&pid_file)
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
+    // sshd daemonizes itself: the parent returns after fork while the daemon
+    // writes PidFile afterwards. Under a loaded runner that write can land
+    // after this read, so retry briefly instead of failing the journey
+    // (the port-answer wait below covers the listener; this covers the pid).
+    let pid: u32 = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eprintln!("sshd pid file never appeared; log:");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(dir.join("sshd.log")).unwrap_or_default()
+                );
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
 
     let sshd = Sshd {
         port,
