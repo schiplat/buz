@@ -133,6 +133,32 @@ async fn token_endpoint(
     )
 }
 
+/// Minimal one-shot HTTP GET over a raw tokio TcpStream — the readiness
+/// probe for the in-process mock IdP. Yields at every await so the serve
+/// task (same current-thread runtime) gets scheduled; `None` on any failure
+/// or timeout.
+async fn raw_http_get(base: &str, path: &str, timeout: tokio::time::Duration) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // base is `http://127.0.0.1:<port>` — no path, no userinfo.
+    let authority = base.strip_prefix("http://")?;
+    let mut stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(authority))
+        .await
+        .ok()?
+        .ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    tokio::time::timeout(timeout, stream.write_all(request.as_bytes()))
+        .await
+        .ok()?
+        .ok()?;
+    let mut response = Vec::new();
+    tokio::time::timeout(timeout, stream.read_to_end(&mut response))
+        .await
+        .ok()?
+        .ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
 impl MockIdp {
     /// Bind an ephemeral loopback port, serve discovery/JWKS/token, and
     /// report the issuer URL the Buz config must carry. `OidcRuntime::build`
@@ -172,6 +198,29 @@ impl MockIdp {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("mock idp serve");
         });
+
+        // Readiness probe: `OidcRuntime::build` fires discovery immediately
+        // after this returns, and under a loaded runner the spawned serve
+        // task may not be scheduled for seconds. Poll the discovery endpoint
+        // until it answers — every attempt (and the inter-attempt sleep)
+        // yields, which is exactly what lets the serve task run.
+        let probe_until = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+        let discovery_path = format!("{issuer}/.well-known/openid-configuration");
+        loop {
+            let probe = raw_http_get(
+                &issuer,
+                "/.well-known/openid-configuration",
+                tokio::time::Duration::from_millis(250),
+            )
+            .await;
+            match probe {
+                Some(response) if response.contains("200 OK") => break,
+                _ if tokio::time::Instant::now() >= probe_until => panic!(
+                    "mock IdP never answered discovery at {discovery_path} — serve task starved?"
+                ),
+                _ => tokio::time::sleep(tokio::time::Duration::from_millis(25)).await,
+            }
+        }
 
         (Self { codes }, issuer)
     }
