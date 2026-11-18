@@ -37,6 +37,8 @@ runner_register_token_ttl_hours = 24
 # [auth.oidc] — OPTIONAL: single sign-on through any OIDC provider.
 # Disabled by default; local login keeps working either way. A
 # misconfiguration disables only SSO (the server still starts).
+# Recommended: configure SSO in the web UI (Settings → SSO) — values saved
+# there live in the database, override this seed, and apply without a restart.
 # [auth.oidc]
 # enabled = true
 # issuer = "https://sso.example.com"       # https, no trailing slash

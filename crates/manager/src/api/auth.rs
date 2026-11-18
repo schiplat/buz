@@ -301,7 +301,7 @@ pub const SSO_CALLBACK_PAGE: &str = "/auth/sso/callback";
 /// `GET /auth/oidc/providers` — public capability probe for the login page.
 pub async fn oidc_providers(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
     Json(ApiResponse::success(serde_json::json!({
-        "enabled": state.oidc.is_some(),
+        "enabled": state.oidc_runtime().await.is_some(),
     })))
 }
 
@@ -326,7 +326,7 @@ pub async fn oidc_start(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<axum::response::Response, AppError> {
-    let Some(runtime) = state.oidc.as_ref() else {
+    let Some(runtime) = state.oidc_runtime().await else {
         return Ok(sso_redirect_error("sso-disabled"));
     };
     let redirect_to = sanitize_redirect(params.get("redirect").map(String::as_str));
@@ -389,7 +389,7 @@ pub async fn oidc_callback(
         return Ok(sso_redirect_error("provider-error"));
     }
 
-    let Some(runtime) = state.oidc.as_ref() else {
+    let Some(runtime) = state.oidc_runtime().await else {
         return Ok(sso_redirect_error("sso-disabled"));
     };
     let Some(state_token) = params.state.as_deref() else {

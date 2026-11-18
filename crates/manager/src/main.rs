@@ -346,15 +346,37 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // OIDC sign-in runtime: None when disabled or misconfigured (only SSO is
-    // disabled — the server and local login keep working, see oidc-sso docs).
-    let oidc = services::oidc::OidcRuntime::build(&config.auth.oidc).await;
+    // OIDC sign-in runtime: resolved from the database override when one was
+    // saved, otherwise the file [auth.oidc] seed. None when disabled or
+    // misconfigured (only SSO is disabled — the server and local login keep
+    // working, see oidc-sso docs).
+    let oidc = {
+        let row = manager::store::oidc_settings::get(&db)
+            .await
+            .inspect_err(
+                |e| tracing::warn!(error = %e, "oidc settings unreadable — file seed applies"),
+            )
+            .ok()
+            .flatten();
+        match services::oidc::resolve_effective(
+            &config.auth.oidc,
+            row.as_ref(),
+            &config.server.public_base_url,
+            &config.auth.jwt_secret,
+        ) {
+            Ok(effective) => services::oidc::OidcRuntime::build_effective(&effective).await,
+            Err(error) => {
+                tracing::error!("oidc disabled — {error}");
+                None
+            }
+        }
+    };
 
     let app_state = manager::state::AppState {
         pool: db.clone(),
         config: config.clone(),
         log_broadcast,
-        oidc,
+        oidc: std::sync::Arc::new(tokio::sync::RwLock::new(oidc)),
     };
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);

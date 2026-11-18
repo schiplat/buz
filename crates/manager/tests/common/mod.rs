@@ -264,7 +264,7 @@ impl TestApp {
             pool: pool.clone(),
             config: test_config(),
             log_broadcast: LogBroadcaster::new(),
-            oidc: None,
+            oidc: manager::state::no_oidc(),
         };
         Self {
             router: Router::new().nest("/api/v1", api::router(state)),

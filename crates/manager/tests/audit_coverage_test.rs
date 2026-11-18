@@ -15,6 +15,8 @@ use std::path::Path;
 
 /// Every non-GET route and the audit action it records.
 const AUDITED: &[(&str, &str)] = &[
+    ("DELETE /api/v1/auth/oidc/settings", "setting.reset"),
+    ("PUT /api/v1/auth/oidc/settings", "setting.update"),
     ("DELETE /api/v1/admin/settings/{key}", "setting.reset"),
     (
         "DELETE /api/v1/admin/plugin-sources/{id}",
@@ -232,6 +234,10 @@ const AUDITED: &[(&str, &str)] = &[
 /// writes are machine telemetry. Each carries the reason — "no audit" is a
 /// decision, never an oversight.
 const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
+    (
+        "POST /api/v1/auth/oidc/settings/test",
+        "read-only provider discovery probe: mutates nothing (results come back in the response)",
+    ),
     (
         "POST /api/v1/auth/oidc/exchange",
         "session handoff: consumes the one-shot ticket; the login itself was audited at the callback (auth.oidc_login)",

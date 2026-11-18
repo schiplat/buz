@@ -60,7 +60,7 @@ async fn test_state() -> AppState {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     }
 }
 

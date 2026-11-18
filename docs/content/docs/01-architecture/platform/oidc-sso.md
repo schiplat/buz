@@ -6,10 +6,11 @@ description: "Design — sign in through any OIDC provider; Buz keeps teams and 
 
 ## Status
 
-**Implemented (Phase 1)**: OIDC sign-in with JIT provisioning, account-level
-authentication origins, and the ticket handoff flow below. Local login is
-unchanged; group→workspace mapping and SCIM remain future phases. This page
-is both the design record and the operator reference.
+**Implemented**: Phase 1 (OIDC sign-in with JIT provisioning, account-level
+authentication origins, ticket handoff) and **web-based configuration**
+(the Settings → SSO page below — no manager.toml edit or restart required).
+Local login is unchanged; group→workspace mapping and SCIM remain future
+phases. This page is both the design record and the operator reference.
 
 ## Goals
 
@@ -154,6 +155,17 @@ SPA login page "Continue with SSO"
 
 ## Configuration
 
+**Recommended: the web UI.** Settings → **SSO** (platform admin) edits every
+field — issuer, client id/secret, redirect, scopes, auto-provision, enable —
+with a built-in "Test connection" discovery probe. Saved settings live in the
+database (`oidc_settings`), **override the file**, and apply immediately; the
+client secret is stored encrypted at rest and never echoed back. Deleting the
+override (Revert to manager.toml) falls back to the file seed.
+
+`[auth.oidc]` in `manager.toml` remains the deployment-time seed (and the
+IaC path); once an administrator saves from the web, the database is
+authoritative:
+
 ```toml
 [auth.oidc]
 enabled = false
@@ -164,6 +176,10 @@ redirect_uri = ""                 # absolute, must equal the IdP registration
 scopes = ["openid", "profile", "email"]   # groups added when mapping lands
 auto_provision = true
 ```
+
+The callback URL derives from `server.public_base_url`
+(`{public_base_url}/api/v1/auth/oidc/callback`); both the file seed and the
+web form accept an explicit override for unusual proxy layouts.
 
 Startup validation (when `enabled = true`): https issuer (plain http allowed
 for localhost development), no trailing slash, absolute `redirect_uri`,

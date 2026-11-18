@@ -276,7 +276,7 @@ async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
-        oidc,
+        oidc: std::sync::Arc::new(tokio::sync::RwLock::new(oidc)),
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -907,4 +907,314 @@ async fn providers_probe_reports_enabled_state() {
     let (status, _, body) = oneshot(router, "GET", "/api/v1/auth/oidc/providers", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.pointer("/data/enabled"), Some(&json!(true)));
+}
+
+// ───────────────────────── SSO settings (web configuration) ─────────────────────────
+
+use shared::auth::{Role, TokenManager};
+
+fn admin_bearer() -> String {
+    TokenManager::new(common::JWT_SECRET)
+        .create_token(common::ADMIN, Role::Admin, 1)
+        .unwrap()
+}
+
+fn member_bearer() -> String {
+    TokenManager::new(common::JWT_SECRET)
+        .create_token("carol-1", Role::User, 1)
+        .unwrap()
+}
+
+/// Settings journeys need `public_base_url` (redirect derivation) and SSO
+/// off by default — the whole point is turning it on from the web.
+async fn settings_app(pool: DbPool) -> Router {
+    let mut config = test_config();
+    config.server.public_base_url = "http://127.0.0.1:8080".into();
+    let state = AppState {
+        pool: pool.clone(),
+        config,
+        log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
+    };
+    Router::new().nest("/api/v1", api::router(state))
+}
+
+async fn put_settings(router: &Router, bearer: &str, body: Value) -> (StatusCode, Value) {
+    oneshot_json(
+        router.clone(),
+        "PUT",
+        "/api/v1/auth/oidc/settings",
+        Some(bearer),
+        body,
+    )
+    .await
+}
+
+/// A settings save flips the live runtime: providers probe true without a
+/// restart, the secret lands encrypted (never plaintext), GET masks it, and
+/// the hot-swapped runtime completes a real sign-in round trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_put_enables_sso_hot_and_stores_the_secret_encrypted() {
+    let (idp, issuer) = MockIdp::start().await;
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+    let bearer = admin_bearer();
+
+    // Before: file seed disabled → probe false.
+    let (status, _, body) =
+        oneshot(router.clone(), "GET", "/api/v1/auth/oidc/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.pointer("/data/enabled"), Some(&json!(false)));
+
+    // PUT: enable against the mock IdP, redirect derived from public_base_url.
+    let (status, body) = put_settings(
+        &router,
+        &bearer,
+        json!({
+            "enabled": true,
+            "issuer": issuer,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "redirect_uri_override": null,
+            "scopes": ["openid", "profile", "email"],
+            "auto_provision": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "put: {body}");
+    assert_eq!(
+        body.pointer("/data/source").and_then(Value::as_str),
+        Some("database")
+    );
+    assert_eq!(body.pointer("/data/enabled"), Some(&json!(true)));
+    assert_eq!(
+        body.pointer("/data/client_secret_configured"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        body.pointer("/data/redirect_uri_effective")
+            .and_then(Value::as_str),
+        Some("http://127.0.0.1:8080/api/v1/auth/oidc/callback"),
+        "redirect derived from public_base_url"
+    );
+    assert!(
+        body.get("data")
+            .and_then(|d| d.get("client_secret"))
+            .is_none(),
+        "the secret must never be echoed back: {body}"
+    );
+    assert_eq!(
+        body.pointer("/data/active"),
+        Some(&json!(true)),
+        "hot-swapped"
+    );
+
+    // Providers probe flipped live.
+    let (status, _, body) =
+        oneshot(router.clone(), "GET", "/api/v1/auth/oidc/providers", None).await;
+    assert_eq!(
+        body.pointer("/data/enabled"),
+        Some(&json!(true)),
+        "status {status}"
+    );
+
+    // Secret stored encrypted at rest, never plaintext.
+    let cipher: String = exec::fetch_optional(
+        &pool,
+        "SELECT client_secret_ciphertext FROM oidc_settings WHERE id = 1",
+        &[],
+    )
+    .await
+    .unwrap()
+    .map(|r| r.text_of("client_secret_ciphertext"))
+    .unwrap();
+    assert_ne!(
+        cipher, CLIENT_SECRET,
+        "stored encrypted, not plaintext: {cipher}"
+    );
+    assert_eq!(
+        manager::crypto::decrypt(&cipher, common::JWT_SECRET).unwrap(),
+        CLIENT_SECRET
+    );
+
+    // The hot-swapped runtime completes a real sign-in round trip.
+    let (_, body) = complete_flow(&idp, &router, "sub-web", "web@sso", "Web").await;
+    assert_eq!(
+        body.pointer("/data/username").and_then(Value::as_str),
+        Some("web")
+    );
+
+    // Audit: setting.update on auth.oidc.
+    let audits: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'setting.update' AND resource_type = 'setting' AND resource_id = ?",
+        &["auth.oidc".into()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(audits, 1, "settings change audited");
+}
+
+/// DELETE drops the override: the (disabled) file seed applies again — the
+/// providers probe flips back without a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_delete_reverts_to_the_file_seed() {
+    let (idp, issuer) = MockIdp::start().await;
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+    let bearer = admin_bearer();
+
+    let (status, _) = put_settings(
+        &router,
+        &bearer,
+        json!({
+            "enabled": true,
+            "issuer": issuer,
+            "client_id": "c",
+            "client_secret": "s",
+            "redirect_uri_override": "http://127.0.0.1:8080/api/v1/auth/oidc/callback",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, body) = oneshot(router.clone(), "GET", "/api/v1/auth/oidc/providers", None).await;
+    assert_eq!(body.pointer("/data/enabled"), Some(&json!(true)));
+
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "DELETE",
+        "/api/v1/auth/oidc/settings",
+        Some(&bearer),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete: {body}");
+    assert_eq!(
+        body.pointer("/data/source").and_then(Value::as_str),
+        Some("file")
+    );
+    assert_eq!(
+        body.pointer("/data/enabled"),
+        Some(&json!(false)),
+        "file seed disabled"
+    );
+
+    let (_, _, body) = oneshot(router, "GET", "/api/v1/auth/oidc/providers", None).await;
+    assert_eq!(body.pointer("/data/enabled"), Some(&json!(false)));
+
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "override row dropped");
+    let resets: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'setting.reset' AND resource_type = 'setting' AND resource_id = ?",
+        &["auth.oidc".into()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(resets, 1, "reset audited");
+    let _ = idp;
+}
+
+/// Validation runs server-side on PUT: a non-https issuer (outside
+/// localhost) is refused, nothing saved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_put_refuses_an_insecure_issuer() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+    let bearer = admin_bearer();
+
+    let (status, body) = put_settings(
+        &router,
+        &bearer,
+        json!({
+            "enabled": true,
+            "issuer": "http://sso.example.com",
+            "client_id": "c",
+            "client_secret": "s",
+            "redirect_uri_override": "http://127.0.0.1:8080/api/v1/auth/oidc/callback",
+        }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "insecure issuer refused: {body}");
+    assert!(
+        body.pointer("/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("https")),
+        "{body}"
+    );
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "nothing saved");
+}
+
+/// Non-admins cannot read or change SSO settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sso_settings_require_platform_admin() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+
+    let (status, _) = oneshot_json(
+        router.clone(),
+        "PUT",
+        "/api/v1/auth/oidc/settings",
+        Some(&member_bearer()),
+        json!({ "enabled": true, "issuer": "https://sso.example.com", "client_id": "c",
+                "client_secret": "s" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "member PUT refused");
+
+    let (status, _) = oneshot_json(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/oidc/settings",
+        Some(&member_bearer()),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "member GET refused");
+
+    let (status, _) =
+        oneshot_json(router, "GET", "/api/v1/auth/oidc/settings", None, json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous GET refused");
+}
+
+/// The test endpoint probes discovery without saving anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_test_endpoint_probes_the_provider() {
+    let (idp, issuer) = MockIdp::start().await;
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+    let bearer = admin_bearer();
+
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "POST",
+        "/api/v1/auth/oidc/settings/test",
+        Some(&bearer),
+        json!({ "issuer": issuer }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.pointer("/data/ok"), Some(&json!(true)));
+    assert_eq!(body.pointer("/data/issuer_match"), Some(&json!(true)));
+    assert!(body
+        .pointer("/data/token_endpoint")
+        .and_then(Value::as_str)
+        .unwrap()
+        .ends_with("/oauth/token"));
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "probe saves nothing");
+    let _ = idp;
 }

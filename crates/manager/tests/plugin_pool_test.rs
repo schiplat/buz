@@ -186,7 +186,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
             marketplace_url: String::new(),
         },
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     (Router::new().nest("/api/v1", api::router(state)), pool)
 }

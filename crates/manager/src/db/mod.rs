@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3, 4];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -529,8 +529,34 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         2 => apply_v2_yaml_source(pool).await,
         3 => apply_v3_insertion_order_seq(pool).await,
         4 => apply_v4_oidc(pool).await,
+        5 => apply_v5_oidc_settings(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
+}
+
+/// v5: web-editable SSO configuration (`platform/oidc-sso.md`, Phase 1.5).
+/// Single-row table holding the dashboard-managed OIDC settings; the client
+/// secret is stored encrypted at rest (`buzenc:v1:` via `crypto::encrypt`,
+/// re-encrypted by `rotate-jwt-key`). Absent row = file `[auth.oidc]` seed
+/// applies; a saved row makes the database authoritative (DB > file).
+async fn apply_v5_oidc_settings(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS oidc_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled BIGINT NOT NULL DEFAULT 0,
+            issuer TEXT NOT NULL DEFAULT '',
+            client_id TEXT NOT NULL DEFAULT '',
+            client_secret_ciphertext TEXT NOT NULL DEFAULT '',
+            redirect_uri_override TEXT,
+            scopes_json TEXT NOT NULL DEFAULT '[\"openid\",\"profile\",\"email\"]',
+            auto_provision BIGINT NOT NULL DEFAULT 1,
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// v4: OIDC single sign-on (see docs `platform/oidc-sso.md`). `users` gains

@@ -101,7 +101,7 @@ async fn app_with_runner() -> (Router, exec::DbPool, String, String) {
         pool: pool.clone(),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     (
         Router::new().nest("/api/v1", api::router(state)),

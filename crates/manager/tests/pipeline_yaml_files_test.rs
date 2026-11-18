@@ -75,7 +75,7 @@ async fn test_app(scan_dir: &str) -> Router {
         pool: pool.clone(),
         config: test_config(scan_dir),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -638,7 +638,7 @@ async fn create_rejects_target_team_without_write_before_file_exists() {
         pool: pool.clone(),
         config: test_config(&scan),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     let app = Router::new().nest("/api/v1", api::router(state));
     let token = TokenManager::new(JWT_SECRET)

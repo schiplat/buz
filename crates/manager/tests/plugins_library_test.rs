@@ -71,7 +71,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     (
         Router::new().nest("/api/v1", api::router(state)),

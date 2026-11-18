@@ -58,7 +58,7 @@ fn test_state(pool: exec::DbPool) -> std::sync::Arc<AppState> {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     })
 }
 

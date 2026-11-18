@@ -167,7 +167,7 @@ async fn test_app() -> Router {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -410,7 +410,7 @@ async fn trend_with_no_jobs_is_zero_filled() {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     let app = Router::new().nest("/api/v1", api::router(state));
 

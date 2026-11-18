@@ -182,6 +182,16 @@ pub const ENCRYPTED_COLUMNS: &[(&str, &str, &str)] = &[
         "environment_id || ':' || secret_id",
     ),
     ("hosts", "credential_data", "id"),
+    // Web-saved OIDC client secret (Phase 1.5 web configuration). The table
+    // exists from schema v5; on an older database the plan fails with the
+    // standard "is the schema current?" guidance.
+    (
+        "oidc_settings",
+        "client_secret_ciphertext",
+        // id is INTEGER in this singleton table — the other surfaces key on
+        // TEXT ids, so cast for the dialect-neutral row-key contract.
+        "CAST(id AS TEXT)",
+    ),
 ];
 
 const TRIGGER_PARAM_PREFIX: &str = "buzenc:v1:";

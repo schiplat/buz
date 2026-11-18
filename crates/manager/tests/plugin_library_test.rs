@@ -103,7 +103,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, exec::DbPo
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     (Router::new().nest("/api/v1", api::router(state)), pool)
 }

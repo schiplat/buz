@@ -63,6 +63,15 @@ async fn pool_with_data() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    // Web-saved OIDC client secret (schema v5 singleton row).
+    sqlx::query(
+        "INSERT INTO oidc_settings (id, enabled, issuer, client_id, client_secret_ciphertext) \
+         VALUES (1, 1, 'https://sso.example.com', 'buz', ?)",
+    )
+    .bind(manager::crypto::encrypt("oidc-client-secret", OLD).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
     // A job with mixed plaintext + buzenc:v1 trigger params.
     let mut inputs = std::collections::HashMap::new();
     inputs.insert("PLAIN".to_string(), "plain-value".to_string());
@@ -102,9 +111,9 @@ async fn plan_reports_and_writes_nothing() {
             .unwrap();
 
     let report = rotate_key::plan(&pool, OLD, NEW).await.unwrap();
-    assert_eq!(report.entries.len(), 5, "{report:?}");
+    assert_eq!(report.entries.len(), 6, "{report:?}");
     assert_eq!(report.trigger_param_jobs, 1);
-    assert_eq!(report.total_values(), 6);
+    assert_eq!(report.total_values(), 7);
     assert!(!report.old_key_fingerprint.is_empty());
 
     let rows_after: Vec<(String, String)> =
@@ -132,7 +141,18 @@ async fn apply_rotates_every_value_and_roundtrips() {
     let report = rotate_key::apply(&pool, ":memory:", OLD, NEW)
         .await
         .unwrap();
-    assert_eq!(report.total_values(), 6);
+    assert_eq!(report.total_values(), 7);
+
+    // Web-saved OIDC client secret roundtrips under the NEW key.
+    let oidc_cipher: String =
+        sqlx::query_scalar("SELECT client_secret_ciphertext FROM oidc_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        manager::crypto::decrypt(&oidc_cipher, NEW).unwrap(),
+        "oidc-client-secret"
+    );
 
     // Every surface now decrypts under the NEW key and matches the original
     // plaintext; the old key must fail.

@@ -96,7 +96,7 @@ async fn test_app_with_pool() -> (Router, SqlitePool) {
         pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     (Router::new().nest("/api/v1", api::router(state)), pool)
 }

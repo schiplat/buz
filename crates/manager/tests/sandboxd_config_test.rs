@@ -73,7 +73,7 @@ async fn app_with_host() -> (Router, exec::DbPool, String) {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
-        oidc: None,
+        oidc: manager::state::no_oidc(),
     };
     let app = Router::new().nest("/api/v1", api::router(state));
 

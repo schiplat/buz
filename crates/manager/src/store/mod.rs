@@ -40,6 +40,7 @@ pub mod jobs;
 pub mod locks;
 pub mod logs;
 pub mod metrics;
+pub mod oidc_settings;
 pub mod ops_sandbox;
 pub mod pipelines;
 pub mod platform_settings;

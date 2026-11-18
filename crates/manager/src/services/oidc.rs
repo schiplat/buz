@@ -55,6 +55,186 @@ pub struct OidcIdentity {
     pub groups: Vec<String>,
 }
 
+/// The fully-resolved sign-in configuration: precedence **database row >
+/// `[auth.oidc]` file > defaults**, with `redirect_uri` derived from
+/// `server.public_base_url` when no explicit override is set.
+#[derive(Debug, Clone)]
+pub struct EffectiveOidc {
+    pub enabled: bool,
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_uri: String,
+    pub scopes: Vec<String>,
+    pub auto_provision: bool,
+    /// Where each saved value came from: `database` once an administrator
+    /// has saved settings, otherwise `file`.
+    pub source: &'static str,
+}
+
+impl From<&OidcConfig> for EffectiveOidc {
+    fn from(config: &OidcConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            issuer: config.issuer.trim().trim_end_matches('/').to_string(),
+            client_id: config.client_id.trim().to_string(),
+            client_secret: config.client_secret.trim().to_string(),
+            redirect_uri: config.redirect_uri.trim().to_string(),
+            scopes: config.scopes.clone(),
+            auto_provision: config.auto_provision,
+            source: "file",
+        }
+    }
+}
+
+impl EffectiveOidc {
+    /// The callback URL a provider must have registered, derived from the
+    /// deployment's public base URL when no override is configured.
+    pub fn derived_redirect_uri(public_base_url: &str) -> Result<String, String> {
+        let base = public_base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return Err(
+                "redirect_uri cannot be derived: set server.public_base_url first                  (or fill an explicit redirect_uri)"
+                    .into(),
+            );
+        }
+        if !base.starts_with("https://")
+            && !base.starts_with("http://127.0.0.1")
+            && !base.starts_with("http://localhost")
+        {
+            return Err("server.public_base_url must be an absolute http(s) URL".into());
+        }
+        Ok(format!("{base}/api/v1/auth/oidc/callback"))
+    }
+
+    /// The `OidcConfig::validate` rules applied to the resolved shape.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let issuer = self.issuer.trim();
+        if issuer.is_empty() {
+            return Err("issuer is required when SSO is enabled".into());
+        }
+        if issuer.ends_with('/') {
+            return Err("issuer must not end with '/'".into());
+        }
+        let is_local_http = issuer.starts_with("http://127.0.0.1")
+            || issuer.starts_with("http://localhost")
+            || issuer.starts_with("http://[::1]");
+        if !issuer.starts_with("https://") && !is_local_http {
+            return Err("issuer must be https (http allowed only for localhost                         development)"
+                .into());
+        }
+        if self.client_id.trim().is_empty() {
+            return Err("client_id is required when SSO is enabled".into());
+        }
+        if self.client_secret.trim().is_empty() {
+            return Err("client secret is required when SSO is enabled".into());
+        }
+        let redirect = self.redirect_uri.trim();
+        if redirect.is_empty() {
+            return Err("redirect_uri is required when SSO is enabled".into());
+        }
+        if !redirect.starts_with("https://") && !redirect.starts_with("http://") {
+            return Err("redirect_uri must be an absolute http(s) URL".into());
+        }
+        if !self.scopes.iter().any(|s| s == "openid") {
+            return Err("scopes must include 'openid'".into());
+        }
+        Ok(())
+    }
+}
+
+/// Resolve the effective configuration: the database row wins once saved;
+/// otherwise the file `[auth.oidc]` seed applies. `jwt_secret` decrypts the
+/// stored client secret. Validation is the caller's job (`validate`).
+pub fn resolve_effective(
+    config: &OidcConfig,
+    row: Option<&crate::store::oidc_settings::OidcSettingsRow>,
+    public_base_url: &str,
+    jwt_secret: &str,
+) -> Result<EffectiveOidc, String> {
+    let Some(row) = row else {
+        let mut effective = EffectiveOidc::from(config);
+        // File deployments may leave redirect_uri empty and derive it too.
+        if effective.redirect_uri.is_empty() && effective.enabled {
+            effective.redirect_uri = EffectiveOidc::derived_redirect_uri(public_base_url)?;
+        }
+        return Ok(effective);
+    };
+
+    let scopes: Vec<String> = serde_json::from_str(&row.scopes_json)
+        .unwrap_or_else(|_| vec!["openid".into(), "profile".into(), "email".into()]);
+    let client_secret = if row.client_secret_ciphertext.is_empty() {
+        // Fall back to the file/env secret when the row carries none —
+        // the save form keeps an existing secret without re-entering it.
+        config.resolved_client_secret().unwrap_or_default()
+    } else {
+        crate::crypto::decrypt(&row.client_secret_ciphertext, jwt_secret)
+            .map_err(|e| format!("cannot decrypt the stored OIDC client secret: {e}"))?
+    };
+    let redirect_uri = match row.redirect_uri_override.as_deref() {
+        Some(override_uri) if !override_uri.trim().is_empty() => override_uri.trim().to_string(),
+        _ => EffectiveOidc::derived_redirect_uri(public_base_url)?,
+    };
+    Ok(EffectiveOidc {
+        enabled: row.enabled,
+        issuer: row.issuer.trim().trim_end_matches('/').to_string(),
+        client_id: row.client_id.trim().to_string(),
+        client_secret,
+        redirect_uri,
+        scopes,
+        auto_provision: row.auto_provision,
+        source: "database",
+    })
+}
+
+/// Result of the settings-page "Test connection" probe: the provider's
+/// discovery document was fetched and its `iss` compared to the configured
+/// issuer. No client_id/secret involvement — this only proves reachability
+/// and sane discovery, not credentials.
+#[derive(Debug, serde::Serialize)]
+pub struct DiscoveryProbe {
+    pub issuer_match: bool,
+    pub discovered_issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+}
+
+/// Fetch and validate `{issuer}/.well-known/openid-configuration` with a
+/// one-shot client (no redirects, 10s timeout). Admin-triggered from the
+/// settings UI before a save.
+pub async fn probe_discovery(issuer: &str) -> Result<DiscoveryProbe, String> {
+    let issuer = issuer.trim().trim_end_matches('/').to_string();
+    if issuer.is_empty() {
+        return Err("issuer is empty".into());
+    }
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let discovery_url = format!("{issuer}/.well-known/openid-configuration");
+    let discovery: DiscoveryDocument = http
+        .get(&discovery_url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("discovery request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("discovery response unreadable: {e}"))?;
+    Ok(DiscoveryProbe {
+        issuer_match: discovery.issuer.trim().trim_end_matches('/') == issuer,
+        discovered_issuer: discovery.issuer,
+        authorization_endpoint: discovery.authorization_endpoint,
+        token_endpoint: discovery.token_endpoint,
+        jwks_uri: discovery.jwks_uri,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct DiscoveryDocument {
     issuer: String,
@@ -86,31 +266,35 @@ pub struct OidcRuntime {
 }
 
 impl OidcRuntime {
-    /// Build the runtime from config. `None` when SSO is disabled or the
-    /// configuration is invalid — callers keep serving local login either
-    /// way (SSO misconfiguration never prevents the server from starting).
+    /// Build the runtime from the file `[auth.oidc]` seed only (no database
+    /// override). Kept for tests and as the resolve-free path.
     pub async fn build(config: &OidcConfig) -> Option<Arc<Self>> {
-        if !config.enabled {
+        Self::build_effective(&EffectiveOidc::from(config)).await
+    }
+
+    /// Build the runtime from the resolved configuration. `None` when SSO is
+    /// disabled or the configuration is invalid — callers keep serving local
+    /// login either way (SSO misconfiguration never prevents the server from
+    /// starting).
+    pub async fn build_effective(effective: &EffectiveOidc) -> Option<Arc<Self>> {
+        if !effective.enabled {
             return None;
         }
-        if let Err(error) = config.validate() {
+        if let Err(error) = effective.validate() {
             tracing::error!("oidc disabled — configuration invalid: {error}");
             return None;
         }
-        let client_secret = match config.resolved_client_secret() {
-            Ok(secret) => secret,
-            Err(error) => {
-                tracing::error!("oidc disabled — {error}");
-                return None;
-            }
-        };
+        if effective.client_secret.trim().is_empty() {
+            tracing::error!("oidc disabled — client secret is empty");
+            return None;
+        }
         let runtime = Arc::new(Self {
-            issuer: config.issuer.trim().trim_end_matches('/').to_string(),
-            client_id: config.client_id.trim().to_string(),
-            client_secret,
-            redirect_uri: config.redirect_uri.trim().to_string(),
-            scopes: config.scopes.clone(),
-            auto_provision: config.auto_provision,
+            issuer: effective.issuer.trim().trim_end_matches('/').to_string(),
+            client_id: effective.client_id.trim().to_string(),
+            client_secret: effective.client_secret.trim().to_string(),
+            redirect_uri: effective.redirect_uri.trim().to_string(),
+            scopes: effective.scopes.clone(),
+            auto_provision: effective.auto_provision,
             http: reqwest::Client::builder()
                 // Provider endpoints only; never follow redirects — discovery
                 // and JWKS URLs come from admin config and must answer directly.
