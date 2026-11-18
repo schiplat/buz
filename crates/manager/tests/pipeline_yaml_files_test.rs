@@ -34,6 +34,7 @@ fn test_config(scan_dir: &str) -> Config {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: PipelineConfig {
@@ -74,6 +75,7 @@ async fn test_app(scan_dir: &str) -> Router {
         pool: pool.clone(),
         config: test_config(scan_dir),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -636,6 +638,7 @@ async fn create_rejects_target_team_without_write_before_file_exists() {
         pool: pool.clone(),
         config: test_config(&scan),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     let app = Router::new().nest("/api/v1", api::router(state));
     let token = TokenManager::new(JWT_SECRET)

@@ -8,6 +8,7 @@ pub mod github_fetch_scheduler;
 pub mod job_log_retention;
 pub mod log_broadcast;
 pub mod notify;
+pub mod oidc;
 pub mod pipeline_scanner;
 pub mod pipeline_yaml_emit;
 pub mod platform_settings;

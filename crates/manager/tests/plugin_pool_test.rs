@@ -167,6 +167,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
                 jwt_secret: JWT_SECRET.into(),
                 jwt_ttl_hours: 24,
                 runner_register_token_ttl_hours: 24,
+                oidc: Default::default(),
             },
             runner: Default::default(),
             pipeline: {
@@ -185,6 +186,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
             marketplace_url: String::new(),
         },
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     (Router::new().nest("/api/v1", api::router(state)), pool)
 }

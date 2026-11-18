@@ -79,6 +79,11 @@ pub struct LoginUser {
     pub is_platform_admin: bool,
     pub is_active: bool,
     pub is_ops: bool,
+    /// Authentication origin: `local` (password) or `oidc` (SSO only).
+    pub auth_source: String,
+    /// JIT-provisioned SSO accounts carry no local password; local login and
+    /// password change refuse them before touching the (empty) hash.
+    pub password_login_disabled: bool,
 }
 
 pub async fn find_login_by_username(
@@ -87,7 +92,8 @@ pub async fn find_login_by_username(
 ) -> Result<Option<LoginUser>, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT id, username, password_hash, is_platform_admin, is_active, is_ops
+        "SELECT id, username, password_hash, is_platform_admin, is_active, is_ops,
+                auth_source, password_login_disabled
          FROM users WHERE username = ?",
         &[username.into()],
     )
@@ -99,6 +105,8 @@ pub async fn find_login_by_username(
         is_platform_admin: r.i64_of("is_platform_admin") != 0,
         is_active: r.i64_of("is_active") != 0,
         is_ops: r.i64_of("is_ops") != 0,
+        auth_source: r.text_of("auth_source"),
+        password_login_disabled: r.i64_of("password_login_disabled") != 0,
     }))
 }
 

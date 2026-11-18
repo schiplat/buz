@@ -16,6 +16,7 @@ async fn metrics_app() -> Router {
         pool: common::test_db(4).await,
         config: common::test_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     Router::new()
         .route("/metrics", get(api::metrics::metrics))
@@ -109,6 +110,7 @@ async fn metrics_counts_rows_and_leaks_no_identifiers() {
         pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: common::test_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     let app = Router::new()
         .route("/metrics", get(api::metrics::metrics))

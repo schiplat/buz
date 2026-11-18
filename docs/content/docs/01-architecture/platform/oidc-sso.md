@@ -6,9 +6,10 @@ description: "Design — sign in through any OIDC provider; Buz keeps teams and 
 
 ## Status
 
-Design for the next release. This page is the alignment artifact for the
-implementation: protocol scope, account model, data model, security invariants,
-and phasing. Code references plan-level intent until the feature ships.
+**Implemented (Phase 1)**: OIDC sign-in with JIT provisioning, account-level
+authentication origins, and the ticket handoff flow below. Local login is
+unchanged; group→workspace mapping and SCIM remain future phases. This page
+is both the design record and the operator reference.
 
 ## Goals
 

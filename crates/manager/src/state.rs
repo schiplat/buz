@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::config::Config;
 use crate::services::log_broadcast::LogBroadcaster;
+use crate::services::oidc::OidcRuntime;
 use crate::store::exec::DbPool;
 
 #[derive(Clone)]
@@ -8,6 +11,9 @@ pub struct AppState {
     pub pool: DbPool,
     pub config: Config,
     pub log_broadcast: LogBroadcaster,
+    /// OIDC sign-in runtime. `None` when SSO is disabled or its configuration
+    /// is invalid — local login is unaffected either way.
+    pub oidc: Option<Arc<OidcRuntime>>,
 }
 
 impl AppState {

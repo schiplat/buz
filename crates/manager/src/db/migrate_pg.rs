@@ -35,6 +35,7 @@ pub const ADVISORY_LOCK_KEY: i64 = 0x6275_7A6D_6772_3031; // "buzmgr01"
 pub const PG_MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/pg/001_baseline.sql")),
     (2, include_str!("migrations/pg/002_seq_trigger_locks.sql")),
+    (3, include_str!("migrations/pg/003_oidc.sql")),
 ];
 
 #[cfg(feature = "postgres")]

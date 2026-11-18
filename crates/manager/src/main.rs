@@ -346,10 +346,15 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // OIDC sign-in runtime: None when disabled or misconfigured (only SSO is
+    // disabled — the server and local login keep working, see oidc-sso docs).
+    let oidc = services::oidc::OidcRuntime::build(&config.auth.oidc).await;
+
     let app_state = manager::state::AppState {
         pool: db.clone(),
         config: config.clone(),
         log_broadcast,
+        oidc,
     };
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);

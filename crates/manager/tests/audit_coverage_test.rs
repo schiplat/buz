@@ -233,6 +233,10 @@ const AUDITED: &[(&str, &str)] = &[
 /// decision, never an oversight.
 const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     (
+        "POST /api/v1/auth/oidc/exchange",
+        "session handoff: consumes the one-shot ticket; the login itself was audited at the callback (auth.oidc_login)",
+    ),
+    (
         "PATCH /api/v1/jobs/{id}/status",
         "runner-reported job progress: one event per step, machine telemetry",
     ),

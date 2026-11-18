@@ -21,6 +21,14 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, title: 'Sign in' },
   },
   {
+    // OIDC handoff landing: exchanges the one-shot ticket cookie for the
+    // session JWT (see platform/oidc-sso.md).
+    path: '/auth/sso/callback',
+    name: 'sso-callback',
+    component: () => import('@/pages/SsoCallback.vue'),
+    meta: { public: true, title: 'Signing in' },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AppShell.vue'),
     children: [

@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -528,8 +528,84 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         1 => apply_legacy_baseline(pool, jwt_secret).await,
         2 => apply_v2_yaml_source(pool).await,
         3 => apply_v3_insertion_order_seq(pool).await,
+        4 => apply_v4_oidc(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
+}
+
+/// v4: OIDC single sign-on (see docs `platform/oidc-sso.md`). `users` gains
+/// the authentication origin (`auth_source`: `local` | `oidc`) and the
+/// password gate (`password_login_disabled` — JIT-provisioned users have no
+/// local password); external identities bind IdP subjects to users, and the
+/// flow/ticket tables carry the browser round trip (hashed, single-use,
+/// TTL'd).
+async fn apply_v4_oidc(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(pool, "users", "auth_source TEXT NOT NULL DEFAULT 'local'").await;
+    add_column_if_missing(
+        pool,
+        "users",
+        "password_login_disabled BIGINT NOT NULL DEFAULT 0",
+    )
+    .await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS external_identities (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            issuer TEXT NOT NULL DEFAULT '',
+            subject TEXT NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            email TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            groups_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_login_at TEXT,
+            UNIQUE (provider, subject),
+            UNIQUE (provider, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sso_flows (
+            id TEXT PRIMARY KEY,
+            state_hash TEXT NOT NULL UNIQUE,
+            nonce TEXT NOT NULL,
+            code_verifier TEXT NOT NULL,
+            redirect_to TEXT NOT NULL DEFAULT '/dashboard',
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sso_tickets (
+            ticket_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_external_identities_user ON external_identities(user_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sso_flows_expires ON sso_flows(expires_at)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sso_tickets_expires ON sso_tickets(expires_at)")
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// v2: the canonical YAML text moves into the database. The file under

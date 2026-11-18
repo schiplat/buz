@@ -55,6 +55,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -70,6 +71,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     (
         Router::new().nest("/api/v1", api::router(state)),

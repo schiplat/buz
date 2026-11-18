@@ -51,6 +51,7 @@ fn production_config() -> Config {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -100,6 +101,7 @@ async fn app_with_runner() -> (Router, exec::DbPool, String, String) {
         pool: pool.clone(),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     (
         Router::new().nest("/api/v1", api::router(state)),

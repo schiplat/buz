@@ -54,7 +54,9 @@ apiClient.interceptors.response.use(
       // handles the error. Only treat unexpected 401s as "session expired".
       const reqUrl = String(url || '')
       const isCredentialAttempt =
-        reqUrl.includes('/auth/login') || reqUrl.includes('/auth/setup')
+        reqUrl.includes('/auth/login') ||
+        reqUrl.includes('/auth/setup') ||
+        reqUrl.includes('/auth/oidc/exchange')
       if (!isCredentialAttempt) {
         localStorage.removeItem('buz_token')
         localStorage.removeItem('buz_username')

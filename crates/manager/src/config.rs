@@ -259,6 +259,10 @@ pub struct AuthConfig {
     pub jwt_ttl_hours: i64,
     #[serde(default = "default_token_ttl_hours")]
     pub runner_register_token_ttl_hours: i64,
+    /// `[auth.oidc]` — generic OIDC single sign-on (any standards-compliant
+    /// provider). Disabled by default; local login is unaffected either way.
+    #[serde(default)]
+    pub oidc: OidcConfig,
 }
 
 impl Default for AuthConfig {
@@ -267,9 +271,135 @@ impl Default for AuthConfig {
             jwt_secret: String::new(),
             jwt_ttl_hours: default_jwt_ttl_hours(),
             runner_register_token_ttl_hours: default_token_ttl_hours(),
+            oidc: OidcConfig::default(),
         }
     }
 }
+
+/// `[auth.oidc]` — generic OIDC provider configuration. There is nothing
+/// provider-specific here: the issuer drives discovery
+/// (`{issuer}/.well-known/openid-configuration`) and everything else is
+/// standard protocol.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OidcConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// HTTPS origin without a trailing slash (plain http allowed only for
+    /// localhost development). Drives discovery; must equal the IdP's
+    /// `issuer` claim.
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub client_id: String,
+    /// Inline client secret. Resolution order when empty: the
+    /// `BUZ_OIDC_CLIENT_SECRET` env var, then `client_secret_file`.
+    #[serde(default)]
+    pub client_secret: String,
+    /// Read-once alternative to `client_secret` for deployments that keep
+    /// secrets in files rather than configs.
+    #[serde(default)]
+    pub client_secret_file: Option<String>,
+    /// Absolute callback URL, character-for-character equal to the redirect
+    /// URI registered at the provider.
+    #[serde(default)]
+    pub redirect_uri: String,
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<String>,
+    /// Create a plain Buz user on first sign-in of an unbound identity
+    /// (no teams, no admin flags). When false, unbound identities are
+    /// refused with a message pointing at an administrator.
+    #[serde(default = "default_oidc_auto_provision")]
+    pub auto_provision: bool,
+}
+
+impl Default for OidcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            issuer: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            client_secret_file: None,
+            redirect_uri: String::new(),
+            scopes: default_oidc_scopes(),
+            auto_provision: default_oidc_auto_provision(),
+        }
+    }
+}
+
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["openid".into(), "profile".into(), "email".into()]
+}
+
+fn default_oidc_auto_provision() -> bool {
+    true
+}
+
+impl OidcConfig {
+    /// Resolve the client secret: inline value, then the
+    /// `BUZ_OIDC_CLIENT_SECRET` env var, then `client_secret_file`.
+    pub fn resolved_client_secret(&self) -> Result<String, String> {
+        if !self.client_secret.trim().is_empty() {
+            return Ok(self.client_secret.trim().to_string());
+        }
+        if let Ok(from_env) = std::env::var(OIDC_CLIENT_SECRET_ENV) {
+            if !from_env.trim().is_empty() {
+                return Ok(from_env.trim().to_string());
+            }
+        }
+        if let Some(path) = self.client_secret_file.as_deref() {
+            if !path.trim().is_empty() {
+                let from_file = std::fs::read_to_string(path.trim())
+                    .map_err(|e| format!("cannot read client_secret_file {path}: {e}"))?;
+                return Ok(from_file.trim().to_string());
+            }
+        }
+        Err("no client secret: set [auth.oidc] client_secret, \
+             BUZ_OIDC_CLIENT_SECRET, or client_secret_file"
+            .into())
+    }
+
+    /// Validate everything the sign-in flow needs. `Err` carries the first
+    /// problem; the caller disables SSO only (never the server).
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let issuer = self.issuer.trim();
+        if issuer.is_empty() {
+            return Err("[auth.oidc] issuer is required when enabled".into());
+        }
+        if issuer.ends_with('/') {
+            return Err("[auth.oidc] issuer must not end with '/'".into());
+        }
+        let is_local_http = issuer.starts_with("http://127.0.0.1")
+            || issuer.starts_with("http://localhost")
+            || issuer.starts_with("http://[::1]");
+        if !issuer.starts_with("https://") && !is_local_http {
+            return Err("[auth.oidc] issuer must be https (http allowed only for \
+                        localhost development)"
+                .into());
+        }
+        if self.client_id.trim().is_empty() {
+            return Err("[auth.oidc] client_id is required when enabled".into());
+        }
+        self.resolved_client_secret()?;
+        let redirect = self.redirect_uri.trim();
+        if redirect.is_empty() {
+            return Err("[auth.oidc] redirect_uri is required when enabled".into());
+        }
+        if !redirect.starts_with("https://") && !redirect.starts_with("http://") {
+            return Err("[auth.oidc] redirect_uri must be an absolute http(s) URL".into());
+        }
+        if !self.scopes.iter().any(|s| s == "openid") {
+            return Err("[auth.oidc] scopes must include 'openid'".into());
+        }
+        Ok(())
+    }
+}
+
+/// Environment fallback for the OIDC client secret (`[auth.oidc]`).
+pub const OIDC_CLIENT_SECRET_ENV: &str = "BUZ_OIDC_CLIENT_SECRET";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunnerConfig {

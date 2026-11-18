@@ -81,3 +81,7 @@ async-trait = "0.1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+# Mock OIDC IdP in oidc_sso_test: generate a per-suite RSA key for id_token
+# signing and expose its public parts as a JWKS. Already in the tree via
+# russh, so this adds no new build inputs.
+rsa = "0.9"

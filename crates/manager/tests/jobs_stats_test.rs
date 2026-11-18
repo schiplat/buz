@@ -49,6 +49,7 @@ fn test_config() -> Config {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -166,6 +167,7 @@ async fn test_app() -> Router {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -408,6 +410,7 @@ async fn trend_with_no_jobs_is_zero_filled() {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: None,
     };
     let app = Router::new().nest("/api/v1", api::router(state));
 
