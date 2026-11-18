@@ -1,0 +1,60 @@
+name: Docs
+
+# CI check for docs-only changes. ci.yml paths-ignores 'docs/**' and '**/*.md'
+# (docs cannot affect the Rust/dashboard build), but the master protection
+# ruleset requires status checks — without a reported check, docs-only PRs sit
+# in "Expected" forever. This workflow gives them a real one: build the site
+# and run the same offline link check the deploy workflow gates on.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Same shape as ci.yml: only the latest run per ref matters.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # hextra theme is a submodule (docs/themes/hextra)
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@6b1ee2dcc06c9b6629a5317fa0146473914d05e1 # v3
+        with:
+          # Kept in sync with deploy-docs.yml — bump both together.
+          hugo-version: '0.163.3'
+          extended: true
+
+      - name: Build
+        working-directory: ./docs
+        run: hugo --gc --minify
+
+      - name: Check internal links & anchors (lychee, offline)
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: >-
+            --offline
+            --no-progress
+            --root-dir ${{ github.workspace }}/docs/public
+            'docs/public/**/*.html'
