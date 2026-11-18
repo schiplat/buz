@@ -464,7 +464,7 @@ async fn complete_flow(
 
 /// The whole flow for a pre-bound identity: provisioning must not happen, the
 /// JWT must work on `/auth/me`, and the identity profile is refreshed.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bound_identity_signs_in_and_receives_a_local_equivalent_jwt() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -515,7 +515,7 @@ async fn bound_identity_signs_in_and_receives_a_local_equivalent_jwt() {
 
 /// First sign-in of an unknown identity provisions a plain `oidc` user: no
 /// teams, no admin flags, no local password — and the login is audited.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jit_provisions_a_plain_oidc_user_by_default() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -580,7 +580,7 @@ async fn jit_provisions_a_plain_oidc_user_by_default() {
 
 /// With `auto_provision = false`, an unbound identity is refused and nothing
 /// is created.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unbound_identity_is_refused_when_auto_provision_is_off() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, false))
@@ -612,7 +612,7 @@ async fn unbound_identity_is_refused_when_auto_provision_is_off() {
 
 /// An uninitialized instance (zero users) refuses JIT: the first account
 /// belongs to `/setup`, and a plain JIT user would lock setup out.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jit_is_refused_for_an_uninitialized_instance() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -643,7 +643,7 @@ async fn jit_is_refused_for_an_uninitialized_instance() {
 
 /// A replayed `state` (the same callback URL twice) is refused — the flow was
 /// consumed by the first visit.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replayed_state_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -673,7 +673,7 @@ async fn replayed_state_is_refused() {
 }
 
 /// An id_token whose `nonce` does not match the flow's is refused.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nonce_mismatch_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -701,7 +701,7 @@ async fn nonce_mismatch_is_refused() {
 }
 
 /// An expired flow (past `expires_at`) is refused like a replay.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expired_flow_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -747,7 +747,7 @@ async fn expired_flow_is_refused() {
 
 /// The handoff ticket works exactly once; every later presentation is an
 /// auth failure.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_is_single_use() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -787,7 +787,7 @@ async fn ticket_is_single_use() {
 /// Account-level mutual exclusion: an `oidc` account cannot password-login,
 /// and the failure is indistinguishable from any other bad login. A local
 /// user signing in through SSO gets a *separate* JIT account, never a link.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sso_account_cannot_password_login_and_local_user_gets_a_separate_account() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -854,7 +854,7 @@ async fn sso_account_cannot_password_login_and_local_user_gets_a_separate_accoun
 }
 
 /// `disabled` accounts are refused at sign-in even with a bound identity.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabled_user_is_refused_at_oidc_signin() {
     let (idp, issuer) = MockIdp::start().await;
     let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
@@ -890,7 +890,7 @@ async fn disabled_user_is_refused_at_oidc_signin() {
 
 /// The providers capability probe: disabled by default, enabled with the
 /// runtime, and a hard 404-shape for disabled `start` (SPA shows local login).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn providers_probe_reports_enabled_state() {
     let pool = common::test_db(4).await;
     let router = sso_app(None, pool.clone()).await;
