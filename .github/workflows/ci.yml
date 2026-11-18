@@ -187,6 +187,9 @@ jobs:
       - name: Postgres concurrency gates
         run: cargo test -p manager --features postgres --test pg_concurrency_test -- --nocapture
 
+      - name: OIDC SSO journeys (dual-backend)
+        run: cargo test -p manager --features postgres --test oidc_sso_test -- --nocapture
+
       # The dual-backend fixture matrix: every converted suite (incl.
       # slot_scheduling via the guarded host-row reconcile) runs unmodified
       # on Postgres via BUZ_TEST_DB=pg. SQLite-only suites (migration-chain
@@ -195,6 +198,7 @@ jobs:
       - name: Fixture matrix (BUZ_TEST_DB=pg)
         run: |
           BUZ_TEST_DB=pg cargo test -p manager --features postgres \
+            --test oidc_sso_test \
             --test settings_test \
             --test metrics_test \
             --test logs_unit_pagination_test \

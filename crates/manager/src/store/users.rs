@@ -64,8 +64,8 @@ pub async fn insert(
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active, auth_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'local')",
         &[
             id.into(),
             username.into(),
@@ -75,6 +75,34 @@ pub async fn insert(
             SqlValue::Int(if is_super_admin { 1 } else { 0 }),
             SqlValue::Int(if is_ops { 1 } else { 0 }),
         ],
+    )
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            AppError::Conflict("username already exists".into())
+        } else {
+            AppError::DatabaseError(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
+/// Insert a JIT-provisioned OIDC user: plain (no admin/ops flags), no local
+/// password, sign-in only through the provider. `password_hash` stays empty —
+/// local login and password change refuse this account by construction.
+pub async fn insert_oidc(
+    pool: &DbPool,
+    id: &str,
+    username: &str,
+    display_name: &str,
+) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "INSERT INTO users
+            (id, username, password_hash, display_name, is_platform_admin, is_super_admin,
+             is_ops, is_active, auth_source, password_login_disabled)
+         VALUES (?, ?, '', ?, 0, 0, 0, 1, 'oidc', 1)",
+        &[id.into(), username.into(), display_name.into()],
     )
     .await
     .map_err(|e| {

@@ -42,6 +42,7 @@ fn test_config() -> Config {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -59,6 +60,7 @@ async fn test_state() -> AppState {
         pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
     }
 }
 

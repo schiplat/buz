@@ -34,6 +34,20 @@ jwt_secret = ""                     # required — or set BUZ_JWT_SECRET (openss
 jwt_ttl_hours = 24
 runner_register_token_ttl_hours = 24
 
+# [auth.oidc] — OPTIONAL: single sign-on through any OIDC provider.
+# Disabled by default; local login keeps working either way. A
+# misconfiguration disables only SSO (the server still starts).
+# Recommended: configure SSO in the web UI (Settings → SSO) — values saved
+# there live in the database, override this seed, and apply without a restart.
+# [auth.oidc]
+# enabled = true
+# issuer = "https://sso.example.com"       # https, no trailing slash
+# client_id = "buz"
+# client_secret = ""                       # or BUZ_OIDC_CLIENT_SECRET / client_secret_file
+# redirect_uri = "https://buz.example.com/api/v1/auth/oidc/callback"
+# scopes = ["openid", "profile", "email"]
+# auto_provision = true                    # first SSO sign-in creates a plain user
+
 [runner]
 heartbeat_timeout_seconds = 90
 

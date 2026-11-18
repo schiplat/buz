@@ -31,6 +31,12 @@ ignore = [
     # secrets. Keep the data directory writable only by the Manager's OS user
     # (the same boundary jwt_secret and stored secrets rely on). See SECURITY.md.
     "RUSTSEC-2026-0459",
+    # chrono: unmaintained upstream (the 0.4 line is in maintenance freeze;
+    # the time 0.1 ecosystem and chrono 0.5 migration are a separate, tracked
+    # piece of work). No known vulnerability — informational notice only.
+    # Surfaced by the advisory database on 2026-11-18; chrono is a workspace
+    # dependency unrelated to any single change set.
+    "RUSTSEC-2026-0543",
 ]
 
 # Two further advisories are reported as *warnings* (unmaintained, no CVE) and

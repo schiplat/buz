@@ -48,6 +48,7 @@ fn base_config(standalone: bool) -> Config {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -74,6 +75,7 @@ async fn test_app(standalone: bool) -> Router {
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
     };
     Router::new().nest("/api/v1", api::router(state))
 }
@@ -143,6 +145,7 @@ async fn production_mode_rejects_empty_token() {
         pool: pool.clone(),
         config: base_config(false),
         log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
     };
     let app = Router::new().nest("/api/v1", api::router(state));
     let loopback: SocketAddr = "127.0.0.1:9".parse().unwrap();
@@ -179,6 +182,7 @@ async fn standalone_rejects_non_loopback_even_with_token() {
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
     };
     let app = Router::new().nest("/api/v1", api::router(state));
     let remote: SocketAddr = "10.0.0.5:9".parse().unwrap();

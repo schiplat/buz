@@ -6,6 +6,7 @@ use axum::{
 use crate::state::AppState;
 
 pub mod auth;
+pub mod oidc_settings;
 pub mod pipeline_yaml_files;
 pub mod pipelines;
 pub mod runners;
@@ -107,6 +108,22 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/verify", get(auth::verify))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
+        // OIDC single sign-on (public browser flow; see platform/oidc-sso.md)
+        .route("/auth/oidc/providers", get(auth::oidc_providers))
+        .route("/auth/oidc/start", get(auth::oidc_start))
+        .route("/auth/oidc/callback", get(auth::oidc_callback))
+        .route("/auth/oidc/exchange", post(auth::oidc_exchange))
+        // SSO configuration (platform admin; DB override > file seed)
+        .route(
+            "/auth/oidc/settings",
+            get(oidc_settings::get_settings)
+                .put(oidc_settings::update_settings)
+                .delete(oidc_settings::reset_settings),
+        )
+        .route(
+            "/auth/oidc/settings/test",
+            post(oidc_settings::test_settings),
+        )
         // Users (platform admin)
         .route("/users", get(users::list).post(users::create))
         .route("/users/{id}", put(users::update).delete(users::delete))

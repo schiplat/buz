@@ -36,6 +36,8 @@ pub enum Action {
     // auth
     AuthChangePassword,
     AuthLogin,
+    AuthOidcLogin,
+    AuthOidcProvision,
     AuthSetup,
 
     // api_token
@@ -168,6 +170,8 @@ impl Action {
         match self {
             Action::AuthChangePassword => "auth.change_password",
             Action::AuthLogin => "auth.login",
+            Action::AuthOidcLogin => "auth.oidc_login",
+            Action::AuthOidcProvision => "auth.oidc_provision",
             Action::AuthSetup => "auth.setup",
             Action::ApiTokenCreate => "api_token.create",
             Action::ApiTokenRevoke => "api_token.revoke",

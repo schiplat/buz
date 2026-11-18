@@ -48,6 +48,22 @@ export const authApi = {
     return resp.data
   },
 
+  async oidcProviders(): Promise<{ enabled: boolean }> {
+    const resp = await apiClient.get('/auth/oidc/providers')
+    return resp.data
+  },
+
+  /** Consume the HttpOnly SSO ticket cookie (sent automatically) for the JWT. */
+  async oidcExchange(): Promise<{
+    token: string
+    user_id?: string
+    username?: string
+    is_platform_admin?: boolean
+  }> {
+    const resp = await apiClient.post('/auth/oidc/exchange')
+    return resp.data
+  },
+
   async me(): Promise<MeResponse> {
     const resp = await apiClient.get('/auth/me')
     return resp.data as MeResponse

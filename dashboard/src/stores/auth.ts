@@ -81,6 +81,11 @@ export const useAuthStore = defineStore('auth', () => {
     await fetchMe()
   }
 
+  async function oidcExchange() {
+    const resp = await authApi.oidcExchange()
+    await applySession(resp, resp.username || '')
+  }
+
   async function login(user: string, pass: string) {
     const resp = await authApi.login(user, pass)
     await applySession(resp, user)
@@ -150,6 +155,7 @@ export const useAuthStore = defineStore('auth', () => {
     setActiveTeamId,
     matchesActiveTeam,
     login,
+    oidcExchange,
     completeSetup,
     fetchMe,
     logout,

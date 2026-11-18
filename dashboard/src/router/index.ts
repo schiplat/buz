@@ -21,6 +21,14 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, title: 'Sign in' },
   },
   {
+    // OIDC handoff landing: exchanges the one-shot ticket cookie for the
+    // session JWT (see platform/oidc-sso.md).
+    path: '/auth/sso/callback',
+    name: 'sso-callback',
+    component: () => import('@/pages/SsoCallback.vue'),
+    meta: { public: true, title: 'Signing in' },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AppShell.vue'),
     children: [
@@ -88,6 +96,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
+      { path: 'settings/sso', name: 'sso-settings', component: () => import('@/pages/SsoSettings.vue'), meta: { title: 'SSO', adminOnly: true } },
       {
         path: 'plugin-library',
         name: 'plugin-library',

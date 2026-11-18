@@ -7,6 +7,7 @@ import {
   Layers,
   PanelLeft,
   ScrollText,
+  Shield,
   Server,
   Users,
   UserRound,
@@ -58,6 +59,7 @@ const allEntries: NavEntry[] = [
   { kind: 'link', name: 'users', label: 'Users', icon: UserRound, to: '/users', adminOnly: true },
   { kind: 'link', name: 'api-tokens', label: 'API tokens', icon: KeyRound, to: '/api-tokens', adminOnly: true },
   { kind: 'link', name: 'audit-logs', label: 'Audit logs', icon: ScrollText, to: '/audit-logs', adminOnly: true },
+  { kind: 'link', name: 'sso-settings', label: 'SSO', icon: Shield, to: '/settings/sso', adminOnly: true },
 ]
 
 const entries = computed(() =>

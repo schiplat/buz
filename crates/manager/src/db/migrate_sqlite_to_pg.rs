@@ -50,6 +50,7 @@ pub const TABLE_ORDER: &[&str] = &[
     "plugin_sources",
     "plugin_pool",
     "platform_settings",
+    "oidc_settings",
     "scheduler_lease",
     "pipeline_git_hooks",
     "pipeline_trigger_events",

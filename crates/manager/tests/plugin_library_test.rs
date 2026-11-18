@@ -82,6 +82,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, exec::DbPo
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
             runner_register_token_ttl_hours: 24,
+            oidc: Default::default(),
         },
         runner: RunnerConfig::default(),
         pipeline: isolated_pipeline_config(),
@@ -102,6 +103,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, exec::DbPo
         pool: pool.clone(),
         config,
         log_broadcast: LogBroadcaster::new(),
+        oidc: manager::state::no_oidc(),
     };
     (Router::new().nest("/api/v1", api::router(state)), pool)
 }
