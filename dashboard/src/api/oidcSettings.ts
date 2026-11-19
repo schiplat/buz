@@ -13,6 +13,8 @@ export interface OidcSettings {
   derived_redirect_uri: string | null
   /** Register at the provider so disable/logout events reach Buz immediately. */
   backchannel_logout_uri: string | null
+  /** Register so the provider returns the browser after RP-initiated logout. */
+  post_logout_redirect_uri: string | null
   scopes: string[]
   auto_provision: boolean
   updated_by: string

@@ -95,21 +95,53 @@ struct IdpCodes {
     issuer: String,
     codes: Mutex<HashMap<String, Value>>,
     counter: AtomicU64,
+    /// Declared `token_endpoint_auth_methods_supported` (empty = permissive).
+    auth_methods: Vec<String>,
+    /// Recorded `/oauth/end_session` form payloads.
+    end_sessions: Mutex<Vec<HashMap<String, String>>>,
+}
+
+/// Decode an `Authorization: Basic` header into `(user, password)`.
+fn basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
+    use base64::engine::general_purpose::STANDARD;
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let encoded = raw.strip_prefix("Basic ")?.trim();
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    text.split_once(':')
+        .map(|(u, p)| (u.to_string(), p.to_string()))
 }
 
 async fn token_endpoint(
     State(idp): State<Arc<IdpCodes>>,
+    headers: HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> (StatusCode, Json<Value>) {
     let fail = |error: &str| (StatusCode::BAD_REQUEST, Json(json!({ "error": error })));
     if form.get("grant_type").map(String::as_str) != Some("authorization_code") {
         return fail("unsupported_grant_type");
     }
-    if form.get("client_id").map(String::as_str) != Some(CLIENT_ID) {
-        return fail("invalid_client");
-    }
-    if form.get("client_secret").map(String::as_str) != Some(CLIENT_SECRET) {
-        return fail("invalid_client");
+    // Client authentication per what this mock declares: basic-only suites
+    // require the Basic header and reject body credentials; everything else
+    // accepts the form shape (a provider declaring both accepts either).
+    let basic_only = idp.auth_methods.iter().any(|m| m == "client_secret_basic")
+        && !idp.auth_methods.iter().any(|m| m == "client_secret_post");
+    if basic_only {
+        let credentials_ok =
+            basic_credentials(&headers).is_some_and(|(u, p)| u == CLIENT_ID && p == CLIENT_SECRET);
+        if !credentials_ok {
+            return fail("invalid_client");
+        }
+        if form.contains_key("client_id") || form.contains_key("client_secret") {
+            return fail("invalid_client");
+        }
+    } else {
+        if form.get("client_id").map(String::as_str) != Some(CLIENT_ID) {
+            return fail("invalid_client");
+        }
+        if form.get("client_secret").map(String::as_str) != Some(CLIENT_SECRET) {
+            return fail("invalid_client");
+        }
     }
     if form.get("redirect_uri").map(String::as_str) != Some(REDIRECT_URI) {
         return fail("invalid_grant");
@@ -131,6 +163,15 @@ async fn token_endpoint(
             "id_token": id_token,
         })),
     )
+}
+
+/// Record the end-session form (the RP's browser POSTs it auto-submitted).
+async fn end_session_endpoint(
+    State(idp): State<Arc<IdpCodes>>,
+    Form(form): Form<HashMap<String, String>>,
+) -> StatusCode {
+    idp.end_sessions.lock().unwrap().push(form);
+    StatusCode::OK
 }
 
 /// Minimal one-shot HTTP GET over a raw tokio TcpStream — the readiness
@@ -160,31 +201,49 @@ async fn raw_http_get(base: &str, path: &str, timeout: tokio::time::Duration) ->
 }
 
 impl MockIdp {
-    /// Bind an ephemeral loopback port, serve discovery/JWKS/token, and
-    /// report the issuer URL the Buz config must carry. `OidcRuntime::build`
-    /// performs discovery against this immediately after.
+    /// The default mock: `client_secret_post` (Buz's legacy behavior),
+    /// end-session advertised.
     async fn start() -> (Self, String) {
+        Self::start_with(vec![], true).await
+    }
+
+    /// A mock declaring `auth_methods` in discovery; `end_session = false`
+    /// omits the endpoint entirely (the purely-local-logout case).
+    async fn start_with(auth_methods: Vec<&str>, end_session: bool) -> (Self, String) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let codes = Arc::new(IdpCodes {
             issuer: issuer.clone(),
             codes: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
+            auth_methods: auth_methods.iter().map(|s| s.to_string()).collect(),
+            end_sessions: Mutex::new(Vec::new()),
         });
 
         let issuer_for_routes = issuer.clone();
+        let advertised_methods = codes.auth_methods.clone();
         let app = Router::new()
             .route(
                 "/.well-known/openid-configuration",
                 get(move || {
                     let issuer = issuer_for_routes;
+                    let advertised_methods = advertised_methods.clone();
                     async move {
-                        Json(json!({
+                        let mut doc = json!({
                             "issuer": issuer,
                             "authorization_endpoint": format!("{issuer}/oauth/authorize"),
                             "token_endpoint": format!("{issuer}/oauth/token"),
                             "jwks_uri": format!("{issuer}/oauth/jwks"),
-                        }))
+                        });
+                        if end_session {
+                            doc["end_session_endpoint"] =
+                                json!(format!("{issuer}/oauth/end_session"));
+                        }
+                        if !advertised_methods.is_empty() {
+                            doc["token_endpoint_auth_methods_supported"] =
+                                json!(advertised_methods);
+                        }
+                        Json(doc)
                     }
                 }),
             )
@@ -193,6 +252,7 @@ impl MockIdp {
                 get(|| async move { Json(mock_keys().jwks.clone()) }),
             )
             .route("/oauth/token", post(token_endpoint))
+            .route("/oauth/end_session", post(end_session_endpoint))
             .with_state(codes.clone());
 
         tokio::spawn(async move {
@@ -250,6 +310,11 @@ impl MockIdp {
         );
         code
     }
+
+    /// The end-session forms the RP's browsers have submitted so far.
+    fn end_sessions(&self) -> Vec<HashMap<String, String>> {
+        self.codes.end_sessions.lock().unwrap().clone()
+    }
 }
 
 // ───────────────────────────── fixture plumbing ─────────────────────────────
@@ -269,6 +334,7 @@ fn oidc_config(issuer: &str, auto_provision: bool) -> OidcConfig {
 
 async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
     let mut config: Config = test_config();
+    config.server.public_base_url = "http://127.0.0.1:8080".into();
     if let Some(runtime) = &oidc {
         config.auth.oidc = oidc_config(&runtime.issuer, true);
     }
@@ -284,6 +350,7 @@ async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
 /// Same app but honoring `auto_provision = false` — the approval-queue mode.
 async fn sso_app_jit_off(oidc: Arc<OidcRuntime>, pool: DbPool) -> Router {
     let mut config: Config = test_config();
+    config.server.public_base_url = "http://127.0.0.1:8080".into();
     config.auth.oidc = oidc_config(&oidc.issuer, false);
     let state = AppState {
         pool: pool.clone(),
@@ -1873,4 +1940,131 @@ async fn last_local_admin_password_cannot_be_disabled_via_bind() {
     .await
     .unwrap();
     assert_eq!(bound, 0, "the failed bind must roll back");
+}
+
+// ─────────────────── RP-initiated logout + auth-method negotiation ───────────────────
+
+/// Logout with an SSO runtime answers the auto-submitting form pointing at
+/// the provider's end-session endpoint with the registered landing URL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rp_logout_sends_the_browser_to_the_provider_end_session() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8_lossy(&body).into_owned();
+    assert!(
+        html.contains("<form method=\"post\""),
+        "auto-submit form: {html}"
+    );
+    assert!(
+        html.contains("/oauth/end_session"),
+        "targets the provider: {html}"
+    );
+    assert!(
+        html.contains(&format!("value=\"{CLIENT_ID}\"")),
+        "carries client_id"
+    );
+    assert!(
+        html.contains("post_logout_redirect_uri"),
+        "carries the landing URL"
+    );
+    assert!(
+        html.contains("/auth/sso/logged-out"),
+        "landing is the SPA page: {html}"
+    );
+
+    // The session round trip still works after the logout plumbing.
+    let (_, end) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    assert!(end.pointer("/data/token").is_some());
+    // (no end-session POST happened server-side — the RP page posts in the browser)
+    assert!(idp.end_sessions().is_empty());
+}
+
+/// A provider without an end-session endpoint → purely local sign-out; SSO
+/// off → straight to the login page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rp_logout_falls_back_to_local_without_provider_support() {
+    let (_idp, issuer) = MockIdp::start_with(vec![], false).await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/auth/sso/logged-out")
+    );
+
+    // SSO not configured at all.
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(None, pool.clone()).await;
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/login")
+    );
+}
+
+/// Discovery declaring basic-only switches the token request to Basic
+/// credentials (the mock refuses body credentials in that mode).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_auth_method_is_negotiated_from_discovery() {
+    let (idp, issuer) = MockIdp::start_with(vec!["client_secret_basic"], true).await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-basic", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    // A full round trip only succeeds when the mock accepted Basic auth.
+    let (next, body) = complete_flow(&idp, &router, "sub-basic", "boss@sso", "Boss").await;
+    assert_eq!(next, "/auth/sso/callback?next=%2Fpipelines");
+    assert!(body
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .is_some());
 }

@@ -150,6 +150,15 @@ impl EffectiveOidc {
         ))
     }
 
+    /// The post-logout landing a provider returns the browser to after
+    /// RP-initiated logout (register this alongside the callback).
+    pub fn derived_post_logout_redirect_uri(public_base_url: &str) -> Result<String, String> {
+        Ok(format!(
+            "{}/auth/sso/logged-out",
+            derived_base(public_base_url)?
+        ))
+    }
+
     /// The `OidcConfig::validate` rules applied to the resolved shape.
     pub fn validate(&self) -> Result<(), String> {
         if !self.enabled {
@@ -284,6 +293,38 @@ struct DiscoveryDocument {
     authorization_endpoint: String,
     token_endpoint: String,
     jwks_uri: String,
+    /// Present when the provider supports RP-initiated logout
+    /// (`OpenID Connect Session Management` / its `end_session` successor).
+    #[serde(default)]
+    end_session_endpoint: Option<String>,
+    /// How the provider accepts client authentication at the token endpoint.
+    /// Absent/empty → the RFC 6749 default for confidential clients
+    /// (`client_secret_basic`); a declared list narrows the choice. Buz sends
+    /// form credentials when `client_secret_post` is declared, Basic auth
+    /// otherwise — providers that support both accept either.
+    #[serde(default)]
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
+}
+
+/// The negotiated token-endpoint client authentication (see
+/// [`DiscoveryDocument::token_endpoint_auth_methods_supported`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenAuth {
+    /// `client_id`/`client_secret` in the form body.
+    ClientSecretPost,
+    /// `client_id`/`client_secret` in an `Authorization: Basic` header.
+    ClientSecretBasic,
+}
+
+impl TokenAuth {
+    fn from_discovery(methods: Option<&[String]>) -> Self {
+        let declared = methods.map(|m| !m.is_empty()).unwrap_or(false);
+        if declared && !methods.unwrap().iter().any(|m| m == "client_secret_post") {
+            TokenAuth::ClientSecretBasic
+        } else {
+            TokenAuth::ClientSecretPost
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +334,8 @@ struct CachedEndpoints {
     #[allow(dead_code)] // kept alongside discovery for JWKS-refresh debugging
     jwks_uri: String,
     jwks: JwkSet,
+    end_session_endpoint: Option<String>,
+    token_auth: TokenAuth,
 }
 
 pub struct OidcRuntime {
@@ -402,6 +445,12 @@ impl OidcRuntime {
             token_endpoint: discovery.token_endpoint,
             jwks_uri: discovery.jwks_uri,
             jwks,
+            end_session_endpoint: discovery
+                .end_session_endpoint
+                .filter(|url| !url.trim().is_empty()),
+            token_auth: TokenAuth::from_discovery(
+                discovery.token_endpoint_auth_methods_supported.as_deref(),
+            ),
         };
         *self.cached.write().await = Some((Instant::now(), endpoints.clone()));
         Ok(endpoints)
@@ -412,6 +461,12 @@ impl OidcRuntime {
     /// redirect to the SPA error page — rather than at callback time.
     pub async fn authorization_endpoint(&self) -> Result<String, AppError> {
         Ok(self.endpoints(false).await?.authorization_endpoint)
+    }
+
+    /// The provider's end-session endpoint, when it advertises one
+    /// (RP-initiated logout). `None` → sign-out is purely local.
+    pub async fn end_session_endpoint(&self) -> Result<Option<String>, AppError> {
+        Ok(self.endpoints(false).await?.end_session_endpoint.clone())
     }
 
     /// The authorize redirect target for one flow. `state`/`nonce` are
@@ -442,10 +497,12 @@ impl OidcRuntime {
     }
 
     /// Exchange `code` for an id_token (confidential client, PKCE S256,
-    /// `client_secret_post`). Returns the raw id_token JWT.
+    /// client authentication per discovery — see [`TokenAuth`]). Returns the
+    /// raw id_token JWT.
     async fn exchange_code(
         &self,
         token_endpoint: &str,
+        token_auth: TokenAuth,
         code: &str,
         code_verifier: &str,
     ) -> Result<String, AppError> {
@@ -458,17 +515,22 @@ impl OidcRuntime {
             #[serde(default)]
             error_description: Option<String>,
         }
-        let params = [
+        // Basic auth keeps the secret out of the body; post auth keeps it in
+        // the form — per what the provider declared it accepts.
+        let mut params = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", self.redirect_uri.as_str()),
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
             ("code_verifier", code_verifier),
         ];
-        let response: TokenResponse = self
-            .http
-            .post(token_endpoint)
+        let mut request = self.http.post(token_endpoint);
+        if token_auth == TokenAuth::ClientSecretBasic {
+            request = request.basic_auth(&self.client_id, Some(&self.client_secret));
+        } else {
+            params.push(("client_id", self.client_id.as_str()));
+            params.push(("client_secret", self.client_secret.as_str()));
+        }
+        let response: TokenResponse = request
             .form(&params)
             .send()
             .await
@@ -521,7 +583,12 @@ impl OidcRuntime {
     ) -> Result<OidcIdentity, AppError> {
         let endpoints = self.endpoints(false).await?;
         let id_token = self
-            .exchange_code(&endpoints.token_endpoint, code, code_verifier)
+            .exchange_code(
+                &endpoints.token_endpoint,
+                endpoints.token_auth,
+                code,
+                code_verifier,
+            )
             .await?;
         self.validate_id_token(&id_token, expected_nonce).await
     }

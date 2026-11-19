@@ -321,6 +321,69 @@ fn sanitize_redirect(raw: Option<&str>) -> String {
     }
 }
 
+/// `GET /auth/oidc/logout` — RP-initiated logout: end the provider session
+/// too, then land back on Buz. Public and unauthenticated by design: the
+/// only thing it can do is end sessions, which is logout-CSRF-safe (the
+/// provider owns its own session and may show its own confirmation).
+///
+/// - SSO off → straight to the SPA login page.
+/// - Provider advertises `end_session_endpoint` → an auto-submitting form
+///   POST (no `id_token_hint` — Buz never stores provider tokens) with the
+///   registered `post_logout_redirect_uri`; the provider returns the browser
+///   to the logged-out landing page.
+/// - No advertised endpoint → purely local sign-out, landing page directly.
+pub async fn oidc_logout(State(state): State<AppState>) -> axum::response::Response {
+    const NO_STORE: &str = "no-store";
+    let login_page = "/login";
+    let landing = "/auth/sso/logged-out";
+
+    let Some(runtime) = state.oidc_runtime().await else {
+        return Redirect::to(login_page).into_response();
+    };
+    let Ok(Some(end_session)) = runtime.end_session_endpoint().await else {
+        return Redirect::to(landing).into_response();
+    };
+    let post_logout_redirect =
+        match crate::services::oidc::EffectiveOidc::derived_post_logout_redirect_uri(
+            &state.config.server.public_base_url,
+        ) {
+            Ok(uri) => uri,
+            Err(_) => return Redirect::to(landing).into_response(),
+        };
+
+    let html = format!(
+        "<!doctype html><html><body><script>\
+         document.forms[0].submit()\
+         </script><form method=\"post\" action=\"{}\">\
+         <input type=\"hidden\" name=\"client_id\" value=\"{}\">\
+         <input type=\"hidden\" name=\"post_logout_redirect_uri\" value=\"{}\">\
+         </form></body></html>",
+        html_escape(&end_session),
+        html_escape(&runtime.client_id),
+        html_escape(&post_logout_redirect),
+    );
+    let mut response = (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static(NO_STORE),
+    );
+    response
+}
+
+/// Minimal HTML escaping for the fixed interpolation above (provider URL,
+/// client id, derived URL — none are user input, but stay defensive).
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// `GET /auth/oidc/start?redirect=/dashboard` — begin one sign-in flow.
 pub async fn oidc_start(
     State(state): State<AppState>,

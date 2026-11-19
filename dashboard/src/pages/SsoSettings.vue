@@ -210,6 +210,10 @@ async function resetToFile() {
             Back-channel logout (register to revoke sessions immediately):
             <span class="font-mono">{{ oidcMeta.backchannel_logout_uri }}</span>
           </p>
+          <p v-if="oidcMeta?.post_logout_redirect_uri" class="type-meta">
+            Post-logout landing (register to end the provider session on sign-out):
+            <span class="font-mono">{{ oidcMeta.post_logout_redirect_uri }}</span>
+          </p>
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2">

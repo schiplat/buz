@@ -29,6 +29,14 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, title: 'Signing in' },
   },
   {
+    // Post-logout landing: the identity provider returns the browser here
+    // after RP-initiated logout (registered as post_logout_redirect_uri).
+    path: '/auth/sso/logged-out',
+    name: 'sso-logged-out',
+    component: () => import('@/pages/LoggedOut.vue'),
+    meta: { public: true, title: 'Signed out' },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AppShell.vue'),
     children: [

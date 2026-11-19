@@ -252,6 +252,7 @@ async fn settings_payload(
         "public_base_url": state.config.server.public_base_url,
         "derived_redirect_uri": EffectiveOidc::derived_redirect_uri(&state.config.server.public_base_url).ok(),
         "backchannel_logout_uri": EffectiveOidc::derived_backchannel_logout_uri(&state.config.server.public_base_url).ok(),
+        "post_logout_redirect_uri": EffectiveOidc::derived_post_logout_redirect_uri(&state.config.server.public_base_url).ok(),
         "scopes": effective.scopes,
         "auto_provision": effective.auto_provision,
         "updated_by": row.as_ref().map(|r| r.updated_by.clone()).unwrap_or_default(),

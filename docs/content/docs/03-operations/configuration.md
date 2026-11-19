@@ -48,10 +48,14 @@ runner_register_token_ttl_hours = 24
 # scopes = ["openid", "profile", "email"]
 # auto_provision = true                    # false = refused sign-ins are queued
 #                                          # for admin approval (Users page)
-# Register both at the provider: the redirect_uri above, and the back-channel
-# logout URL — {server.public_base_url}/api/v1/auth/oidc/backchannel-logout
-# (shown on the Settings → SSO page). It is what makes an IdP-side disable
-# revoke live Buz sessions immediately instead of waiting for the JWT TTL.
+# Register all three at the provider (the Settings → SSO page shows each):
+# 1. the redirect_uri above,
+# 2. the back-channel logout URL —
+#    {server.public_base_url}/api/v1/auth/oidc/backchannel-logout (an IdP-side
+#    disable then revokes live Buz sessions in seconds instead of waiting for
+#    the JWT TTL),
+# 3. the post-logout landing — {server.public_base_url}/auth/sso/logged-out
+#    (sign-out then ends the provider session too).
 
 [runner]
 heartbeat_timeout_seconds = 90

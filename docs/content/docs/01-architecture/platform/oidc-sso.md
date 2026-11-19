@@ -226,6 +226,39 @@ IdP: admin disables the user / user logs out / password reset / MFA reset /
 Register the URL at the provider — the Settings → SSO page shows the exact
 value derived from `server.public_base_url`, next to the callback URL.
 
+## Sign-out (RP-initiated logout)
+
+Destroying the Buz JWT is client-side (stateless tokens); the question is
+what happens to the **provider session**. Buz follows the standard
+RP-initiated logout shape:
+
+```
+Dashboard "Sign out"
+  → clears the local JWT, navigates to
+     GET /api/v1/auth/oidc/logout        (no-store)
+       ├ SSO off            → 303 to the SPA login page
+       ├ provider advertises end_session_endpoint
+       │    → an auto-submitting <form method="post"> carrying
+       │      client_id + post_logout_redirect_uri (no id_token_hint —
+       │      Buz never stores provider tokens; the POST form is the
+       │      cross-site-safe variant)
+       │    → the provider ends its session and returns the browser to
+       │      the SPA landing /auth/sso/logged-out
+       └ no advertised endpoint → 303 straight to the landing page
+```
+
+- Register the landing page
+  (`{public_base_url}/auth/sso/logged-out`, shown on the Settings → SSO
+  page) as the client's `post_logout_redirect_uri`; without it the provider
+  typically still ends the session but keeps the browser on its own page.
+- Logout-CSRF is the provider's concern (worst case: someone ends your IdP
+  session); Buz adds `Cache-Control: no-store` and nothing else.
+
+Token-endpoint client authentication is negotiated from discovery:
+`client_secret_post` when the provider declares it (the common case),
+`Authorization: Basic` otherwise — providers that accept both work with
+either. `client_secret_post` stays the fallback when discovery is silent.
+
 ## Configuration
 
 **Recommended: the web UI.** Settings → **SSO** (platform admin) edits every
@@ -286,7 +319,9 @@ the login page can render the button conditionally.
 - Buz JWTs are stateless: disabling a user **in Buz** blocks every subsequent
   request (`is_active` is checked per request). A disable **at the IdP** is
   delivered by back-channel logout (above) and takes effect within seconds.
-  RP-initiated logout (ending the IdP session from Buz) is still Phase 1.5.
+  Sign-out ends the provider session too (RP-initiated logout, above); when
+  the provider does not advertise an end-session endpoint, only the Buz
+  session ends.
 - Group claims are stored but inert in Phase 1.
 
 ## Phasing
@@ -298,10 +333,11 @@ the login page can render the button conditionally.
 - **Phase 1.5 (delivered)** — web configuration (DB > file seed, hot swap);
   provider-initiated session revocation via back-channel logout; the admin
   identity views and the pending-identity approval/bind queue (which is what
-  makes `auto_provision = false` usable).
+  makes `auto_provision = false` usable); RP-initiated logout; discovery-
+  negotiated token-endpoint authentication.
 - **Phase 1.5 (remaining, signal-driven)** — local→OIDC account conversion by
   the user (only when an install with many local users needs to keep
-  `users.id`); RP-initiated logout.
+  `users.id`).
 - **Phase 2** — multiple simultaneous providers; scoped administration;
   access reviews / SIEM export. **A Buz-side SCIM server is a permanent
   non-goal** (see [Non-goals](#non-goals)).
