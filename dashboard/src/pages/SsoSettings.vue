@@ -322,7 +322,7 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
                 <Plug class="h-4 w-4" />
               </span>
-              <h2 class="text-sm font-semibold">Provider connection</h2>
+              <h2>Provider connection</h2>
             </div>
             <div class="space-y-4 px-5 pb-5 pt-3">
               <div class="space-y-1.5">
@@ -416,13 +416,13 @@ async function setPolicy(value: boolean) {
                     <span class="text-muted-foreground">Issuer match</span>
                     <span>{{ probe.issuer_match ? 'yes' : `no — provider reports ${probe.discovered_issuer}` }}</span>
                     <span class="text-muted-foreground">Token endpoint</span>
-                    <span class="truncate font-mono text-[11.5px]" :title="probe.token_endpoint">{{ probe.token_endpoint }}</span>
+                    <span class="truncate font-mono text-xs" :title="probe.token_endpoint">{{ probe.token_endpoint }}</span>
                     <span class="text-muted-foreground">End-session</span>
                     <span>
                       {{ probe.end_session_available ? 'available — sign-out ends the provider session' : 'not advertised — sign-out is local only' }}
                     </span>
                     <span class="text-muted-foreground">Client auth</span>
-                    <span class="font-mono text-[11.5px]">{{ probe.client_auth }}</span>
+                    <span class="font-mono text-xs">{{ probe.client_auth }}</span>
                   </div>
                 </template>
                 <template v-else>
@@ -443,7 +443,7 @@ async function setPolicy(value: boolean) {
                 <Link2 class="h-4 w-4" />
               </span>
               <div>
-                <h2 class="text-sm font-semibold">Register at your provider</h2>
+                <h2>Register at your provider</h2>
                 <p class="type-meta">Copy these into your provider's app registration.</p>
               </div>
             </div>
@@ -455,7 +455,7 @@ async function setPolicy(value: boolean) {
               >
                 <div class="w-40 flex-none">
                   <p class="text-sm font-medium">{{ uri.label }}</p>
-                  <p class="text-[11px] text-muted-foreground">{{ uri.what }}</p>
+                  <p class="text-xs text-muted-foreground">{{ uri.what }}</p>
                 </div>
                 <code
                   class="min-w-0 flex-1 overflow-hidden overflow-ellipsis whitespace-nowrap rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-xs"
@@ -499,7 +499,7 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
                 <ShieldCheck class="h-4 w-4" />
               </span>
-              <h2 class="text-sm font-semibold">Sign-in policy</h2>
+              <h2>Sign-in policy</h2>
             </div>
             <div class="px-4 pb-4 pt-2">
               <p class="type-meta">
@@ -520,7 +520,7 @@ async function setPolicy(value: boolean) {
                 <span>
                   <span class="inline-flex items-center gap-2 text-sm font-medium">
                     Create on first sign-in
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
+                    <span class="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
                   </span>
                   <span class="mt-0.5 block text-xs text-muted-foreground">
                     They sign in immediately — a plain account, no teams, no admin. Grant roles afterwards.
@@ -579,13 +579,13 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
                 <Link2 class="h-4 w-4" />
               </span>
-              <h2 class="text-sm font-semibold">Register at your provider</h2>
+              <h2>Register at your provider</h2>
             </div>
             <div class="space-y-3.5 px-4 pb-4 pt-3">
               <div v-for="uri in registrationUris" :key="uri.key">
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium">{{ uri.label }}</span>
-                  <span class="text-[11px] text-muted-foreground">{{ uri.what }}</span>
+                  <span class="text-xs text-muted-foreground">{{ uri.what }}</span>
                   <button
                     v-if="uri.value"
                     type="button"
@@ -599,7 +599,7 @@ async function setPolicy(value: boolean) {
                   </button>
                 </div>
                 <code
-                  class="mt-1.5 block rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed"
+                  class="mt-1.5 block rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-xs leading-relaxed"
                   :class="uri.value ? 'break-all text-foreground' : 'text-muted-foreground/70'"
                 >
                   {{ uri.value || 'available after the issuer is saved' }}
