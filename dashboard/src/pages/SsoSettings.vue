@@ -359,7 +359,7 @@ async function copyUri(key: string, value: string) {
           <input v-model="autoProvision" type="radio" :value="true" name="signin-policy" class="mt-1" />
           <span>
             <span class="inline-flex items-center gap-2 text-sm font-medium">
-              Open door
+              Create on first sign-in
               <span class="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Recommended</span>
             </span>
             <span class="mt-0.5 block text-xs text-muted-foreground">
@@ -373,7 +373,7 @@ async function copyUri(key: string, value: string) {
         >
           <input v-model="autoProvision" type="radio" :value="false" name="signin-policy" class="mt-1" />
           <span>
-            <span class="text-sm font-medium">Knock first</span>
+            <span class="text-sm font-medium">Queue for approval</span>
             <span class="mt-0.5 block text-xs text-muted-foreground">
               They're refused and wait in the Users-page queue until you approve them.
             </span>
