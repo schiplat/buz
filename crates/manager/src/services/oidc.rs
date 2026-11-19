@@ -21,8 +21,6 @@ use tokio::sync::RwLock;
 
 use shared::error::AppError;
 
-use crate::config::OidcConfig;
-
 /// How long discovery + JWKS are trusted before a refresh.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 
@@ -116,21 +114,6 @@ fn derived_base(public_base_url: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-impl From<&OidcConfig> for EffectiveOidc {
-    fn from(config: &OidcConfig) -> Self {
-        Self {
-            enabled: config.enabled,
-            issuer: config.issuer.trim().trim_end_matches('/').to_string(),
-            client_id: config.client_id.trim().to_string(),
-            client_secret: config.client_secret.trim().to_string(),
-            redirect_uri: config.redirect_uri.trim().to_string(),
-            scopes: config.scopes.clone(),
-            auto_provision: config.auto_provision,
-            source: "file",
-        }
-    }
-}
-
 impl EffectiveOidc {
     /// The callback URL a provider must have registered, derived from the
     /// deployment's public base URL when no override is configured.
@@ -198,30 +181,36 @@ impl EffectiveOidc {
     }
 }
 
-/// Resolve the effective configuration: the database row wins once saved;
-/// otherwise the file `[auth.oidc]` seed applies. `jwt_secret` decrypts the
+/// Resolve the effective configuration **from the database row only** —
+/// `[auth.oidc]` in manager.toml no longer feeds the runtime (it is imported
+/// into the row once at startup; see `import_file_seed` in
+/// `api/oidc_settings.rs`). An absent row simply means SSO is off until an
+/// administrator saves settings from the web. `jwt_secret` decrypts the
 /// stored client secret. Validation is the caller's job (`validate`).
 pub fn resolve_effective(
-    config: &OidcConfig,
     row: Option<&crate::store::oidc_settings::OidcSettingsRow>,
     public_base_url: &str,
     jwt_secret: &str,
 ) -> Result<EffectiveOidc, String> {
     let Some(row) = row else {
-        let mut effective = EffectiveOidc::from(config);
-        // File deployments may leave redirect_uri empty and derive it too.
-        if effective.redirect_uri.is_empty() && effective.enabled {
-            effective.redirect_uri = EffectiveOidc::derived_redirect_uri(public_base_url)?;
-        }
-        return Ok(effective);
+        return Ok(EffectiveOidc {
+            enabled: false,
+            issuer: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            redirect_uri: String::new(),
+            scopes: vec!["openid".into(), "profile".into(), "email".into()],
+            auto_provision: true,
+            source: "database",
+        });
     };
 
     let scopes: Vec<String> = serde_json::from_str(&row.scopes_json)
         .unwrap_or_else(|_| vec!["openid".into(), "profile".into(), "email".into()]);
     let client_secret = if row.client_secret_ciphertext.is_empty() {
-        // Fall back to the file/env secret when the row carries none —
-        // the save form keeps an existing secret without re-entering it.
-        config.resolved_client_secret().unwrap_or_default()
+        // The save form keeps an existing secret without re-entering it; a
+        // row without one is an invalid configuration (validate refuses).
+        String::new()
     } else {
         crate::crypto::decrypt(&row.client_secret_ciphertext, jwt_secret)
             .map_err(|e| format!("cannot decrypt the stored OIDC client secret: {e}"))?
@@ -352,12 +341,6 @@ pub struct OidcRuntime {
 }
 
 impl OidcRuntime {
-    /// Build the runtime from the file `[auth.oidc]` seed only (no database
-    /// override). Kept for tests and as the resolve-free path.
-    pub async fn build(config: &OidcConfig) -> Option<Arc<Self>> {
-        Self::build_effective(&EffectiveOidc::from(config)).await
-    }
-
     /// Build the runtime from the resolved configuration. `None` when SSO is
     /// disabled or the configuration is invalid — callers keep serving local
     /// login either way (SSO misconfiguration never prevents the server from

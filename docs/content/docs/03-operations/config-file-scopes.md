@@ -65,7 +65,7 @@ Override rule: **env vars beat TOML** (`BUZ_JWT_SECRET`, `BUZ_MARKETPLACE_URL`, 
 | `auth.jwt_secret` (`BUZ_JWT_SECRET`) | `manager.toml → [auth]` | Signs JWTs **and** encrypts secrets | env |
 | `auth.jwt_ttl_hours` | `manager.toml → [auth]` | UI/API session tokens | — |
 | `auth.runner_register_token_ttl_hours` | `manager.toml → [auth]` | Runner registration tokens | — |
-| `auth.oidc.*` (`BUZ_OIDC_CLIENT_SECRET`) | `manager.toml → [auth.oidc]` | OIDC single sign-on (any provider) | env |
+| `auth.oidc.*` (`BUZ_OIDC_CLIENT_SECRET`) | `manager.toml → [auth.oidc]` | **Legacy seed**: imported into the database once at startup, then ignored — configure SSO in the web UI | env |
 | `pipeline.yaml_scan_dir` / `yaml_scan_interval_seconds` | `manager.toml → [pipeline]` | Definition import/export directory (`yaml_scan_interval_seconds` retired) | — |
 | `plugin_index.local_dir` (`BUZ_PLUGIN_INDEX__LOCAL_DIR`) | `manager.toml → [plugin_index]` | `uses:` resolution | env |
 | `plugin_index.reviewed_manifest` / `require_reviewed` | `manager.toml → [plugin_index]` | Template review gate | — |

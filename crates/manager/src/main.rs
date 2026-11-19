@@ -346,20 +346,24 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // OIDC sign-in runtime: resolved from the database override when one was
-    // saved, otherwise the file [auth.oidc] seed. None when disabled or
-    // misconfigured (only SSO is disabled — the server and local login keep
-    // working, see oidc-sso docs).
+    // OIDC sign-in runtime: resolved from the database row only. The legacy
+    // `[auth.oidc]` file section is imported into the row once (and then
+    // ignored). None when disabled or misconfigured (only SSO is disabled —
+    // the server and local login keep working, see oidc-sso docs).
     let oidc = {
+        api::oidc_settings::import_file_seed(
+            &db,
+            &config.auth.oidc,
+            &config.server.public_base_url,
+            &config.auth.jwt_secret,
+        )
+        .await;
         let row = manager::store::oidc_settings::get(&db)
             .await
-            .inspect_err(
-                |e| tracing::warn!(error = %e, "oidc settings unreadable — file seed applies"),
-            )
+            .inspect_err(|e| tracing::warn!(error = %e, "oidc settings unreadable — SSO stays off"))
             .ok()
             .flatten();
         match services::oidc::resolve_effective(
-            &config.auth.oidc,
             row.as_ref(),
             &config.server.public_base_url,
             &config.auth.jwt_secret,

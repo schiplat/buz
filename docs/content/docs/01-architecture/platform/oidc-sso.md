@@ -261,37 +261,33 @@ either. `client_secret_post` stays the fallback when discovery is silent.
 
 ## Configuration
 
-**Recommended: the web UI.** Settings → **SSO** (platform admin) edits every
-field — issuer, client id/secret, redirect, scopes, auto-provision, enable —
-with a built-in "Test connection" discovery probe. Saved settings live in the
-database (`oidc_settings`), **override the file**, and apply immediately; the
-client secret is stored encrypted at rest and never echoed back. Deleting the
-override (Revert to manager.toml) falls back to the file seed.
+**The database is the only source.** Settings → **SSO** (platform admin) edits
+every field — issuer, client id/secret, redirect, scopes, sign-in policy,
+enable — with a built-in "Test connection" discovery probe. Saved settings
+apply immediately (no restart); the client secret is stored encrypted at rest
+and never echoed back. Clearing the configuration (a ghost button in the
+status area) turns SSO off until an administrator saves again — local login
+keeps working throughout.
 
-`[auth.oidc]` in `manager.toml` remains the deployment-time seed (and the
-IaC path); once an administrator saves from the web, the database is
-authoritative:
-
-```toml
-[auth.oidc]
-enabled = false
-issuer = ""                       # https origin, no trailing slash
-client_id = ""
-client_secret = ""                # or client_secret_file / BUZ_OIDC_CLIENT_SECRET
-redirect_uri = ""                 # absolute, must equal the IdP registration
-scopes = ["openid", "profile", "email"]   # groups added when mapping lands
-auto_provision = true
-```
+**Legacy file seed — imported once, then ignored.** A deployment configured
+through `[auth.oidc]` in `manager.toml` keeps working on upgrade: at startup,
+a valid file section with no database row is **imported into the row** (the
+secret re-encrypted at rest, the row stamped `file-import`, the log announces
+"`[auth.oidc]` imported into the database — the section is now ignored").
+Afterwards the file section is dead text and should be removed from
+`manager.toml`. The section is no longer a supported configuration path; new
+deployments configure SSO in the web UI.
 
 The callback URL derives from `server.public_base_url`
-(`{public_base_url}/api/v1/auth/oidc/callback`); both the file seed and the
-web form accept an explicit override for unusual proxy layouts.
+(`{public_base_url}/api/v1/auth/oidc/callback`); the web form accepts an
+explicit override for unusual proxy layouts.
 
-Startup validation (when `enabled = true`): https issuer (plain http allowed
-for localhost development), no trailing slash, absolute `redirect_uri`,
-`openid` in scopes, non-empty credentials. A **misconfigured SSO disables only
-the SSO endpoints** (reported through `/auth/providers` and the log) — it never
-prevents Buz from starting, because local login remains fully functional.
+Startup validation (when the row enables SSO): https issuer (plain http
+allowed for localhost development), no trailing slash, absolute
+`redirect_uri`, `openid` in scopes, non-empty credentials. A
+**misconfigured SSO disables only the SSO endpoints** (reported through
+`/auth/providers` and the log) — it never prevents Buz from starting, because
+local login remains fully functional.
 
 `GET /api/v1/auth/oidc/providers` (public) reports whether SSO is enabled so
 the login page can render the button conditionally.
