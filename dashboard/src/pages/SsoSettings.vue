@@ -528,7 +528,7 @@ async function setPolicy(value: boolean) {
                 </span>
               </label>
               <label
-                class="flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
+                class="mt-4 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
                 :class="!autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
               >
                 <input
