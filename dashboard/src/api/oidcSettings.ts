@@ -29,6 +29,10 @@ export interface DiscoveryProbe {
   authorization_endpoint?: string
   token_endpoint?: string
   jwks_uri?: string
+  /** The provider advertises an end-session endpoint (RP logout works). */
+  end_session_available?: boolean
+  /** Negotiated token-endpoint client authentication. */
+  client_auth?: 'client_secret_post' | 'client_secret_basic'
   error?: string
 }
 

@@ -310,6 +310,8 @@ pub async fn test_settings(
             "authorization_endpoint": probe.authorization_endpoint,
             "token_endpoint": probe.token_endpoint,
             "jwks_uri": probe.jwks_uri,
+            "end_session_available": probe.end_session_available,
+            "client_auth": probe.client_auth,
         })))),
         Err(error) => Ok(Json(ApiResponse::success(serde_json::json!({
             "ok": false,

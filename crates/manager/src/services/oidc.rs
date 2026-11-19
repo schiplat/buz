@@ -242,6 +242,10 @@ pub struct DiscoveryProbe {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
+    /// The provider advertises an end-session endpoint (RP logout works).
+    pub end_session_available: bool,
+    /// The negotiated token-endpoint client authentication.
+    pub client_auth: &'static str,
 }
 
 /// Fetch and validate `{issuer}/.well-known/openid-configuration` with a
@@ -273,6 +277,16 @@ pub async fn probe_discovery(issuer: &str) -> Result<DiscoveryProbe, String> {
         authorization_endpoint: discovery.authorization_endpoint,
         token_endpoint: discovery.token_endpoint,
         jwks_uri: discovery.jwks_uri,
+        end_session_available: discovery
+            .end_session_endpoint
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty()),
+        client_auth: match TokenAuth::from_discovery(
+            discovery.token_endpoint_auth_methods_supported.as_deref(),
+        ) {
+            TokenAuth::ClientSecretPost => "client_secret_post",
+            TokenAuth::ClientSecretBasic => "client_secret_basic",
+        },
     })
 }
 
