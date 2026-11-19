@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { BookOpen } from '@lucide/vue'
+import { BookOpen, Check, Clock, Copy, Database, Link2, Plug, RotateCcw, ShieldCheck } from '@lucide/vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { oidcSettingsApi, type DiscoveryProbe, type OidcSettings } from '@/api/oidcSettings'
 import { oidcIdentitiesApi } from '@/api/oidcIdentities'
 
-// SSO settings, database-only configuration (see platform/oidc-sso.md):
-// one connection card, the sign-in policy as its own decision, the three
-// provider registrations with copy buttons, and a clear-configuration escape
-// hatch in the status header. The client secret is write-only — the API
+// SSO settings, database-only configuration (see platform/oidc-sso.md).
+// Composition per the approved v4 design: a status strip, then a two-column
+// grid — the provider connection (and, once configured, the registration
+// card) in the main column, the sign-in policy (first-time: the registration
+// card) in the 320px sidebar. The client secret is write-only — the API
 // never echoes it back; a first save requires it.
 const DOCS_URL = 'https://buz.docs.sconts.com/docs/01-architecture/platform/oidc-sso/'
 
@@ -41,10 +43,9 @@ const copiedKey = ref('')
 const notice = ref('')
 const error = ref('')
 
-let nowTick = 0
 const tick = ref(0)
 const timer = window.setInterval(() => {
-  tick.value = ++nowTick
+  tick.value += 1
 }, 30_000)
 onUnmounted(() => window.clearInterval(timer))
 
@@ -183,22 +184,34 @@ async function copyUri(key: string, value: string) {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="space-y-1">
-      <h1 class="text-lg font-semibold tracking-tight">Single sign-on (OIDC)</h1>
-      <p class="type-meta">Sign in through any OIDC provider.</p>
-    </div>
+  <div class="space-y-5">
+    <PageHeader title="Single sign-on (OIDC)" description="Sign in through any OIDC provider.">
+      <template #actions>
+        <a
+          class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          :href="DOCS_URL"
+          target="_blank"
+          rel="noopener"
+        >
+          <BookOpen class="h-3.5 w-3.5" />
+          Docs
+        </a>
+      </template>
+    </PageHeader>
 
     <div
       v-if="loading"
-      class="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground"
+      class="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground shadow-xs"
     >
       Loading…
     </div>
 
     <template v-else>
-      <!-- status header -->
-      <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
+      <!-- status strip: full-width once configured … -->
+      <div
+        v-if="!firstTime"
+        class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card p-4 shadow-xs"
+      >
         <span
           class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
           :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
@@ -207,237 +220,337 @@ async function copyUri(key: string, value: string) {
           {{ active ? 'Active' : 'Inactive' }}
         </span>
         <label class="inline-flex items-center gap-2 text-sm font-medium">
-          <input v-model="enabled" type="checkbox" class="h-4 w-4 accent-primary" />
+          <span class="relative inline-flex h-5 w-[34px]">
+            <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-full bg-muted-foreground/30 transition-colors checked:bg-success" />
+            <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all peer-checked:translate-x-[14px]"></span>
+          </span>
           Sign-in enabled
         </label>
         <span
           v-if="probe?.ok && lastProbeAt"
           class="inline-flex items-center gap-1.5 rounded-full border border-success/40 bg-success/10 px-2.5 py-0.5 text-xs font-medium text-success"
         >
-          ✓ Connection OK · {{ probeAge }}
+          <Check class="h-3 w-3" />
+          Connection OK · {{ probeAge }}
         </span>
-        <span class="text-xs text-muted-foreground">Source: database</span>
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+          <Database class="h-3 w-3" />
+          Source: database
+        </span>
         <span v-if="updatedBy" class="text-xs text-muted-foreground">Saved by {{ updatedBy }}</span>
-        <UiButton v-if="savedOnce" variant="ghost" size="sm" class="ml-auto" @click="clearConfiguration">
+        <UiButton variant="ghost" size="sm" class="ml-auto" @click="clearConfiguration">
+          <RotateCcw class="h-3.5 w-3.5" />
           Clear configuration
         </UiButton>
       </div>
 
-      <!-- provider connection -->
-      <div class="space-y-4 rounded-xl border border-border bg-card p-5">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold">Provider connection</h2>
-          <a
-            class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            :href="DOCS_URL"
-            target="_blank"
-            rel="noopener"
+      <p v-if="!loading && error" class="field-error">{{ error }}</p>
+
+      <!-- two-column composition: main column + 320px sidebar -->
+      <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <!-- main column -->
+        <div class="flex min-w-0 flex-col gap-5">
+          <!-- first setup: the strip aligns with the column instead of spanning -->
+          <div
+            v-if="firstTime"
+            class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card p-4 shadow-xs"
           >
-            <BookOpen class="h-3.5 w-3.5" />
-            Docs
-          </a>
-        </div>
-
-        <div class="space-y-1.5">
-          <label class="type-label">Issuer</label>
-          <input
-            v-model="issuer"
-            type="text"
-            placeholder="https://sso.example.com"
-            class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
-          />
-          <p class="type-meta">HTTPS, no trailing slash.</p>
-        </div>
-
-        <div class="grid gap-4 sm:grid-cols-2">
-          <div class="space-y-1.5">
-            <label class="type-label">Client ID</label>
-            <input
-              v-model="clientId"
-              type="text"
-              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <label class="type-label">Client secret</label>
-            <input
-              v-if="oidcMeta?.client_secret_configured && !replacingSecret"
-              type="password"
-              value="····························"
-              disabled
-              class="flex h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm text-muted-foreground"
-            />
-            <input
-              v-else
-              v-model="clientSecret"
-              type="password"
-              :placeholder="oidcMeta?.client_secret_configured ? 'New secret' : 'Paste once — stored encrypted'"
-              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
-            />
-            <p class="type-meta">
-              <template v-if="oidcMeta?.client_secret_configured && !replacingSecret">
-                Encrypted at rest.
-                <button type="button" class="underline hover:text-foreground" @click="replacingSecret = true">
-                  Replace secret
-                </button>
-              </template>
-              <template v-else-if="oidcMeta?.client_secret_configured">
-                Leave blank to keep the current one.
-              </template>
-            </p>
-          </div>
-        </div>
-
-        <div class="space-y-1.5">
-          <label class="type-label">Scopes</label>
-          <input
-            v-model="scopesInput"
-            type="text"
-            class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
-          />
-          <p class="type-meta">Must include <span class="font-mono">openid</span>.</p>
-        </div>
-
-        <p v-if="validationError" class="field-error">{{ validationError }}</p>
-
-        <div class="flex flex-wrap items-center gap-3 pt-1">
-          <UiButton type="button" :disabled="saving" @click="save">
-            {{ saving ? 'Saving…' : 'Save & apply' }}
-          </UiButton>
-          <UiButton
-            type="button"
-            variant="outline"
-            :disabled="testing || !issuer.trim()"
-            @click="testConnection"
-          >
-            {{ testing ? 'Testing…' : 'Test connection' }}
-          </UiButton>
-        </div>
-
-        <!-- probe result (persistent until the next test or save) -->
-        <div
-          v-if="probe"
-          class="rounded-xl border p-4 text-sm"
-          :class="probe.ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5'"
-        >
-          <template v-if="probe.ok">
-            <p class="font-medium">
-              ✓ Discovery OK
-              <span v-if="probe.issuer_match === false" class="text-muted-foreground">
-                — provider reports {{ probe.discovered_issuer }}
+            <span
+              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+              :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
+            >
+              <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
+              {{ active ? 'Active' : 'Inactive' }}
+            </span>
+            <label class="inline-flex items-center gap-2 text-sm font-medium">
+              <span class="relative inline-flex h-5 w-[34px]">
+                <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-full bg-muted-foreground/30 transition-colors checked:bg-success" />
+                <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all peer-checked:translate-x-[14px]"></span>
               </span>
-            </p>
-            <p class="type-meta font-mono">{{ probe.token_endpoint }}</p>
-            <p class="type-meta">
-              End-session {{ probe.end_session_available ? 'available — sign-out ends the provider session' : 'not advertised — sign-out is local only' }}
-            </p>
-            <p class="type-meta">
-              Client auth <span class="font-mono">{{ probe.client_auth }}</span>
-            </p>
-          </template>
-          <template v-else>
-            <p class="font-medium">Discovery failed</p>
-            <p class="type-meta mt-1">{{ probe.error }}</p>
-          </template>
+              Sign-in enabled
+            </label>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+              <Database class="h-3 w-3" />
+              No configuration yet
+            </span>
+          </div>
+
+          <!-- provider connection -->
+          <div class="rounded-xl border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-2.5 px-5 pt-4">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+                <Plug class="h-4 w-4" />
+              </span>
+              <h2 class="text-sm font-semibold">Provider connection</h2>
+            </div>
+            <div class="space-y-4 px-5 pb-5 pt-3">
+              <div class="space-y-1.5">
+                <label class="type-label">Issuer</label>
+                <input
+                  v-model="issuer"
+                  type="text"
+                  placeholder="https://sso.example.com"
+                  class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                />
+                <p class="type-meta">HTTPS, no trailing slash.</p>
+              </div>
+
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div class="space-y-1.5">
+                  <label class="type-label">Client ID</label>
+                  <input
+                    v-model="clientId"
+                    type="text"
+                    class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                  />
+                </div>
+                <div class="space-y-1.5">
+                  <label class="type-label">Client secret</label>
+                  <input
+                    v-if="oidcMeta?.client_secret_configured && !replacingSecret"
+                    type="password"
+                    value="····························"
+                    disabled
+                    class="flex h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-sm text-muted-foreground"
+                  />
+                  <input
+                    v-else
+                    v-model="clientSecret"
+                    type="password"
+                    :placeholder="oidcMeta?.client_secret_configured ? 'New secret' : 'Paste once — stored encrypted'"
+                    class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                  />
+                  <p class="type-meta">
+                    <template v-if="oidcMeta?.client_secret_configured && !replacingSecret">
+                      Encrypted at rest.
+                      <button type="button" class="underline hover:text-foreground" @click="replacingSecret = true">
+                        Replace secret
+                      </button>
+                    </template>
+                    <template v-else-if="oidcMeta?.client_secret_configured">
+                      Leave blank to keep the current one.
+                    </template>
+                  </p>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <label class="type-label">Scopes</label>
+                <input
+                  v-model="scopesInput"
+                  type="text"
+                  class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                />
+                <p class="type-meta">Must include <span class="font-mono">openid</span>.</p>
+              </div>
+
+              <p v-if="validationError" class="field-error">{{ validationError }}</p>
+
+              <div class="flex flex-wrap items-center gap-3 pt-1">
+                <UiButton type="button" :disabled="saving" @click="save">
+                  {{ saving ? 'Saving…' : 'Save & apply' }}
+                </UiButton>
+                <UiButton
+                  type="button"
+                  variant="outline"
+                  :disabled="testing || !issuer.trim()"
+                  @click="testConnection"
+                >
+                  {{ testing ? 'Testing…' : 'Test connection' }}
+                </UiButton>
+              </div>
+
+              <!-- probe result (persistent until the next test or save) -->
+              <div
+                v-if="probe"
+                class="rounded-lg border p-4"
+                :class="probe.ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5'"
+              >
+                <template v-if="probe.ok">
+                  <p class="flex items-center gap-1.5 text-sm font-medium text-success">
+                    <Check class="h-3.5 w-3.5" />
+                    Discovery OK
+                  </p>
+                  <div class="mt-2 grid grid-cols-[110px_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1 text-xs">
+                    <span class="text-muted-foreground">Issuer match</span>
+                    <span>{{ probe.issuer_match ? 'yes' : `no — provider reports ${probe.discovered_issuer}` }}</span>
+                    <span class="text-muted-foreground">Token endpoint</span>
+                    <span class="truncate font-mono text-[11.5px]" :title="probe.token_endpoint">{{ probe.token_endpoint }}</span>
+                    <span class="text-muted-foreground">End-session</span>
+                    <span>
+                      {{ probe.end_session_available ? 'available — sign-out ends the provider session' : 'not advertised — sign-out is local only' }}
+                    </span>
+                    <span class="text-muted-foreground">Client auth</span>
+                    <span class="font-mono text-[11.5px]">{{ probe.client_auth }}</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <p class="text-sm font-medium">Discovery failed</p>
+                  <p class="type-meta mt-1">{{ probe.error }}</p>
+                </template>
+              </div>
+
+              <p v-if="notice" class="text-sm text-success">{{ notice }}</p>
+              <p v-if="error" class="field-error">{{ error }}</p>
+            </div>
+          </div>
+
+          <!-- registration (configured state: main column, wide rows) -->
+          <div v-if="!firstTime" class="rounded-xl border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-2.5 px-5 pt-4">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+                <Link2 class="h-4 w-4" />
+              </span>
+              <div>
+                <h2 class="text-sm font-semibold">Register at your provider</h2>
+                <p class="type-meta">Copy these into your provider's app registration.</p>
+              </div>
+            </div>
+            <div class="px-5 pb-4 pt-2">
+              <div
+                v-for="uri in registrationUris"
+                :key="uri.key"
+                class="-mx-2 flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/30"
+              >
+                <div class="w-40 flex-none">
+                  <p class="text-sm font-medium">{{ uri.label }}</p>
+                  <p class="text-[11px] text-muted-foreground">{{ uri.what }}</p>
+                </div>
+                <code
+                  class="min-w-0 flex-1 overflow-hidden overflow-ellipsis whitespace-nowrap rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-xs"
+                  :title="uri.value"
+                >
+                  {{ uri.value || 'available after the issuer is saved' }}
+                </code>
+                <UiButton
+                  v-if="uri.value"
+                  variant="outline"
+                  size="sm"
+                  class="w-[30px] px-0"
+                  :class="copiedKey === uri.key ? 'border-success/40 bg-success/10 text-success' : 'text-muted-foreground'"
+                  :title="copiedKey === uri.key ? 'Copied' : 'Copy'"
+                  @click="copyUri(uri.key, uri.value)"
+                >
+                  <Check v-if="copiedKey === uri.key" class="h-3.5 w-3.5" />
+                  <Copy v-else class="h-3.5 w-3.5" />
+                </UiButton>
+              </div>
+
+              <details class="mt-2">
+                <summary class="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                  If a URL isn't registered
+                </summary>
+                <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                  <li>Callback missing → sign-in fails.</li>
+                  <li>Back-channel missing → an IdP-side disable waits for JWT expiry (24 h).</li>
+                  <li>Landing missing → the browser stays on the provider page after sign-out.</li>
+                </ul>
+              </details>
+            </div>
+          </div>
         </div>
 
-        <p v-if="notice" class="text-sm text-success">{{ notice }}</p>
-        <p v-if="error" class="field-error">{{ error }}</p>
+        <!-- sidebar (320px) -->
+        <div class="min-w-0">
+          <!-- sign-in policy (configured state only) -->
+          <div v-if="!firstTime" class="rounded-xl border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-2.5 px-4 pt-4">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+                <ShieldCheck class="h-4 w-4" />
+              </span>
+              <h2 class="text-sm font-semibold">Sign-in policy</h2>
+            </div>
+            <div class="px-4 pb-4 pt-2">
+              <p class="type-meta">
+                What a colleague sees on their first SSO sign-in. New identities only — change anytime.
+              </p>
+
+              <label
+                class="mt-3 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
+                :class="autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
+              >
+                <input v-model="autoProvision" type="radio" :value="true" name="signin-policy" class="mt-0.5 accent-foreground" />
+                <span>
+                  <span class="inline-flex items-center gap-2 text-sm font-medium">
+                    Create on first sign-in
+                    <span class="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
+                  </span>
+                  <span class="mt-0.5 block text-xs text-muted-foreground">
+                    They sign in immediately — a plain account, no teams, no admin. Grant roles afterwards.
+                  </span>
+                </span>
+              </label>
+              <label
+                class="mt-2.5 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
+                :class="!autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
+              >
+                <input v-model="autoProvision" type="radio" :value="false" name="signin-policy" class="mt-0.5 accent-foreground" />
+                <span>
+                  <span class="text-sm font-medium">Queue for approval</span>
+                  <span class="mt-0.5 block text-xs text-muted-foreground">
+                    They're refused and wait in the Users-page queue until you approve them.
+                  </span>
+                </span>
+              </label>
+
+              <button
+                v-if="!autoProvision && pendingCount > 0"
+                type="button"
+                class="mt-3 inline-flex w-full items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-500 hover:bg-amber-500/15"
+                @click="router.push('/users')"
+              >
+                <Clock class="h-3.5 w-3.5" />
+                {{ pendingCount }} awaiting approval
+                <span class="ml-auto opacity-75">→ Users</span>
+              </button>
+
+              <p class="mt-3 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+                SSO accounts have no local password. Your admin login stays as break-glass.
+              </p>
+            </div>
+          </div>
+
+          <!-- registration (first-time: narrow sidebar variant) -->
+          <div v-else class="rounded-xl border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-2.5 px-4 pt-4">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+                <Link2 class="h-4 w-4" />
+              </span>
+              <h2 class="text-sm font-semibold">Register at your provider</h2>
+            </div>
+            <div class="space-y-3.5 px-4 pb-4 pt-3">
+              <div v-for="uri in registrationUris" :key="uri.key">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium">{{ uri.label }}</span>
+                  <span class="text-[11px] text-muted-foreground">{{ uri.what }}</span>
+                  <button
+                    v-if="uri.value"
+                    type="button"
+                    class="ml-auto flex h-[26px] w-[26px] items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                    :class="copiedKey === uri.key ? 'border-success/40 bg-success/10 text-success' : ''"
+                    :title="copiedKey === uri.key ? 'Copied' : 'Copy'"
+                    @click="copyUri(uri.key, uri.value)"
+                  >
+                    <Check v-if="copiedKey === uri.key" class="h-3 w-3" />
+                    <Copy v-else class="h-3 w-3" />
+                  </button>
+                </div>
+                <code
+                  class="mt-1.5 block rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed"
+                  :class="uri.value ? 'break-all text-foreground' : 'text-muted-foreground/70'"
+                >
+                  {{ uri.value || 'available after the issuer is saved' }}
+                </code>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- sign-in policy (once connected) -->
-      <div v-if="!firstTime" class="space-y-3 rounded-xl border border-border bg-card p-5">
-        <h2 class="text-sm font-semibold">Sign-in policy</h2>
-        <p class="type-meta">
-          What a colleague sees on their first SSO sign-in. New identities only — change anytime.
-        </p>
-
-        <label
-          class="flex cursor-pointer gap-3 rounded-lg border p-4"
-          :class="autoProvision ? 'border-foreground ring-1 ring-foreground' : 'border-border'"
-        >
-          <input v-model="autoProvision" type="radio" :value="true" name="signin-policy" class="mt-1" />
-          <span>
-            <span class="inline-flex items-center gap-2 text-sm font-medium">
-              Create on first sign-in
-              <span class="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Recommended</span>
-            </span>
-            <span class="mt-0.5 block text-xs text-muted-foreground">
-              They sign in immediately — a plain account, no teams, no admin. Grant roles afterwards.
-            </span>
-          </span>
-        </label>
-        <label
-          class="flex cursor-pointer gap-3 rounded-lg border p-4"
-          :class="!autoProvision ? 'border-foreground ring-1 ring-foreground' : 'border-border'"
-        >
-          <input v-model="autoProvision" type="radio" :value="false" name="signin-policy" class="mt-1" />
-          <span>
-            <span class="text-sm font-medium">Queue for approval</span>
-            <span class="mt-0.5 block text-xs text-muted-foreground">
-              They're refused and wait in the Users-page queue until you approve them.
-            </span>
-          </span>
-        </label>
-
-        <button
-          v-if="!autoProvision && pendingCount > 0"
-          type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-500 hover:bg-amber-500/15"
-          @click="router.push('/users')"
-        >
-          ⏳ {{ pendingCount }} awaiting approval → Users
-        </button>
-
-        <p class="type-meta">
-          SSO accounts have no local password. Your admin login stays as break-glass.
-        </p>
-      </div>
-      <p v-else class="type-meta">
+      <!-- first-time: the delayed-policy note lives under the grid -->
+      <p v-if="firstTime" class="type-meta">
         New sign-ins get a plain account automatically — you can require approval later.
       </p>
-
-      <!-- registration -->
-      <div class="rounded-xl border border-border bg-card p-5">
-        <h2 class="text-sm font-semibold">Register at your provider</h2>
-        <p class="type-meta mt-1">Copy these into your provider's app registration.</p>
-
-        <div
-          v-for="uri in registrationUris"
-          :key="uri.key"
-          class="mt-3 flex items-center gap-3 border-t border-border/50 py-3 first:border-t-0 first:pt-0 sm:mt-0 sm:py-2"
-        >
-          <div class="w-44 flex-none">
-            <p class="text-sm font-medium">{{ uri.label }}</p>
-            <p class="text-[11px] text-muted-foreground">{{ uri.what }}</p>
-          </div>
-          <code
-            class="min-w-0 flex-1 overflow-hidden overflow-ellipsis whitespace-nowrap rounded-md bg-muted/50 px-2.5 py-1.5 font-mono text-xs"
-            :title="uri.value"
-          >
-            {{ uri.value || 'available after the issuer is saved' }}
-          </code>
-          <UiButton
-            v-if="uri.value"
-            variant="outline"
-            size="sm"
-            @click="copyUri(uri.key, uri.value)"
-          >
-            {{ copiedKey === uri.key ? 'Copied' : 'Copy' }}
-          </UiButton>
-        </div>
-
-        <details class="mt-3">
-          <summary class="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-            If a URL isn't registered
-          </summary>
-          <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-            <li>Callback missing → sign-in fails.</li>
-            <li>Back-channel missing → an IdP-side disable waits for JWT expiry (24 h).</li>
-            <li>Landing missing → the browser stays on the provider page after sign-out.</li>
-          </ul>
-        </details>
-      </div>
     </template>
   </div>
 </template>
