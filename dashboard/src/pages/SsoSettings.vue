@@ -39,6 +39,10 @@ const probe = ref<DiscoveryProbe | null>(null)
 const lastProbeAt = ref<number | null>(null)
 const replacingSecret = ref(false)
 const pendingCount = ref(0)
+const savingPolicy = ref(false)
+const policyNotice = ref('')
+const policyError = ref('')
+let policyNoticeTimer: number | undefined
 const copiedKey = ref('')
 const notice = ref('')
 const error = ref('')
@@ -179,6 +183,43 @@ async function copyUri(key: string, value: string) {
     }, 1500)
   } catch {
     // clipboard unavailable — the value stays selectable on screen
+  }
+}
+
+/// Clicking a policy option saves it immediately — a targeted update built
+/// from the **last-saved** values, so unsaved edits in the connection form
+/// are never carried along. Failure reverts the selection; success shows a
+/// brief confirmation inside the card.
+async function setPolicy(value: boolean) {
+  if (savingPolicy.value || value === autoProvision.value) return
+  const previous = autoProvision.value
+  autoProvision.value = value
+  savingPolicy.value = true
+  policyError.value = ''
+  policyNotice.value = ''
+  window.clearTimeout(policyNoticeTimer)
+  try {
+    const meta = oidcMeta.value
+    const settings = await oidcSettingsApi.update({
+      enabled: meta?.enabled ?? enabled.value,
+      issuer: meta?.issuer ?? issuer.value,
+      client_id: meta?.client_id ?? clientId.value,
+      // omit the secret — the backend keeps the stored one
+      redirect_uri_override: meta?.redirect_uri_override ?? null,
+      scopes: meta?.scopes ?? scopes.value,
+      auto_provision: value,
+    })
+    autoProvision.value = settings.auto_provision
+    policyNotice.value = 'Policy updated — applies immediately.'
+    policyNoticeTimer = window.setTimeout(() => {
+      policyNotice.value = ''
+    }, 2500)
+    if (!value) await loadPendingCount()
+  } catch (e: any) {
+    autoProvision.value = previous // snap back to what the server still has
+    policyError.value = e?.message || 'Saving the policy failed'
+  } finally {
+    savingPolicy.value = false
   }
 }
 </script>
@@ -462,14 +503,20 @@ async function copyUri(key: string, value: string) {
             </div>
             <div class="px-4 pb-4 pt-2">
               <p class="type-meta">
-                What a colleague sees on their first SSO sign-in. New identities only — change anytime.
+                What a colleague sees on their first SSO sign-in. New identities only — picking a policy saves it right away.
               </p>
 
               <label
-                class="mt-3 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
+                class="flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
                 :class="autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
               >
-                <input v-model="autoProvision" type="radio" :value="true" name="signin-policy" class="mt-0.5 accent-foreground" />
+                <input
+                  type="radio"
+                  :checked="autoProvision"
+                  :disabled="savingPolicy"
+                  class="mt-0.5 accent-foreground disabled:opacity-50"
+                  @change="setPolicy(true)"
+                />
                 <span>
                   <span class="inline-flex items-center gap-2 text-sm font-medium">
                     Create on first sign-in
@@ -481,10 +528,16 @@ async function copyUri(key: string, value: string) {
                 </span>
               </label>
               <label
-                class="mt-2.5 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
+                class="flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
                 :class="!autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
               >
-                <input v-model="autoProvision" type="radio" :value="false" name="signin-policy" class="mt-0.5 accent-foreground" />
+                <input
+                  type="radio"
+                  :checked="!autoProvision"
+                  :disabled="savingPolicy"
+                  class="mt-0.5 accent-foreground disabled:opacity-50"
+                  @change="setPolicy(false)"
+                />
                 <span>
                   <span class="text-sm font-medium">Queue for approval</span>
                   <span class="mt-0.5 block text-xs text-muted-foreground">
@@ -492,6 +545,16 @@ async function copyUri(key: string, value: string) {
                   </span>
                 </span>
               </label>
+
+              <p v-if="savingPolicy" class="text-xs text-muted-foreground">Saving…</p>
+              <p
+                v-else-if="policyNotice"
+                class="flex items-center gap-1.5 text-xs font-medium text-success"
+              >
+                <Check class="h-3 w-3" />
+                {{ policyNotice }}
+              </p>
+              <p v-if="policyError" class="field-error">{{ policyError }}</p>
 
               <button
                 v-if="!autoProvision && pendingCount > 0"
