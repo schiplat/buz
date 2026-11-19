@@ -38,6 +38,7 @@ pub enum Action {
     AuthLogin,
     AuthOidcLogin,
     AuthOidcProvision,
+    AuthOidcBackchannelLogout,
     AuthSetup,
 
     // api_token
@@ -172,6 +173,7 @@ impl Action {
             Action::AuthLogin => "auth.login",
             Action::AuthOidcLogin => "auth.oidc_login",
             Action::AuthOidcProvision => "auth.oidc_provision",
+            Action::AuthOidcBackchannelLogout => "auth.oidc_backchannel_logout",
             Action::AuthSetup => "auth.setup",
             Action::ApiTokenCreate => "api_token.create",
             Action::ApiTokenRevoke => "api_token.revoke",

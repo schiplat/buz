@@ -71,6 +71,7 @@ fn admin_auth() -> AuthUser {
             role: TeamRole::Owner,
         }],
         api_token_scope: None,
+        sessions_revoked_epoch: 0,
     }
 }
 

@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -530,8 +530,23 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         3 => apply_v3_insertion_order_seq(pool).await,
         4 => apply_v4_oidc(pool).await,
         5 => apply_v5_oidc_settings(pool).await,
+        6 => apply_v6_session_revocation(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
+}
+
+/// v6: IdP-initiated session revocation (`platform/oidc-sso.md`).
+/// `sessions_revoked_epoch` holds the Unix second of the last account-wide
+/// revocation the identity provider delivered (back-channel logout); user
+/// JWTs minted at or before it are refused on the per-request user load.
+async fn apply_v6_session_revocation(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(
+        pool,
+        "users",
+        "sessions_revoked_epoch BIGINT NOT NULL DEFAULT 0",
+    )
+    .await;
+    Ok(())
 }
 
 /// v5: web-editable SSO configuration (`platform/oidc-sso.md`, Phase 1.5).

@@ -151,12 +151,16 @@ pub struct AuthFactsRow {
     pub is_super_admin: bool,
     pub is_active: bool,
     pub is_ops: bool,
+    /// Unix second of the last IdP-initiated account-wide revocation
+    /// (back-channel logout); `0` = never. Compared against the JWT `iat`.
+    pub sessions_revoked_epoch: i64,
 }
 
 pub async fn auth_facts(pool: &DbPool, user_id: &str) -> Result<Option<AuthFactsRow>, AppError> {
     Ok(exec::fetch_optional(
         pool,
-        "SELECT id, username, is_platform_admin, is_super_admin, is_active, is_ops
+        "SELECT id, username, is_platform_admin, is_super_admin, is_active, is_ops,
+                sessions_revoked_epoch
          FROM users WHERE id = ?",
         &[user_id.into()],
     )
@@ -168,7 +172,33 @@ pub async fn auth_facts(pool: &DbPool, user_id: &str) -> Result<Option<AuthFacts
         is_super_admin: r.i64_of("is_super_admin") != 0,
         is_active: r.i64_of("is_active") != 0,
         is_ops: r.i64_of("is_ops") != 0,
+        sessions_revoked_epoch: r.i64_of("sessions_revoked_epoch"),
     }))
+}
+
+/// Revoke every user-JWT session of one account: stamp `sessions_revoked_epoch`
+/// with the current Unix second (monotonic — a stale concurrent event cannot
+/// move it backwards). Returns rows affected (`0` = no such user).
+///
+/// Only user JWTs consult this stamp; API tokens are Buz-owned credentials and
+/// are deliberately unaffected (see `platform/oidc-sso.md`).
+pub async fn revoke_sessions(pool: &DbPool, user_id: &str) -> Result<u64, AppError> {
+    use crate::store::exec::SqlValue;
+    use crate::store::sql::Sql;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(exec::execute_sql(
+        pool,
+        Sql::Dual {
+            sqlite: "UPDATE users SET sessions_revoked_epoch = MAX(sessions_revoked_epoch, ?) WHERE id = ?",
+            pg: "UPDATE users SET sessions_revoked_epoch = GREATEST(sessions_revoked_epoch, $1) WHERE id = $2",
+        },
+        &[SqlValue::Int(now), user_id.into()],
+    )
+    .await?)
 }
 
 /// `(team_id, slug, name, role)` of one user's memberships, team-name ordered.

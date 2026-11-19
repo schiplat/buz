@@ -460,6 +460,45 @@ async fn complete_flow(
     (next, body)
 }
 
+/// Sign a back-channel logout token with the mock key. `claims` is the full
+/// payload so each validation case can bend exactly one rule.
+fn sign_logout_token(claims: Value) -> String {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(KEY_ID.to_string());
+    jsonwebtoken::encode(&header, &claims, &mock_keys().encoding_key).expect("sign logout token")
+}
+
+/// A valid logout-token payload for `sub`, stamped now.
+fn valid_logout_claims(issuer: &str, sub: &str) -> Value {
+    json!({
+        "iss": issuer,
+        "aud": CLIENT_ID,
+        "sub": sub,
+        "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "events": { "http://schemas.openid.net/event/backchannel-logout": {} },
+    })
+}
+
+/// POST a form-encoded body and return the status (back-channel logout is
+/// `application/x-www-form-urlencoded`).
+async fn oneshot_form(router: Router, uri: &str, form: &[(&str, &str)]) -> StatusCode {
+    let body = form
+        .iter()
+        .map(|(k, v)| format!("{k}={}", manager::services::oidc::percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    router.oneshot(request).await.unwrap().status()
+}
+
+const BACKCHANNEL_PATH: &str = "/api/v1/auth/oidc/backchannel-logout";
+
 // ───────────────────────────── journeys ─────────────────────────────
 
 /// The whole flow for a pre-bound identity: provisioning must not happen, the
@@ -1217,4 +1256,237 @@ async fn settings_test_endpoint_probes_the_provider() {
         .unwrap();
     assert_eq!(rows, 0, "probe saves nothing");
     let _ = idp;
+}
+
+// ─────────────────── back-channel logout (session revocation) ───────────────────
+
+/// A provider-delivered revocation kills the user's existing JWT within the
+/// same request, while a login that happens after the event works again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backchannel_logout_revokes_the_users_jwt_and_allows_a_fresh_login() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-bound", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let token = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("login token")
+        .to_string();
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "token works before revocation");
+
+    let logout = sign_logout_token(valid_logout_claims(&issuer, "sub-bound"));
+    let status = oneshot_form(
+        router.clone(),
+        BACKCHANNEL_PATH,
+        &[("logout_token", &logout)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "valid logout token accepted");
+
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the revoked JWT must be refused"
+    );
+
+    // The stamp is second-granular: wait for the next second so the fresh
+    // token is strictly newer than the revocation instant.
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let fresh = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("fresh token")
+        .to_string();
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&fresh)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a login after the event must work again"
+    );
+
+    let audited: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'auth.oidc_backchannel_logout'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "the system-actor revocation is audited");
+}
+
+/// Every shape a forged/broken logout token can take is refused with 400 and
+/// leaves the live session untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backchannel_logout_rejects_tokens_that_do_not_verify() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-bound", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let token = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("login token")
+        .to_string();
+
+    let now = chrono::Utc::now().timestamp();
+    let mut cases: Vec<(&str, Value)> = Vec::new();
+
+    let mut wrong_aud = valid_logout_claims(&issuer, "sub-bound");
+    wrong_aud["aud"] = json!("some-other-client");
+    cases.push(("wrong audience", wrong_aud));
+
+    let mut wrong_iss = valid_logout_claims(&issuer, "sub-bound");
+    wrong_iss["iss"] = json!(format!("{issuer}/someone-else"));
+    cases.push(("wrong issuer", wrong_iss));
+
+    let mut with_nonce = valid_logout_claims(&issuer, "sub-bound");
+    with_nonce["nonce"] = json!("should-not-be-here");
+    cases.push(("nonce present", with_nonce));
+
+    let mut no_event = valid_logout_claims(&issuer, "sub-bound");
+    no_event["events"] = json!({});
+    cases.push(("missing logout event", no_event));
+
+    let mut stale = valid_logout_claims(&issuer, "sub-bound");
+    stale["iat"] = json!(now - 3600);
+    cases.push(("stale iat", stale));
+
+    let mut future = valid_logout_claims(&issuer, "sub-bound");
+    future["iat"] = json!(now + 3600);
+    cases.push(("future iat", future));
+
+    for (label, claims) in cases {
+        let signed = sign_logout_token(claims);
+        let status = oneshot_form(
+            router.clone(),
+            BACKCHANNEL_PATH,
+            &[("logout_token", &signed)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "case: {label}");
+        let (status, _, _) =
+            oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&token))
+                .await;
+        assert_eq!(status, StatusCode::OK, "session untouched after {label}");
+    }
+
+    // A malformed body (no logout_token) is a 400 too.
+    let status = oneshot_form(router.clone(), BACKCHANNEL_PATH, &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing logout_token");
+
+    // The same valid token twice stays idempotent.
+    let logout = sign_logout_token(valid_logout_claims(&issuer, "sub-bound"));
+    for _ in 0..2 {
+        let status = oneshot_form(
+            router.clone(),
+            BACKCHANNEL_PATH,
+            &[("logout_token", &logout)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+}
+
+/// An unknown subject is acknowledged (no account enumeration) and revokes
+/// nothing; API tokens owned by the user survive a real revocation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backchannel_logout_is_unknown_subject_safe_and_leaves_api_tokens_alone() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = OidcRuntime::build(&oidc_config(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-bound", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let jwt = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("login token")
+        .to_string();
+
+    // An identity Buz has never seen: acknowledged, nothing revoked.
+    let ghost = sign_logout_token(valid_logout_claims(&issuer, "sub-ghost"));
+    let status = oneshot_form(
+        router.clone(),
+        BACKCHANNEL_PATH,
+        &[("logout_token", &ghost)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&jwt)).await;
+    assert_eq!(status, StatusCode::OK, "unknown subject revokes nothing");
+
+    // A Buz API token is a Buz-owned credential: the revocation targets user
+    // JWTs only.
+    let raw_api_token = "buz_backchannel_test_token";
+    let hash = shared::api_token::hash_token(raw_api_token);
+    manager::store::api_tokens::insert(
+        &pool,
+        "tok-revocation",
+        "admin-1",
+        "revocation test",
+        &hash,
+        "buz_back",
+        "full",
+    )
+    .await
+    .unwrap();
+    let (status, _, _) = oneshot_with_headers(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/me",
+        None,
+        Some(raw_api_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "API token works before revocation");
+
+    let logout = sign_logout_token(valid_logout_claims(&issuer, "sub-bound"));
+    let status = oneshot_form(
+        router.clone(),
+        BACKCHANNEL_PATH,
+        &[("logout_token", &logout)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, _) = oneshot_with_headers(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/me",
+        None,
+        Some(raw_api_token),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "API tokens are not invalidated by IdP revocation"
+    );
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&jwt)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the JWT is revoked");
 }

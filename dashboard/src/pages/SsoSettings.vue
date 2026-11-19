@@ -206,6 +206,10 @@ async function resetToFile() {
             Effective callback (register this exact string at the provider):
             <span class="font-mono">{{ redirectDisplay }}</span>
           </p>
+          <p v-if="oidcMeta?.backchannel_logout_uri" class="type-meta">
+            Back-channel logout (register to revoke sessions immediately):
+            <span class="font-mono">{{ oidcMeta.backchannel_logout_uri }}</span>
+          </p>
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2">
