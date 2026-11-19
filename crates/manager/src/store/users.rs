@@ -22,13 +22,15 @@ pub struct UserRow {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub is_ops: bool,
+    /// Authentication origin: `local` (password) or `oidc` (SSO only).
+    pub auth_source: String,
 }
 
 /// All users, username-ordered.
 pub async fn list_all(pool: &DbPool) -> Result<Vec<UserRow>, AppError> {
     let rows = exec::fetch_all(
         pool,
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at, is_ops
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at, is_ops, auth_source
          FROM users ORDER BY username ASC",
         &[],
     )
@@ -45,6 +47,7 @@ pub async fn list_all(pool: &DbPool) -> Result<Vec<UserRow>, AppError> {
             created_at: r.opt_text_of("created_at"),
             updated_at: r.opt_text_of("updated_at"),
             is_ops: r.i64_of("is_ops") != 0,
+            auth_source: r.text_of("auth_source"),
         })
         .collect())
 }
@@ -113,6 +116,90 @@ pub async fn insert_oidc(
         }
     })?;
     Ok(())
+}
+
+/// [`insert_oidc`] inside the caller's transaction (identity approval).
+pub async fn insert_oidc_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
+    id: &str,
+    username: &str,
+    display_name: &str,
+) -> Result<(), AppError> {
+    tx.execute(
+        "INSERT INTO users
+            (id, username, password_hash, display_name, is_platform_admin, is_super_admin,
+             is_ops, is_active, auth_source, password_login_disabled)
+         VALUES (?, ?, '', ?, 0, 0, 0, 1, 'oidc', 1)",
+        &[id.into(), username.into(), display_name.into()],
+    )
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            AppError::Conflict("username already exists".into())
+        } else {
+            AppError::DatabaseError(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
+/// What the approval flow needs to know about an existing account.
+pub struct BindingFacts {
+    pub username: String,
+    pub auth_source: String,
+    pub is_active: bool,
+    pub is_platform_admin: bool,
+}
+
+/// One account's facts for binding an external identity (`None` = no user).
+pub async fn binding_facts_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
+    user_id: &str,
+) -> Result<Option<BindingFacts>, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT username, auth_source, is_active, is_platform_admin
+             FROM users WHERE id = ?",
+            &[user_id.into()],
+        )
+        .await?
+        .map(|row| BindingFacts {
+            username: row.text_of("username"),
+            auth_source: row.text_of("auth_source"),
+            is_active: row.i64_of("is_active") != 0,
+            is_platform_admin: row.i64_of("is_platform_admin") != 0,
+        }))
+}
+
+/// Convert an existing account to SSO-only: the origin flips and the local
+/// password gate closes (the password hash itself is kept for audit).
+pub async fn convert_to_oidc_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
+    user_id: &str,
+) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE users SET auth_source = 'oidc', password_login_disabled = 1 WHERE id = ?",
+        &[user_id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Active platform admins that would still have a local password login after
+/// excluding `user_id` — the break-glass guard for converting an account.
+pub async fn count_active_local_admins_excluding_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
+    user_id: &str,
+) -> Result<i64, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT COUNT(*) FROM users
+             WHERE is_platform_admin = 1 AND is_active = 1 AND auth_source = 'local' AND id != ?",
+            &[user_id.into()],
+        )
+        .await?
+        .map(|row| row.i64(0))
+        .unwrap_or(0))
 }
 
 /// Pre-update facts (`None` = no such user) — the audit before-snapshot.

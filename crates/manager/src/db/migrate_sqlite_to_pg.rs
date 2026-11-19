@@ -4,9 +4,10 @@
 //! Flow (mirrors the ops runbook in `storage-cluster.md`):
 //!
 //! 1. Open the source SQLite database read-only and verify it is a fully
-//!    migrated Manager database (38 application tables, and a
-//!    `schema_migrations` high-water mark at this build's version — an older
-//!    source would silently lose columns added since it was last booted).
+//!    migrated Manager database (every application table in [`TABLE_ORDER`],
+//!    and a `schema_migrations` high-water mark at this build's version — an
+//!    older source would silently lose columns added since it was last
+//!    booted).
 //! 2. Point the Postgres target at an *empty* database, apply the baseline
 //!    (idempotent migration runner), then refuse when any application table
 //!    already carries rows — the tool never overwrites.
@@ -29,8 +30,12 @@
 use anyhow::Context as _;
 use sqlx::Row as _;
 
-/// The 38 application tables in foreign-key order (the PG baseline's
+/// Every application table in foreign-key order (the PG baseline's
 /// `CREATE TABLE` order, minus the runner-owned `schema_migrations`).
+///
+/// The SQLite → Postgres copy iterates exactly this list, so a new table that
+/// is missing here would be silently dropped on a backend switch. The
+/// missing-table guard below turns an absent table into an explicit error.
 pub const TABLE_ORDER: &[&str] = &[
     "manager_meta",
     "hosts",
@@ -45,12 +50,16 @@ pub const TABLE_ORDER: &[&str] = &[
     "platform_vars",
     "pipeline_vars",
     "users",
+    "external_identities",
+    "pending_identities",
     "teams",
     "team_members",
     "plugin_sources",
     "plugin_pool",
     "platform_settings",
     "oidc_settings",
+    "sso_tickets",
+    "sso_flows",
     "scheduler_lease",
     "pipeline_git_hooks",
     "pipeline_trigger_events",

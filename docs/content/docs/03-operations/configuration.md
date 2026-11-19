@@ -46,7 +46,8 @@ runner_register_token_ttl_hours = 24
 # client_secret = ""                       # or BUZ_OIDC_CLIENT_SECRET / client_secret_file
 # redirect_uri = "https://buz.example.com/api/v1/auth/oidc/callback"
 # scopes = ["openid", "profile", "email"]
-# auto_provision = true                    # first SSO sign-in creates a plain user
+# auto_provision = true                    # false = refused sign-ins are queued
+#                                          # for admin approval (Users page)
 # Register both at the provider: the redirect_uri above, and the back-channel
 # logout URL — {server.public_base_url}/api/v1/auth/oidc/backchannel-logout
 # (shown on the Settings → SSO page). It is what makes an IdP-side disable
