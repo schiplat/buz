@@ -183,7 +183,7 @@ async function copyUri(key: string, value: string) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl space-y-6 p-6">
+  <div class="space-y-6">
     <div class="space-y-1">
       <h1 class="text-lg font-semibold tracking-tight">Single sign-on (OIDC)</h1>
       <p class="type-meta">Sign in through any OIDC provider.</p>
