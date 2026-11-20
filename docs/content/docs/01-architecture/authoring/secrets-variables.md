@@ -192,6 +192,11 @@ pipelines — see [Migrating from the kernel `config:` block](./migration-config
 
 ### 3) Platform Variables (auto env)
 
+> **Binding is a platform-admin action.** The form (`var_ids`) and YAML
+> (`variables:`) may only add or remove bindings as a platform admin; team
+> members can keep existing bindings while editing a pipeline but cannot change
+> them (values are admin-visible only in the Variables page).
+
 ```yaml
 variables:
   - BUILD_CACHE_DIR          # ① bind → injected as $BUILD_CACHE_DIR

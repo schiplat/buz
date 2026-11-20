@@ -93,6 +93,14 @@ pub async fn create(
     )
     .await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
+    // Platform variables are admin-owned: their values are hidden from
+    // non-admins in every API response, so binding one is an admin action.
+    // Otherwise a developer could bind it and read the value back from the job env.
+    if !auth.is_platform_admin && req.var_ids.as_deref().is_some_and(|ids| !ids.is_empty()) {
+        return Err(AppError::Forbidden(
+            "binding platform variables requires a platform admin".into(),
+        ));
+    }
     verify_pipeline_secret_bindings(&state, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.db(), &req.environments).await?;
     let webhook_secret = validate_webhook_secret_binding(
@@ -364,10 +372,33 @@ pub async fn update(
     auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
-    Json(req): Json<CreatePipelineRequest>,
+    Json(mut req): Json<CreatePipelineRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let current_team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&current_team_id, Perm::PipelineWrite)?;
+
+    // Platform variables are admin-owned (their values are hidden from
+    // non-admins). A non-admin may keep the current bindings while editing,
+    // but cannot add or remove one.
+    let existing_var_ids = crate::store::pipelines::var_bind_ids(&state.db(), &id).await?;
+    let requested_var_ids = req
+        .var_ids
+        .clone()
+        .unwrap_or_else(|| existing_var_ids.clone());
+    if !auth.is_platform_admin {
+        let mut requested_sorted = requested_var_ids.clone();
+        let mut existing_sorted = existing_var_ids.clone();
+        requested_sorted.sort();
+        existing_sorted.sort();
+        if requested_sorted != existing_sorted {
+            return Err(AppError::Forbidden(
+                "binding platform variables requires a platform admin".into(),
+            ));
+        }
+    }
+    // Emit the effective list: an omitted `var_ids` preserves the current
+    // bindings instead of silently unbinding them in the rewritten YAML.
+    req.var_ids = Some(requested_var_ids.clone());
 
     // Form retirement: every pipeline is file-backed, and this endpoint
     // rewrites the pipeline's YAML file (see the write below), so there is no
@@ -439,7 +470,7 @@ pub async fn update(
         }
     }
     let mut var_names: HashMap<String, String> = HashMap::new();
-    for var_id in req.var_ids.iter().flatten() {
+    for var_id in &requested_var_ids {
         if let Some(name) =
             crate::store::variables::variable_name_optional(&state.db(), var_id).await?
         {

@@ -16,6 +16,12 @@ const auth = useAuthStore()
 const dialog = useAppDialog()
 const hosts = ref<Host[]>([])
 const availableTeams = ref<Team[]>([])
+/** Teams where the caller may manage hosts (HostManage = maintainer). */
+const manageableTeams = computed(() =>
+  auth.isPlatformAdmin
+    ? availableTeams.value
+    : availableTeams.value.filter((t) => auth.hasTeamRole(t.id, 'maintainer')),
+)
 const loading = ref(true)
 const searchQuery = ref('')
 const filterCredentialType = ref('')
@@ -77,7 +83,7 @@ function openCreate() {
     credential_data: '',
     credential_passphrase: '',
     labels: '',
-    team_id: auth.preferredTeamId || '',
+    team_id: auth.isPlatformAdmin ? (auth.preferredTeamId || '') : (manageableTeams.value[0]?.id || ''),
   }
   showDialog.value = true
 }
@@ -251,7 +257,11 @@ onMounted(async () => {
       description="SSH targets for pipeline steps. Reference by name or labels (uses: ssh + host / host_labels). Auth: SSH Key / Password / Agent — verify with Test connection."
     >
       <template #actions>
-        <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Host</UiButton>
+        <UiButton
+          v-if="auth.isPlatformAdmin || manageableTeams.length > 0"
+          size="sm"
+          @click="openCreate"
+        ><Plus class="h-4 w-4" /> Add Host</UiButton>
       </template>
     </PageHeader>
 
@@ -361,8 +371,8 @@ onMounted(async () => {
               </td>
               <td class="px-5 py-3 text-right whitespace-nowrap">
                 <div class="flex items-center justify-end gap-1">
-                  <UiButton variant="ghost" size="sm" @click="openEdit(h)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                  <UiButton variant="ghost" size="sm" @click="handleDelete(h)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                  <UiButton v-if="auth.hasTeamRole(h.team_id, 'maintainer')" variant="ghost" size="sm" @click="openEdit(h)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
+                  <UiButton v-if="auth.hasTeamRole(h.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(h)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                 </div>
               </td>
             </tr>
@@ -469,8 +479,8 @@ onMounted(async () => {
               <label class="block text-[12px] font-medium text-foreground mb-1">Team</label>
               <div class="relative">
                 <select v-model="form.team_id" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
-                  <option value="">Shared (admin)</option>
-                  <option v-for="t in availableTeams" :key="t.id" :value="t.id">
+                  <option v-if="auth.isPlatformAdmin" value="">Shared (admin)</option>
+                  <option v-for="t in manageableTeams" :key="t.id" :value="t.id">
                     {{ t.name }} ({{ t.slug }})
                   </option>
                 </select>

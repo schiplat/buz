@@ -164,7 +164,8 @@ onMounted(loadVars)
       <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
         Non-sensitive shared config as <code class="mono-chip text-[10px]">$NAME</code> in steps. Override via Environments or GitHub Sync. Do not store secrets here.
       </p>
-      <UiButton size="sm" class="sm:ml-auto" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
+      <UiButton v-if="auth.isPlatformAdmin" size="sm" class="sm:ml-auto" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
+      <span v-else class="text-xs text-muted-foreground sm:ml-auto">Read-only — platform admins manage variables.</span>
     </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
@@ -248,8 +249,8 @@ onMounted(loadVars)
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
                     <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openGithub(v)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton variant="ghost" size="sm" @click="openEdit(v)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton variant="ghost" size="sm" @click="handleDelete(v)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openEdit(v)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
+                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="handleDelete(v)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                   </div>
                 </td>
               </tr>

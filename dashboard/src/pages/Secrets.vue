@@ -17,6 +17,13 @@ const auth = useAuthStore()
 const dialog = useAppDialog()
 const secrets = ref<Secret[]>([])
 const teams = ref<Team[]>([])
+
+/** Teams where the caller may create/edit secrets (SecretManage = maintainer). */
+const manageableTeams = computed(() =>
+  auth.isPlatformAdmin
+    ? teams.value
+    : teams.value.filter((t) => auth.hasTeamRole(t.id, 'maintainer')),
+)
 const loading = ref(true)
 const searchQuery = ref('')
 const filterTeam = ref('')
@@ -141,10 +148,14 @@ function openCreate() {
   formValue.value = ''
   // Default to the `default` team (matching YAML `team:` omission) so secrets
   // created here line up with YAML-sourced pipelines without a manual team pick.
-  const def = teams.value.find((t) => t.slug === 'default')
+  // Non-admins only see teams where they hold SecretManage.
+  const def = manageableTeams.value.find((t) => t.slug === 'default')
   const preferred = auth.preferredTeamId
-  formTeamId.value = def?.id
-    ?? (teams.value.some((t) => t.id === preferred) ? preferred : (teams.value[0]?.id || ''))
+  formTeamId.value = (
+    def
+    ?? manageableTeams.value.find((t) => t.id === preferred)
+    ?? manageableTeams.value[0]
+  )?.id ?? ''
   formTeamShared.value = false
   formKind.value = 'generic'
   showValue.value = false
@@ -274,7 +285,13 @@ onMounted(loadSecrets)
       <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
         Encrypted credentials. Reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code> in plugin with, step env, or config.render templates. Team share is optional; values are masked in logs.
       </p>
-      <UiButton size="sm" class="sm:ml-auto" @click="openCreate"><Plus class="h-4 w-4" /> Add Secret</UiButton>
+      <UiButton
+        v-if="auth.isPlatformAdmin || manageableTeams.length > 0"
+        size="sm"
+        class="sm:ml-auto"
+        @click="openCreate"
+      ><Plus class="h-4 w-4" /> Add Secret</UiButton>
+      <span v-else class="text-xs text-muted-foreground sm:ml-auto">Read-only — team maintainers manage secrets.</span>
     </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
@@ -399,9 +416,9 @@ onMounted(loadSecrets)
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap" :title="s.updated_at || ''">{{ formatLocalDateTime(s.updated_at) }}</td>
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
-                    <UiButton variant="ghost" size="sm" @click="openGithub(s)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openGithub(s)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
+                    <UiButton v-if="auth.hasTeamRole(s.team_id, 'maintainer')" variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
+                    <UiButton v-if="auth.hasTeamRole(s.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                   </div>
                 </td>
               </tr>
@@ -451,7 +468,7 @@ onMounted(loadSecrets)
                 class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
                 <option disabled value="">Select a team</option>
-                <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
+                <option v-for="t in manageableTeams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
               </select>
               <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Team share is enabled.</p>
             </div>

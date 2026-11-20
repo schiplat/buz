@@ -9,6 +9,10 @@ const { auth, dialog } = vi.hoisted(() => ({
     isPlatformAdmin: false,
     preferredTeamId: 'team-other',
     matchesActiveTeam: vi.fn(),
+    // Secret CRUD tests exercise the dialog, not the role gate: treat the
+    // caller as a team maintainer so the actions stay reachable.
+    hasTeamRole: vi.fn(() => true),
+    hasAnyTeamRole: vi.fn(() => true),
   },
   dialog: { alert: vi.fn(), confirm: vi.fn() },
 }))

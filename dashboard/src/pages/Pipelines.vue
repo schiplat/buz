@@ -441,7 +441,7 @@ async function handleToggleActive(p: Pipeline) {
       description="Create and manage your pipeline workflows."
     >
       <template #actions>
-        <UiButton size="sm" @click="openCreate">
+        <UiButton v-if="auth.isPlatformAdmin || auth.hasAnyTeamRole('developer')" size="sm" @click="openCreate">
           <Plus class="h-4 w-4" />
           New Pipeline
         </UiButton>
@@ -697,11 +697,12 @@ async function handleToggleActive(p: Pipeline) {
                 </td>
                 <td class="text-right">
                   <div class="flex items-center justify-end gap-1">
-                    <UiButton variant="ghost" size="sm" @click="handleTrigger(p)" title="Trigger run" :disabled="triggeringId !== null">
+                    <UiButton v-if="auth.hasTeamRole(p.team_id, 'developer')" variant="ghost" size="sm" @click="handleTrigger(p)" title="Trigger run" :disabled="triggeringId !== null">
                       <Loader2 v-if="triggeringId === p.id" class="h-3.5 w-3.5 animate-spin" />
                       <Play v-else class="h-3.5 w-3.5" />
                     </UiButton>
                     <UiButton
+                      v-if="auth.hasTeamRole(p.team_id, 'developer')"
                       variant="ghost"
                       size="sm"
                       @click="openEdit(p)"
@@ -709,10 +710,10 @@ async function handleToggleActive(p: Pipeline) {
                     >
                       <Pencil class="h-3.5 w-3.5" />
                     </UiButton>
-                    <UiButton variant="ghost" size="sm" @click="handleToggleActive(p)" :title="p.is_active ? 'Deactivate' : 'Activate'">
+                    <UiButton v-if="auth.hasTeamRole(p.team_id, 'developer')" variant="ghost" size="sm" @click="handleToggleActive(p)" :title="p.is_active ? 'Deactivate' : 'Activate'">
                       <Snowflake class="h-3.5 w-3.5" :class="p.is_active ? 'text-cyan-500' : 'text-muted-foreground'" />
                     </UiButton>
-                    <UiButton variant="ghost" size="sm" @click="handleDelete(p)" title="Delete">
+                    <UiButton v-if="auth.hasTeamRole(p.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(p)" title="Delete">
                       <Trash2 class="h-3.5 w-3.5 text-destructive" />
                     </UiButton>
                   </div>

@@ -132,6 +132,13 @@ pub async fn create_file(
     // Target team from serde (same as upsert) — authorize BEFORE any write.
     let (parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
+    // Platform variables are admin-owned; their values are hidden from
+    // non-admins, so a non-admin must not bind one through YAML either.
+    if !auth.is_platform_admin && parsed.variables.as_deref().is_some_and(|v| !v.is_empty()) {
+        return Err(AppError::Forbidden(
+            "binding platform variables requires a platform admin".into(),
+        ));
+    }
 
     let validation = validate_pipeline_yaml(&state.db(), &yaml).await?;
     reject_if_invalid(&validation)?;
@@ -225,7 +232,7 @@ pub async fn put_file(
     }
 
     // Target team from serde — must authorize BEFORE write/upsert (no post-hoc orphan).
-    let (_parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
+    let (parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
 
     // Also require write on the current binding (source team / migrate source).
@@ -234,6 +241,39 @@ pub async fn put_file(
         auth.check_team(&current_team_id, Perm::PipelineWrite)?;
     } else {
         authorize_file_access(&state, &auth, &scan_dir, &filename, Perm::PipelineWrite).await?;
+    }
+
+    // Platform variables are admin-owned; their values are hidden from
+    // non-admins, so a non-admin must not bind one through YAML either.
+    if !auth.is_platform_admin {
+        let mut requested = parsed.variables.clone().unwrap_or_default();
+        if !requested.is_empty() {
+            return Err(AppError::Forbidden(
+                "binding platform variables requires a platform admin".into(),
+            ));
+        }
+        // Removing an existing admin binding is also an admin action.
+        let existing_pid = match req.pipeline_id.as_deref() {
+            Some(pid) => Some(pid.to_string()),
+            None => find_yaml_pipeline_row(&state.db(), &filename).await?,
+        };
+        if let Some(pid) = existing_pid {
+            let mut existing = Vec::new();
+            for id in crate::store::pipelines::var_bind_ids(&state.db(), &pid).await? {
+                if let Some(name) =
+                    crate::store::variables::variable_name_optional(&state.db(), &id).await?
+                {
+                    existing.push(name);
+                }
+            }
+            existing.sort();
+            requested.sort();
+            if requested != existing {
+                return Err(AppError::Forbidden(
+                    "changing platform variable bindings requires a platform admin".into(),
+                ));
+            }
+        }
     }
 
     // Optimistic concurrency: this early check gives a clean 409 without doing

@@ -1303,9 +1303,9 @@ async function handleTrigger() {
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <UiButton
+          v-if="pipeline && auth.hasTeamRole(pipeline.team_id, 'developer')"
           variant="ghost"
           size="sm"
-          :disabled="!pipeline"
           :title="pipeline?.is_active ? 'Disable pipeline' : 'Enable pipeline'"
           @click="handleToggleActive"
         >
@@ -1314,7 +1314,7 @@ async function handleTrigger() {
             :class="pipeline?.is_active ? 'text-cyan-500' : 'text-muted-foreground'"
           />
         </UiButton>
-        <UiButton size="sm" @click="openTriggerDialog" :disabled="!pipeline || triggering || !pipeline.is_active" class="shrink-0">
+        <UiButton v-if="pipeline && auth.hasTeamRole(pipeline.team_id, 'developer')" size="sm" @click="openTriggerDialog" :disabled="!pipeline || triggering || !pipeline.is_active" class="shrink-0">
           <Loader2 v-if="triggering" class="h-4 w-4 animate-spin" />
           <Play v-else class="h-4 w-4" />
           {{ triggering ? 'Running…' : 'Build Now' }}
@@ -1991,6 +1991,7 @@ async function handleTrigger() {
                 Fix the on-disk YAML (missing or invalid), then reopen this tab. DB projection is not shown as authority.
               </p>
               <button
+                v-if="pipeline && auth.hasTeamRole(pipeline.team_id, 'developer')"
                 class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                 @click="openEditDialog"
               >
@@ -2048,7 +2049,7 @@ async function handleTrigger() {
                       Source
                     </button>
                   </div>
-                  <UiButton size="sm" variant="outline" @click="openEditDialog">
+                  <UiButton v-if="pipeline && auth.hasTeamRole(pipeline.team_id, 'developer')" size="sm" variant="outline" @click="openEditDialog">
                     <Pencil class="h-3.5 w-3.5" />
                     Edit YAML
                   </UiButton>
