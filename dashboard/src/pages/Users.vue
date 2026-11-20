@@ -186,6 +186,17 @@ onMounted(load)
       </template>
     </PageHeader>
 
+    <!-- first-use orientation: identity & access in three steps (1-2-3 across the app) -->
+    <div
+      v-if="pending.length === 0"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-border/50 bg-card p-3.5 text-xs text-muted-foreground shadow-xs"
+    >
+      <span class="font-medium text-foreground">Identity &amp; access in three steps:</span>
+      <span>① <RouterLink class="underline decoration-border underline-offset-2 hover:text-foreground" to="/settings/sso">Connect SSO</RouterLink> — colleagues sign in with your provider.</span>
+      <span>② Accounts appear here on first sign-in <span class="font-mono">SSO</span> (created automatically, or queued below for approval).</span>
+      <span>③ Grant what they may do in <RouterLink class="underline decoration-border underline-offset-2 hover:text-foreground" to="/teams">Teams</RouterLink>.</span>
+    </div>
+
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <template v-else>
       <!-- SSO identity approval queue -->
