@@ -107,9 +107,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baseline_is_registered_as_version_1() {
-        assert_eq!(PG_MIGRATIONS.len(), 1);
+    fn migration_chain_is_registered_in_order() {
+        assert_eq!(PG_MIGRATIONS.len(), 7);
         assert_eq!(PG_MIGRATIONS[0].0, 1);
+        assert_eq!(PG_MIGRATIONS.last().unwrap().0, 7);
         assert!(PG_MIGRATIONS[0]
             .1
             .trim_start()
