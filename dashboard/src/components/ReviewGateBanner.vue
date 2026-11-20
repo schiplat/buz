@@ -33,14 +33,14 @@ const show = computed(() => posture.value !== null && !dismissed.value)
     role="status"
     data-testid="review-gate-banner"
     :class="[
-      'mb-4 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm',
-      isError ? 'border-red-500/40 bg-red-500/5' : 'border-warning/30 bg-warning/5',
+      'mb-4 flex items-start gap-3 rounded-xl px-4 py-3 text-sm',
+      isError ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning',
     ]"
   >
     <span aria-hidden="true" class="text-base leading-5">🛡️</span>
     <div class="min-w-0 flex-1">
       <template v-if="isError">
-        <p class="font-medium text-red-600 dark:text-red-400">
+        <p class="font-medium text-destructive">
           Plugin review gate is misconfigured — every template will be rejected
         </p>
         <p class="mt-0.5 wrap-break-word text-muted-foreground">
@@ -63,7 +63,7 @@ const show = computed(() => posture.value !== null && !dismissed.value)
     </div>
     <button
       type="button"
-      class="shrink-0 rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted"
+      class="shrink-0 rounded-xl border border-border px-2 py-1 text-xs hover:bg-muted/40"
       aria-label="Dismiss review gate notice"
       @click="dismissed = true"
     >

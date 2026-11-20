@@ -1441,7 +1441,7 @@ async function rotateToken(host: SandboxHost) {
         <UiButton size="sm" variant="outline" @click="openDefaultsDialog">Platform defaults</UiButton>
         <div
           v-if="auth.isPlatformAdmin"
-          class="flex items-center rounded-xl border border-border/60 bg-muted/50 px-3 py-1.5"
+          class="flex items-center surface-inset px-3 py-1.5"
           title="Platform admins only — hidden for ops users"
         >
           <button
@@ -1454,11 +1454,11 @@ async function rotateToken(host: SandboxHost) {
           >
             <span class="text-[11.5px] font-medium">Require approvals</span>
             <span
-              class="relative inline-block h-4 w-7 rounded-full transition-colors"
-              :class="approvalsRequired ? 'bg-emerald-600' : 'bg-muted-foreground/30'"
+              class="relative inline-block h-4 w-7 rounded-lg transition-colors"
+              :class="approvalsRequired ? 'bg-success' : 'bg-muted-foreground/30'"
             >
               <span
-                class="absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all"
+                class="absolute top-0.5 h-3 w-3 rounded-lg bg-white transition-all"
                 :class="approvalsRequired ? 'left-3.5' : 'left-0.5'"
               ></span>
             </span>
@@ -1473,7 +1473,7 @@ async function rotateToken(host: SandboxHost) {
     >
       <span
         class="h-1.5 w-1.5 shrink-0 rounded-full"
-        :class="approvalsRequired ? 'bg-emerald-600' : 'bg-muted-foreground/40'"
+        :class="approvalsRequired ? 'bg-success' : 'bg-muted-foreground/40'"
       ></span>
       <span v-if="approvalsRequired">On — host-config and grant changes queue for a second ops approval; already-queued items stay pending if you switch off later.</span>
       <span v-else>Off — host-config and grant changes apply immediately, nothing queues.</span>
@@ -1490,7 +1490,7 @@ async function rotateToken(host: SandboxHost) {
         </div>
         <span class="pb-0.5 text-[10px] tabular-nums text-muted-foreground">{{ grants.length }} grants · {{ grantTeamRows.length }} teams</span>
       </div>
-      <div class="mt-2 rounded-xl border border-border/50 bg-card overflow-hidden">
+      <div class="mt-2 surface-card overflow-hidden">
         <div class="data-table-scroll">
           <div class="min-w-[560px]">
             <div class="grid grid-cols-[190px_minmax(0,1fr)_120px] gap-2 border-b border-border/40 px-5 py-2 text-[9.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
@@ -1503,7 +1503,7 @@ async function rotateToken(host: SandboxHost) {
                 <div class="grid grid-cols-[190px_minmax(0,1fr)_120px] items-center gap-2">
                   <div class="flex min-w-0 items-center gap-2">
                     <span
-                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium"
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[10px] font-medium"
                       :style="{ background: teamTint(team.id) + '22', color: teamTint(team.id) }"
                       aria-hidden="true"
                     >{{ team.name.charAt(0).toUpperCase() }}</span>
@@ -1516,7 +1516,7 @@ async function rotateToken(host: SandboxHost) {
                     <span
                       v-for="g in visibleGrants(team.id)"
                       :key="g.team_id + '/' + g.profile"
-                      class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 font-mono text-[11px] text-foreground/80"
+                      class="inline-flex shrink-0 items-center gap-1 rounded-lg bg-muted py-0.5 pl-2.5 pr-1 font-mono text-[11px] text-foreground/80"
                       :title="offeredByFor(g.profile).length
                         ? `offered by ${offeredByFor(g.profile).join(', ')}`
                         : 'not offered on any host yet'"
@@ -1524,7 +1524,7 @@ async function rotateToken(host: SandboxHost) {
                       {{ g.profile }}
                       <button
                         type="button"
-                        class="inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-foreground/15 text-foreground/70 transition-colors hover:bg-red-500/20 hover:text-red-500"
+                        class="inline-flex h-[18px] w-[18px] items-center justify-center rounded-xl bg-foreground/15 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
                         :title="`Revoke ${g.profile} from ${team.name} — stops requests at trigger & claim`"
                         :aria-label="`Revoke ${g.profile} from ${team.name}`"
                         @click="revokeGrant(g)"
@@ -1533,7 +1533,7 @@ async function rotateToken(host: SandboxHost) {
                     <button
                       v-if="teamGrants(team.id).length > CHIP_PREVIEW"
                       type="button"
-                      class="shrink-0 rounded-full border border-dashed border-border px-2.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:border-muted-foreground/60 hover:text-foreground"
+                      class="shrink-0 rounded-lg border border-dashed border-border px-2.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:border-muted-foreground/60 hover:text-foreground"
                       :title="expandedGrantTeams.has(team.id) ? 'Collapse' : 'Show all profiles'"
                       @click="toggleGrantsExpanded(team.id)"
                     >{{ expandedGrantTeams.has(team.id) ? 'less' : `+${teamGrants(team.id).length - CHIP_PREVIEW} more` }}</button>
@@ -1559,7 +1559,7 @@ async function rotateToken(host: SandboxHost) {
                 </div>
 
                 <!-- inline multi-grant panel: search + multi-select, one action grants all -->
-                <div v-if="grantPanelTeamId === team.id" class="mt-2 rounded-lg border border-border/60 bg-muted/25 p-2">
+                <div v-if="grantPanelTeamId === team.id" class="mt-2 surface-inset p-2">
                   <div class="flex flex-wrap items-center gap-2 px-1 pb-2">
                     <div class="relative max-w-[240px] flex-1">
                       <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
@@ -1568,7 +1568,7 @@ async function rotateToken(host: SandboxHost) {
                         type="search"
                         placeholder="Search profiles…"
                         aria-label="Search profiles"
-                        class="w-full rounded-md border border-border/60 bg-background py-1 pl-7 pr-2 text-[11px] outline-hidden focus:border-primary/50"
+                        class="w-full rounded-xl border border-border bg-background py-1 pl-7 pr-2 text-[11px] outline-hidden focus-visible:border-foreground/35"
                       />
                     </div>
                     <span class="text-[10px] text-muted-foreground">pick any number — one action grants all</span>
@@ -1577,7 +1577,7 @@ async function rotateToken(host: SandboxHost) {
                     <label
                       v-for="name in grantPanelChoices"
                       :key="name"
-                      class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
+                      class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/40"
                       :class="!offeredByFor(name).length && 'opacity-55'"
                     >
                       <input
@@ -1597,7 +1597,7 @@ async function rotateToken(host: SandboxHost) {
                         <span
                           v-for="h in offeredByFor(name)"
                           :key="h"
-                          class="rounded bg-emerald-500/10 px-1 py-px font-mono text-[9.5px] leading-snug text-emerald-700 dark:text-emerald-400"
+                          class="rounded-lg bg-success/10 px-1.5 py-px font-mono text-[9.5px] leading-snug text-success dark:text-success"
                         >{{ h }}</span>
                       </span>
                     </label>
@@ -1620,7 +1620,7 @@ async function rotateToken(host: SandboxHost) {
                 <span class="text-[11px] text-muted-foreground">Grant to team</span>
                 <select
                   v-model="newBindingTeamId"
-                  class="rounded-md border border-border/60 bg-background px-2 py-1 text-[11.5px] outline-hidden focus:border-primary/50"
+                  class="field-select-sm"
                   aria-label="Pick a team to grant profiles"
                   @change="pickNewBindingTeam"
                 >
@@ -1637,26 +1637,26 @@ async function rotateToken(host: SandboxHost) {
 
     <!-- ── Machines: enrolled sandboxd instances ── -->
         <!-- Grants/host approval inbox: Pending + History tabs -->
-    <div v-if="changes.length || historyRows.length" class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-2">
+    <div v-if="changes.length || historyRows.length" class="notice-warning p-4 space-y-2">
       <div class="flex items-center justify-between gap-2">
         <h3 class="text-sm font-semibold tracking-tight">Grant approvals</h3>
         <div class="inline-flex rounded-lg bg-muted p-0.5">
           <button
             type="button"
             class="rounded-md px-3 py-1 text-[11.5px] font-medium"
-            :class="approvalsTab === 'pending' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'"
+            :class="approvalsTab === 'pending' ? 'bg-muted text-foreground' : 'text-muted-foreground'"
             @click="approvalsTab = 'pending'"
           >Pending <span class="mono text-[10px]">{{ changes.length }}</span></button>
           <button
             type="button"
             class="rounded-md px-3 py-1 text-[11.5px] font-medium"
-            :class="approvalsTab === 'history' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'"
+            :class="approvalsTab === 'history' ? 'bg-muted text-foreground' : 'text-muted-foreground'"
             @click="switchHistory"
           >History <span class="mono text-[10px]">{{ historyTotal }}</span></button>
         </div>
       </div>
 
-      <p v-if="grantsPendingHint" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">{{ grantsPendingHint }}</p>
+      <p v-if="grantsPendingHint" class="notice-warning px-3 py-2 text-[11px] text-warning dark:text-warning">{{ grantsPendingHint }}</p>
 
       <div class="space-y-0.5">
         <p v-if="approvalsTab === 'pending' && !changes.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">Queue is clear — new grant/revoke requests will appear here for approval</p>
@@ -1665,21 +1665,21 @@ async function rotateToken(host: SandboxHost) {
         <div
           v-for="(change, i) in approvalsTab === 'pending' ? changes : []"
           :key="'p-' + change.id"
-          class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-muted/60 text-[11.5px]"
+          class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-muted/40 text-[11.5px]"
         >
           <span
-            class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-medium"
-            :class="change.instance_id === 'grant' ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/12 text-red-700 dark:text-red-400'"
+            class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-lg font-mono text-[10px] font-medium"
+            :class="change.instance_id === 'grant' ? 'bg-success/10 text-success dark:text-success' : 'bg-destructive/10 text-destructive dark:text-destructive'"
           >{{ i + 1 }}</span>
           <div class="min-w-0 flex-1">
             <span v-if="change.host_id === 'resource-grants'" class="inline-flex items-center gap-1.5 flex-wrap">
-              <span class="font-medium" :class="changeGrantInfo(change).granted ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'">{{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
+              <span class="font-medium" :class="changeGrantInfo(change).granted ? 'text-success dark:text-success' : 'text-destructive dark:text-destructive'">{{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
               <span class="mono">{{ changeGrantInfo(change).profile }}</span>
               <span class="text-muted-foreground">{{ change.instance_id === 'grant' ? '→' : 'from' }}</span>
               <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
               <span class="text-muted-foreground">· by {{ change.requested_by }} · {{ formatDateTime(change.created_at) }}</span>
-              <span v-if="change.instance_id === 'revoke' && changeGrantInfo(change).queued_jobs" class="text-red-600 dark:text-red-400">· {{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</span>
-              <span v-if="change.instance_id === 'grant' && changeGrantInfo(change).pipelines != null" class="text-amber-600">· unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</span>
+              <span v-if="change.instance_id === 'revoke' && changeGrantInfo(change).queued_jobs" class="text-destructive dark:text-destructive">· {{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</span>
+              <span v-if="change.instance_id === 'grant' && changeGrantInfo(change).pipelines != null" class="text-warning">· unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</span>
             </span>
             <span v-else class="inline-flex items-center gap-1.5">
               <span class="mono">host config</span>
@@ -1698,10 +1698,10 @@ async function rotateToken(host: SandboxHost) {
           :key="'h-' + h.id"
           class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[11.5px]"
         >
-          <span class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-muted font-mono text-[10px] text-muted-foreground">·</span>
+          <span class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-lg bg-muted font-mono text-[10px] text-muted-foreground">·</span>
           <div class="min-w-0 flex-1">
             <span v-if="h.host_id === 'resource-grants'" class="inline-flex items-center gap-1.5 flex-wrap">
-              <span class="font-medium" :class="changeGrantInfo(h).granted ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'">{{ h.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
+              <span class="font-medium" :class="changeGrantInfo(h).granted ? 'text-success dark:text-success' : 'text-destructive dark:text-destructive'">{{ h.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
               <span class="mono">{{ changeGrantInfo(h).profile }}</span>
               <span class="text-muted-foreground">{{ h.instance_id === 'grant' ? '→' : 'from' }}</span>
               <span class="font-medium">{{ changeGrantInfo(h).team_id }}</span>
@@ -1712,7 +1712,7 @@ async function rotateToken(host: SandboxHost) {
             </span>
             <span v-if="h.decision_comment" class="text-muted-foreground">“{{ h.decision_comment }}”</span>
           </div>
-          <span class="inline-flex shrink-0 items-center rounded px-1.5 text-[10px] font-medium uppercase tracking-wide" :class="h.status === 'approved' ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/12 text-red-600 dark:text-red-400'">{{ h.status }}</span>
+          <span class="inline-flex shrink-0 items-center rounded px-1.5 text-[10px] font-medium uppercase tracking-wide" :class="h.status === 'approved' ? 'bg-success/10 text-success dark:text-success' : 'bg-destructive/10 text-destructive dark:text-destructive'">{{ h.status }}</span>
           <span class="shrink-0 text-muted-foreground">by {{ h.requested_by }} · decided by {{ h.approved_by || '—' }} · {{ formatDateTime(h.decided_at || h.created_at) }}</span>
         </div>
 
@@ -1745,7 +1745,7 @@ async function rotateToken(host: SandboxHost) {
           <p class="mt-0.5 text-[10.5px] text-muted-foreground">buz-sandboxd instances by host — each offers the platform catalog unless overridden.</p>
         </div>
         <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading…</div>
-        <div v-else-if="hosts.length === 0" class="rounded-xl border border-border/50 bg-card p-16 text-center text-muted-foreground">
+        <div v-else-if="hosts.length === 0" class="surface-card p-16 text-center text-muted-foreground">
           <Boxes class="h-10 w-10 mx-auto mb-3 text-muted-foreground/20" />
           <p class="text-sm">No sandbox hosts enrolled</p>
           <p class="text-xs mt-1">Enroll a (host_id, instance_id) pair, then point buz-sandboxd's BUZ_MANAGER_URL + token file at this Manager.</p>
@@ -1755,27 +1755,27 @@ async function rotateToken(host: SandboxHost) {
           <div
             v-for="host in hosts"
             :key="host.host_id + '/' + host.instance_id"
-            class="flex cursor-pointer flex-col gap-2 rounded-xl border bg-card p-4 hover:border-primary/40"
-            :class="detailHost?.instance_id === host.instance_id && detailHost?.host_id === host.host_id ? 'border-primary/60' : 'border-border/50'"
+            class="flex cursor-pointer flex-col gap-2 surface-card p-4 hover:bg-muted/40"
+            :class="detailHost?.instance_id === host.instance_id && detailHost?.host_id === host.host_id ? 'bg-muted' : ''"
             @click="openDetail(host)"
           >
             <div class="flex items-center justify-between gap-2">
               <p class="truncate text-sm font-medium">{{ host.host_id }} / {{ host.instance_id }}</p>
               <div class="flex shrink-0 items-center gap-2">
                 <span v-if="host.pushed" class="text-[11px] tabular-nums text-muted-foreground">v{{ host.applied_version }}<span v-if="host.applied_at"> · {{ formatDateTime(host.applied_at) }}</span></span>
-                <span v-else-if="host.desired_version > 0" class="text-[11px] font-medium tabular-nums text-amber-600">v{{ host.applied_version }} → v{{ host.desired_version }}</span>
+                <span v-else-if="host.desired_version > 0" class="text-[11px] font-medium tabular-nums text-warning">v{{ host.applied_version }} → v{{ host.desired_version }}</span>
                 <span
-                  class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
-                  :class="host.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
+                  class="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-muted/40 px-2 py-0.5 text-[11px] font-medium"
+                  :class="host.live ? 'text-success dark:text-success' : 'text-muted-foreground'"
                 >
-                  <span class="h-1.5 w-1.5 rounded-full" :class="host.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
+                  <span class="h-1.5 w-1.5 rounded-full" :class="host.live ? 'bg-success' : 'bg-muted-foreground/40'" />
                   {{ host.live ? 'online' : 'offline' }}
                 </span>
               </div>
             </div>
             <p class="text-xs text-muted-foreground">
-              <span v-if="host.pushed" class="font-medium text-emerald-600 dark:text-emerald-400">synced</span>
-              <span v-else-if="host.desired_version > 0" class="font-medium text-amber-600">drift</span>
+              <span v-if="host.pushed" class="font-medium text-success dark:text-success">synced</span>
+              <span v-else-if="host.desired_version > 0" class="font-medium text-warning">drift</span>
               <span v-else class="font-medium">no config</span>
               <span> · budget {{ host.max_resource_slots || '∞' }} slots<template v-if="!host.max_resource_slots"> <span class="text-muted-foreground/60">(platform default)</span></template></span>
             </p>
@@ -1784,13 +1784,13 @@ async function rotateToken(host: SandboxHost) {
               <span
                 v-for="t in offeredTierNames(host)"
                 :key="'tier-' + t"
-                class="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium"
+                class="rounded-lg bg-muted px-2 py-0.5 text-[11px] font-medium"
                 :class="host.desired_version > 0 ? '' : 'opacity-55'"
               >{{ t }}</span>
               <span
                 v-for="p in offeredProfileNames(host)"
                 :key="'size-' + p"
-                class="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium"
+                class="rounded-lg bg-muted px-2 py-0.5 text-[11px] font-medium"
                 :class="host.desired_version > 0 ? '' : 'opacity-55'"
               >{{ p }}</span>
             </div>
@@ -1820,26 +1820,26 @@ async function rotateToken(host: SandboxHost) {
 
     <!-- ── host detail dialog: desired configuration ── -->
     <div v-if="detailHost" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="detailHost = null">
-      <div class="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-lg">
-        <div class="shrink-0 border-b border-border/50 px-6 py-4">
+      <div class="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden surface-modal">
+        <div class="shrink-0 border-b border-border/40 px-6 py-4">
           <div class="flex items-start justify-between gap-3">
             <h3 class="min-w-0 truncate text-base font-semibold tracking-tight">
               {{ detailHost.host_id }} <span class="font-normal text-muted-foreground">/ {{ detailHost.instance_id }}</span>
             </h3>
             <div class="flex items-center gap-2 shrink-0">
               <span
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide"
-                :class="detailHost.pushed ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-amber-500/12 text-amber-600'"
+                class="inline-flex items-center rounded-lg px-2 py-0.5 text-xs font-medium uppercase tracking-wide"
+                :class="detailHost.pushed ? 'bg-success/10 text-success dark:text-success' : 'bg-warning/10 text-warning'"
                 :title="detailHost.pushed
                   ? `Applied version ${detailHost.applied_version}${detailHost.applied_at ? ` on ${formatDateTime(detailHost.applied_at)}` : ''}`
                   : `Version ${detailHost.desired_version} published but not yet fetched/applied`"
               >{{ detailHost.pushed ? 'pushed' : 'not pushed' }}</span>
               <span
-                class="inline-flex items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
-                :class="detailHost.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-muted/40 px-2 py-0.5 text-[11px] font-medium"
+                :class="detailHost.live ? 'text-success dark:text-success' : 'text-muted-foreground'"
                 :title="detailHost.last_fetch_at ? `Last config fetch ${formatDateTime(detailHost.last_fetch_at)}` : 'sandboxd has never fetched config from this Manager'"
               >
-                <span class="h-1.5 w-1.5 rounded-full" :class="detailHost.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
+                <span class="h-1.5 w-1.5 rounded-full" :class="detailHost.live ? 'bg-success' : 'bg-muted-foreground/40'" />
                 {{ detailHost.live ? 'online' : 'offline' }}
               </span>
               <UiButton size="sm" variant="ghost" @click="detailHost = null"><X class="h-4 w-4" /></UiButton>
@@ -1848,16 +1848,16 @@ async function rotateToken(host: SandboxHost) {
           <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
             <span
               class="inline-flex items-baseline gap-1.5 rounded-lg px-2 py-0.5 text-[10.5px] tabular-nums"
-              :class="detailHost.pushed ? 'border border-border/60' : 'bg-amber-500/12 text-amber-600'"
+              :class="detailHost.pushed ? 'bg-muted/40' : 'bg-warning/10 text-warning'"
               :title="detailHost.pushed
                 ? `Applied version ${detailHost.applied_version}${detailHost.applied_at ? ` on ${formatDateTime(detailHost.applied_at)}` : ''}`
                 : `Version ${detailHost.desired_version} published but not yet fetched/applied`"
             >
-              <span :class="detailHost.pushed ? 'text-muted-foreground' : 'text-amber-600/80'">applied</span>
+              <span :class="detailHost.pushed ? 'text-muted-foreground' : 'text-warning/80'">applied</span>
               <span class="font-medium">v{{ detailHost.applied_version }} / v{{ detailHost.desired_version }}</span>
             </span>
             <span
-              class="inline-flex items-baseline gap-1.5 rounded-lg border border-border/60 px-2 py-0.5 text-[10.5px] tabular-nums"
+              class="inline-flex items-baseline gap-1.5 rounded-lg bg-muted/40 px-2 py-0.5 text-[10.5px] tabular-nums"
               :title="detailHost.last_fetch_at ? `Last config fetch ${formatDateTime(detailHost.last_fetch_at)}` : 'sandboxd has never fetched config from this Manager'"
             >
               <span class="text-muted-foreground">last fetch</span>
@@ -1870,21 +1870,21 @@ async function rotateToken(host: SandboxHost) {
           <!-- ── capacity: the host's slot budget ── -->
           <section class="space-y-2">
             <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Capacity</h4>
-            <div class="rounded-xl border border-border/50 p-3">
+            <div class="rounded-xl border border-border/40 p-3">
               <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                 <span class="text-[12px] font-medium">Slot budget</span>
                 <input
                   v-model.number="budgetDraft"
                   type="number"
                   min="0"
-                  class="w-20 rounded-md border border-border/60 bg-background px-2 py-1 text-right text-xs tabular-nums outline-hidden focus:border-primary/50"
+                  class="w-20 rounded-xl border border-border bg-background px-2 py-1 text-right text-xs tabular-nums outline-hidden focus-visible:border-foreground/35"
                   aria-label="Slot budget in slots (0 = inherit the platform default)"
                   @keydown.enter.prevent="saveBudget"
                 />
                 <span class="text-[11px] text-muted-foreground">slots</span>
                 <span
                   v-if="normalizedBudget()"
-                  class="rounded bg-emerald-500/10 px-1.5 py-px text-[9.5px] text-emerald-600 dark:text-emerald-400"
+                  class="rounded-lg bg-success/10 px-1.5 py-px text-[9.5px] text-success dark:text-success"
                 >set on this host</span>
                 <span v-else class="rounded bg-muted px-1.5 py-px text-[9.5px] text-muted-foreground">
                   inherits platform default · {{ platformDefaultSlots || 'unlimited' }}
@@ -1908,12 +1908,12 @@ async function rotateToken(host: SandboxHost) {
           <!-- ── desired configuration ── -->
           <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Desired configuration</h4>
 
-          <div class="space-y-3 rounded-xl border border-border/50 p-4">
+          <div class="space-y-3 rounded-xl border border-border/40 p-4">
             <div class="flex items-baseline justify-between gap-2">
               <h5 class="text-[13px] font-semibold">Job sizes <span class="text-[11px] font-normal text-muted-foreground">(resource profiles)</span></h5>
               <button
                 type="button"
-                class="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                class="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
                 @click="toggleRawJson"
               >
                 {{ showRawJson ? '← Use form' : 'Raw JSON' }}
@@ -1930,7 +1930,7 @@ async function rotateToken(host: SandboxHost) {
                     <div
                       v-for="row in formProfiles"
                       :key="'legacy-' + row.name"
-                      class="relative w-44 cursor-pointer rounded-xl border border-amber-500/40 px-3 py-2.5 transition-colors hover:border-amber-500/70"
+                      class="relative w-44 cursor-pointer rounded-xl border px-3 py-2.5 transition-colors hover:"
                       role="button"
                       tabindex="0"
                       :title="`Host-defined '${row.name}' (${row.name === 'default' ? 'fallback override' : 'not in the catalog'}) — click to stop defining it here`"
@@ -1939,7 +1939,7 @@ async function rotateToken(host: SandboxHost) {
                     >
                       <span class="flex items-center gap-1.5 text-[12px] font-semibold">
                         {{ row.name }}
-                        <span class="rounded bg-amber-500/12 px-1 py-px text-[8.5px] font-medium text-amber-600">host-defined</span>
+                        <span class="rounded-lg bg-warning/10 px-1.5 py-px text-[8.5px] font-medium text-warning">host-defined</span>
                       </span>
                       <span class="mt-0.5 block font-mono text-[9.5px] text-muted-foreground">{{ specLine(row) }}</span>
                       <span class="mt-1 block text-[9.5px] text-muted-foreground/70">click to drop the host definition</span>
@@ -1948,7 +1948,7 @@ async function rotateToken(host: SandboxHost) {
                     <div
                       v-for="name in offeredCatalogSizes"
                       :key="name"
-                      class="relative w-44 cursor-pointer rounded-xl border border-border bg-background px-3 py-2.5 transition-colors hover:border-primary/50"
+                      class="relative w-44 cursor-pointer rounded-xl border border-border bg-background px-3 py-2.5 transition-colors hover:bg-muted/40"
                       role="button"
                       tabindex="0"
                       :title="`Offering '${name}' — click to exclude it from this host`"
@@ -1960,7 +1960,7 @@ async function rotateToken(host: SandboxHost) {
                     {{ name }}
                     <span
                       class="rounded px-1 py-px text-[8.5px] font-medium"
-                      :class="sizeGrantLabel(name).granted ? 'bg-emerald-500/12 text-emerald-600' : 'bg-amber-500/12 text-amber-600'"
+                      :class="sizeGrantLabel(name).granted ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
                     >{{ sizeGrantLabel(name).text }}</span>
                   </span>
                   <span
@@ -1972,7 +1972,7 @@ async function rotateToken(host: SandboxHost) {
                       <span class="mt-1 block text-[9.5px] text-muted-foreground/70">{{ sizeGrantLabel(name).granted ? `grant: ${sizeGrantLabel(name).text}` : 'no team may request it yet' }}</span>
                     </div>
                   </div>
-                  <p v-if="!offeredCatalogSizes.length && !formProfiles.length" class="text-[10px] leading-relaxed text-amber-600">
+                  <p v-if="!offeredCatalogSizes.length && !formProfiles.length" class="text-[10px] leading-relaxed text-warning">
                     This host excludes every catalog entry — only the <code class="mono">default</code> fallback applies to jobs here. Re-offer entries under <strong>Manage catalog profiles</strong>.
                   </p>
                   <!-- catalog exclusions: the exception list lives behind one manage entry -->
@@ -1982,7 +1982,7 @@ async function rotateToken(host: SandboxHost) {
                       Manage catalog profiles
                       <span v-if="excludedCatalogSizes.length" class="font-normal text-muted-foreground">— {{ excludedCatalogSizes.length }} excluded</span>
                     </UiButton>
-                    <div v-if="showCatalogPanel" class="mt-1.5 space-y-0.5 rounded-lg border border-border/50 p-1.5">
+                    <div v-if="showCatalogPanel" class="mt-1.5 space-y-0.5 surface-inset p-1.5">
                       <p class="type-meta px-1 pt-0.5">Checked = offered. Uncheck to exclude; excluded entries sit dimmed at the bottom until re-checked.</p>
                       <label
                         v-for="name in [...offeredCatalogSizes, ...excludedCatalogSizes]"
@@ -2001,7 +2001,7 @@ async function rotateToken(host: SandboxHost) {
                             {{ name }}
                             <span
                               class="rounded px-1 py-px text-[8.5px] font-medium"
-                              :class="sizeGrantLabel(name).granted ? 'bg-emerald-500/12 text-emerald-600' : 'bg-amber-500/12 text-amber-600'"
+                              :class="sizeGrantLabel(name).granted ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
                             >{{ sizeGrantLabel(name).text }}</span>
                           </span>
                           <span
@@ -2032,17 +2032,17 @@ async function rotateToken(host: SandboxHost) {
                 v-model="rawJsonText"
                 rows="14"
                 spellcheck="false"
-                class="w-full font-mono text-[11px] rounded-lg border border-border/60 bg-background p-2"
+                class="w-full font-mono text-[11px] rounded-xl border border-border bg-background p-2"
               ></textarea>
               <UiButton size="sm" variant="ghost" @click="applyRawJson"><Check class="h-3.5 w-3.5" /> Apply to form</UiButton>
             </template>
           </div>
 
           <!-- ── version history: reference material, folded by default ── -->
-          <div v-if="versionsLoading || versions.length" class="overflow-hidden rounded-xl border border-border/50">
+          <div v-if="versionsLoading || versions.length" class="overflow-hidden rounded-xl border border-border/40">
             <button
               type="button"
-              class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-muted/50"
+              class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-muted/40"
               :aria-expanded="showVersionHistory"
               @click="showVersionHistory = !showVersionHistory"
             >
@@ -2051,7 +2051,7 @@ async function rotateToken(host: SandboxHost) {
               <span class="font-normal text-muted-foreground">· {{ versionsLoading ? '…' : versions.length }}</span>
               <span class="ml-auto text-[10px] font-normal tabular-nums text-muted-foreground">v{{ detailHost.desired_version }} desired · v{{ detailHost.applied_version }} applied</span>
             </button>
-            <div v-if="showVersionHistory" class="border-t border-border/50">
+            <div v-if="showVersionHistory" class="border-t border-border/40">
               <div v-if="versionsLoading" class="px-3 py-2 type-meta">Loading…</div>
               <template v-else>
                 <ul class="divide-y divide-border/40 text-xs">
@@ -2083,17 +2083,17 @@ async function rotateToken(host: SandboxHost) {
         </div>
 
         <!-- ── dock: feedback + actions stay visible while the body scrolls ── -->
-        <div class="shrink-0 border-t border-border/50 px-6 py-3">
+        <div class="shrink-0 border-t border-border/40 px-6 py-3">
           <div class="flex items-center gap-3">
             <div class="min-w-0 flex-1">
               <div v-if="configProblems.length || configWarnings.length || configValid" class="max-h-24 space-y-1 overflow-y-auto">
                 <ul v-if="configProblems.length" class="list-inside list-disc space-y-0.5 text-xs text-destructive">
                   <li v-for="p in configProblems" :key="p">{{ p }}</li>
                 </ul>
-                <ul v-if="configWarnings.length" class="list-inside list-disc text-xs text-amber-600">
+                <ul v-if="configWarnings.length" class="list-inside list-disc text-xs text-warning">
                   <li v-for="w in configWarnings" :key="w">{{ w }}</li>
                 </ul>
-                <p v-if="configValid && !configProblems.length" class="flex items-start gap-1 text-xs text-emerald-600">
+                <p v-if="configValid && !configProblems.length" class="flex items-start gap-1 text-xs text-success">
                   <Check class="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>
                     Checks passed — profiles, tier images (digest-pinned) and network are accepted. Publish stages this as the next desired version; sandboxd picks it up on its next fetch.
@@ -2115,8 +2115,8 @@ async function rotateToken(host: SandboxHost) {
 
     <!-- ── platform defaults dialog ── -->
     <div v-if="showDefaultsDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showDefaultsDialog = false">
-      <div class="bg-card rounded-xl border border-border/60 w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-lg">
-        <div class="flex items-start justify-between gap-3 border-b border-border/50 px-6 py-4">
+      <div class="surface-modal w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+        <div class="flex items-start justify-between gap-3 border-b border-border/40 px-6 py-4">
           <div class="min-w-0">
             <h3 class="text-base font-semibold tracking-tight">Platform defaults</h3>
             <p class="mt-0.5 type-meta">
@@ -2128,7 +2128,7 @@ async function rotateToken(host: SandboxHost) {
 
         <div class="space-y-3 px-6 py-5">
           <!-- ── isolation levels: tier envelope images ── -->
-          <div class="rounded-lg border border-border/60 p-3.5">
+          <div class="surface-inset p-3.5">
             <div class="mb-2.5">
               <div class="text-[12.5px] font-semibold">Isolation levels</div>
               <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
@@ -2149,9 +2149,9 @@ async function rotateToken(host: SandboxHost) {
                   <input
                     v-model="row.image"
                     :placeholder="TIER_IMAGE_HINTS[row.name] ?? `no default for ${row.name}`"
-                    class="min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50"
+                    class="min-w-0 flex-1 rounded-xl border border-border bg-background px-2 py-1 font-mono text-xs outline-hidden focus-visible:border-foreground/35"
                   />
-                  <span v-if="isPinnedImage(row.image)" class="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] text-emerald-600 dark:text-emerald-400">
+                  <span v-if="isPinnedImage(row.image)" class="inline-flex shrink-0 items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[9.5px] text-success dark:text-success">
                     <Check class="h-2.5 w-2.5" /> digest pinned
                   </span>
                 </div>
@@ -2159,7 +2159,7 @@ async function rotateToken(host: SandboxHost) {
                   v-model="row.runtime"
                   list="oci-runtime-options"
                   placeholder="default (runc)"
-                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+                  class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35"
                 />
                 <UiButton
                   size="sm"
@@ -2176,7 +2176,7 @@ async function rotateToken(host: SandboxHost) {
           </div>
 
           <!-- ── job sizes: the resource-profile catalog ── -->
-          <div class="rounded-lg border border-border/60 p-3.5">
+          <div class="surface-inset p-3.5">
             <div class="mb-2.5">
               <div class="text-[12.5px] font-semibold">Job sizes</div>
               <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
@@ -2197,18 +2197,18 @@ async function rotateToken(host: SandboxHost) {
                     v-model="row.name"
                     :disabled="row.name === 'small'"
                     placeholder="large"
-                    class="w-full rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50 disabled:opacity-70"
+                    class="w-full rounded-xl border border-border bg-background px-2 py-1 font-mono text-xs outline-hidden focus-visible:border-foreground/35 disabled:opacity-70"
                   />
                 </div>
-                <input v-model="row.memory" placeholder="2g" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-                <input v-model="row.cpu" placeholder="2" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-                <input v-model.number="row.pids" type="number" min="1" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-                <input v-model.number="row.slots" type="number" min="1" max="32" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
+                <input v-model="row.memory" placeholder="2g" class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35" />
+                <input v-model="row.cpu" placeholder="2" class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35" />
+                <input v-model.number="row.pids" type="number" min="1" class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35" />
+                <input v-model.number="row.slots" type="number" min="1" max="32" class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35" />
                 <UiButton
                   v-if="row.name !== 'small'"
                   size="sm"
                   variant="ghost"
-                  class="h-8 w-8 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
+                  class="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                   :title="`Remove ${row.name || '(unnamed)'}`"
                   @click="removeDefaultProfileRow(i)"
                 ><Trash2 class="h-4 w-4" /></UiButton>
@@ -2220,7 +2220,7 @@ async function rotateToken(host: SandboxHost) {
           </div>
 
           <!-- ── platform-wide values hosts inherit ── -->
-          <div class="rounded-lg border border-border/60 p-3.5">
+          <div class="surface-inset p-3.5">
             <div class="mb-2.5">
               <div class="text-[12.5px] font-semibold">Inherited by every host</div>
               <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
@@ -2234,7 +2234,7 @@ async function rotateToken(host: SandboxHost) {
                   v-model="platformDefaultNetwork"
                   list="docker-network-options"
                   placeholder="bridge"
-                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+                  class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35"
                 />
                 <span class="mt-1 block text-[9.5px] text-muted-foreground/70">Inherited by hosts whose document leaves it unset — custom host networks can be typed.</span>
               </label>
@@ -2244,7 +2244,7 @@ async function rotateToken(host: SandboxHost) {
                   v-model.number="platformDefaultSlots"
                   type="number"
                   min="0"
-                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+                  class="w-full rounded-xl border border-border bg-background px-2 py-1 text-xs outline-hidden focus-visible:border-foreground/35"
                   title="Max slots across every runner on a host that hasn't set its own; 0 = unlimited"
                 />
                 <span class="mt-1 block text-[9.5px] text-muted-foreground/70">Fleet-wide cap for hosts without their own budget.</span>
@@ -2272,7 +2272,7 @@ async function rotateToken(host: SandboxHost) {
           <option value="none">none — no networking</option>
         </datalist>
 
-        <div class="flex justify-end gap-2 border-t border-border/50 px-6 py-3.5">
+        <div class="flex justify-end gap-2 border-t border-border/40 px-6 py-3.5">
           <UiButton size="sm" variant="ghost" @click="showDefaultsDialog = false">Cancel</UiButton>
           <UiButton size="sm" :loading="savingDefaults" @click="saveDefaults">Save defaults</UiButton>
         </div>
@@ -2281,7 +2281,7 @@ async function rotateToken(host: SandboxHost) {
 
     <!-- ── enroll / token dialog ── -->
     <div v-if="showEnroll" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showEnroll = false">
-      <div class="bg-card rounded-xl border border-border/60 p-5 w-full max-w-md space-y-3 shadow-lg">
+      <div class="surface-modal p-5 w-full max-w-md space-y-3">
         <template v-if="!issuedToken">
           <div class="flex items-center gap-2">
             <h3 class="min-w-0 truncate text-[13.5px] font-medium">Enroll sandbox host</h3>
@@ -2294,7 +2294,7 @@ async function rotateToken(host: SandboxHost) {
 
           <label class="block">
             <span class="mb-1 block text-xs font-medium">Host ID</span>
-            <input v-model="enrollHostId" list="known-host-ids" placeholder="web-1" class="w-full text-sm rounded-lg border border-border/60 bg-background px-3 py-2" @input="enrollError = ''" />
+            <input v-model="enrollHostId" list="known-host-ids" placeholder="web-1" class="w-full text-sm rounded-xl border border-border bg-background px-3 py-2" @input="enrollError = ''" />
           </label>
           <p class="text-[10.5px] leading-relaxed text-muted-foreground">
             A name for the <span class="text-foreground">machine running Docker</span> — your choice (hostname, inventory name…), just keep it consistent. A daemon identity <span class="font-mono text-foreground">sandboxd-&lt;host&gt;</span> is derived from it.
@@ -2311,7 +2311,7 @@ async function rotateToken(host: SandboxHost) {
               v-for="h in knownHostIds"
               :key="h"
               type="button"
-              class="rounded-full border border-border/60 px-2 py-px font-mono text-[10px] transition-colors hover:bg-muted"
+              class="rounded-lg bg-muted/40 px-2 py-px font-mono text-[10px] transition-colors hover:bg-muted/40"
               :title="`Use ${h}`"
               @click="enrollHostId = h"
             >{{ h }}</button>
@@ -2326,7 +2326,7 @@ async function rotateToken(host: SandboxHost) {
               <span class="font-normal text-[10px] text-muted-foreground">0 = inherit platform default ({{ platformDefaultSlots || 'unlimited' }})</span>
             </span>
             <div class="flex items-center gap-2">
-              <input v-model.number="enrollSlots" type="number" min="0" class="w-24 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm tabular-nums outline-hidden focus:border-primary/50" />
+              <input v-model.number="enrollSlots" type="number" min="0" class="w-24 rounded-xl border border-border bg-background px-3 py-2 text-sm tabular-nums outline-hidden focus-visible:border-foreground/35" />
               <span class="text-[11px] text-muted-foreground">slots</span>
             </div>
             <span class="mt-1 block text-[10.5px] leading-relaxed text-muted-foreground">
@@ -2343,12 +2343,12 @@ async function rotateToken(host: SandboxHost) {
             <div v-if="showAdvanced" class="mt-2 space-y-3 border-l border-border/40 pl-3">
               <label class="block">
                 <span class="mb-1 block text-xs font-medium">Instance ID</span>
-                <input v-model="enrollInstanceId" placeholder="sandboxd-web-1" class="w-full text-sm rounded-lg border border-border/60 bg-background px-3 py-2" @input="instanceEdited = true; enrollError = ''" />
+                <input v-model="enrollInstanceId" placeholder="sandboxd-web-1" class="w-full text-sm rounded-xl border border-border bg-background px-3 py-2" @input="instanceEdited = true; enrollError = ''" />
               </label>
               <p class="type-meta">One machine can run several daemons (rootful + rootless Docker, canary…) — each gets its own instance ID and token. Adjustable later in the host's detail dialog too.</p>
             </div>
           </div>
-          <p v-if="enrollError" class="text-xs text-red-500">{{ enrollError }}</p>
+          <p v-if="enrollError" class="text-xs text-destructive">{{ enrollError }}</p>
           <div class="flex justify-end gap-2 pt-1">
             <UiButton size="sm" variant="ghost" @click="showEnroll = false">Cancel</UiButton>
             <UiButton size="sm" :loading="creating" :disabled="!enrollHostId.trim() || !enrollInstanceId.trim()" @click="handleEnroll">Enroll &amp; get token</UiButton>
@@ -2359,28 +2359,28 @@ async function rotateToken(host: SandboxHost) {
             <h3 class="min-w-0 truncate text-[13.5px] font-medium"><KeyRound class="mr-1 inline h-4 w-4" />One-time token — deploy on {{ enrollHostId.trim() || 'the machine' }}</h3>
             <UiButton size="sm" variant="ghost" class="-mr-2 ml-auto" @click="showEnroll = false"><X class="h-4 w-4" /></UiButton>
           </div>
-          <div class="flex items-start gap-2 rounded-lg bg-amber-500/12 px-2.5 py-2 text-[10.5px] leading-relaxed text-amber-600">
+          <div class="flex items-start gap-2 rounded-xl bg-warning/10 px-2.5 py-2 text-[10.5px] leading-relaxed text-warning">
             <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
             <span>Shown <strong class="font-medium">only now</strong> — the Manager stores just its SHA-256. Lost it? <strong class="font-medium">Rotate token</strong> on the host card re-issues one.</span>
           </div>
           <ol class="list-none space-y-1.5 text-[11px] leading-relaxed">
             <li class="flex items-baseline gap-2">
-              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">1</span>
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-lg bg-muted text-[9px] text-muted-foreground">1</span>
               <span class="min-w-0">Copy the env block below and run <strong class="font-medium">buz-sandboxd</strong> on {{ enrollHostId.trim() || 'the machine' }} with it
                 <UiButton size="sm" variant="ghost" class="-ml-1" @click="copySnippet"><Copy class="h-3 w-3" /> {{ snippetCopied ? 'Copied' : 'Copy env' }}</UiButton>
                 <UiButton size="sm" variant="ghost" @click="copyToken"><Copy class="h-3 w-3" /> {{ tokenCopied ? 'Copied' : 'Token only' }}</UiButton>
               </span>
             </li>
             <li class="flex items-baseline gap-2">
-              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">2</span>
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-lg bg-muted text-[9px] text-muted-foreground">2</span>
               <span>It fetches config from this Manager on startup — no other setup needed.</span>
             </li>
             <li class="flex items-baseline gap-2">
-              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">3</span>
-              <span>The host card turns <span class="font-medium text-emerald-600 dark:text-emerald-400">online</span> here within seconds; until then it shows as enrolled.</span>
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-lg bg-muted text-[9px] text-muted-foreground">3</span>
+              <span>The host card turns <span class="font-medium text-success dark:text-success">online</span> here within seconds; until then it shows as enrolled.</span>
             </li>
           </ol>
-          <pre class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border/60 bg-background p-3 font-mono text-[10.5px] leading-relaxed">{{ bootstrapSnippet }}</pre>
+          <pre class="max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-background p-3 font-mono text-[10.5px] leading-relaxed">{{ bootstrapSnippet }}</pre>
           <div class="space-y-0.5">
             <div class="grid grid-cols-[10.5rem_1fr] items-baseline gap-2">
               <span class="truncate font-mono text-[9px] text-muted-foreground">BUZ_HOST_ID</span>

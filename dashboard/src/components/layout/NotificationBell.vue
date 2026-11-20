@@ -74,7 +74,7 @@ onUnmounted(() => {
   <div v-if="isOps" ref="rootEl" class="relative">
     <button
       type="button"
-      class="relative inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      class="relative inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
       :aria-label="items.length ? `${items.length} pending approvals` : 'Notifications'"
       :aria-expanded="open"
       aria-haspopup="menu"
@@ -83,18 +83,18 @@ onUnmounted(() => {
       <Bell class="h-4 w-4" />
       <span
         v-if="items.length"
-        class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9.5px] font-semibold leading-none text-white"
+        class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-lg bg-destructive px-1 text-[9.5px] font-semibold leading-none text-white"
       >{{ items.length > 9 ? '9+' : items.length }}</span>
     </button>
 
     <div
       v-if="open"
       role="menu"
-      class="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-border bg-background shadow-lg"
+      class="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden surface-overlay"
     >
-      <div class="flex items-center justify-between border-b border-border/60 px-3.5 py-2.5">
+      <div class="flex items-center justify-between border-b border-border/40 px-3.5 py-2.5">
         <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending approvals</p>
-        <span v-if="items.length" class="rounded-full bg-amber-500/15 px-1.5 text-[10px] font-semibold text-amber-600">{{ items.length }}</span>
+        <span v-if="items.length" class="rounded-lg bg-warning/10 px-1.5 text-[10px] font-semibold text-warning">{{ items.length }}</span>
       </div>
 
       <div class="max-h-72 overflow-y-auto py-1">
@@ -104,12 +104,12 @@ onUnmounted(() => {
           :key="c.id"
           type="button"
           role="menuitem"
-          class="flex w-full items-start gap-2.5 px-3.5 py-2 text-left hover:bg-muted"
+          class="flex w-full items-start gap-2.5 px-3.5 py-2 text-left hover:bg-muted/40"
           @click="openInbox"
         >
           <span
             class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded"
-            :class="c.host_id === 'resource-grants' && c.instance_id === 'grant' ? 'bg-emerald-500/12 text-emerald-600' : c.host_id === 'resource-grants' ? 'bg-red-500/12 text-red-600' : 'bg-muted text-muted-foreground'"
+            :class="c.host_id === 'resource-grants' && c.instance_id === 'grant' ? 'bg-success/10 text-success' : c.host_id === 'resource-grants' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'"
           >
             <Check v-if="c.host_id === 'resource-grants' && c.instance_id === 'grant'" class="h-3 w-3" />
             <X v-else-if="c.host_id === 'resource-grants'" class="h-3 w-3" />
@@ -121,7 +121,7 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div class="border-t border-border/60 px-3.5 py-2">
+      <div class="border-t border-border/40 px-3.5 py-2">
         <UiButton size="sm" variant="ghost" class="w-full justify-center" @click="openInbox">
           Open approvals inbox
         </UiButton>

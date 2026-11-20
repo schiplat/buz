@@ -378,7 +378,7 @@ onMounted(() => {
             <h1 class="text-base font-semibold tracking-tight truncate">{{ env?.name || 'Loading…' }}</h1>
             <span
               v-if="env?.protection_enabled"
-              class="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400 shrink-0"
+              class="inline-flex items-center rounded-lg bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning dark:text-warning shrink-0"
             >Protected</span>
           </div>
           <p v-if="env" class="mt-0.5 text-[12px] text-muted-foreground truncate">
@@ -395,12 +395,12 @@ onMounted(() => {
           <Pencil class="h-3.5 w-3.5" /> Edit
         </UiButton>
         <UiButton size="sm" variant="ghost" title="Delete" @click="deleteEnv">
-          <Trash2 class="h-3.5 w-3.5 text-red-500" />
+          <Trash2 class="h-3.5 w-3.5 text-destructive" />
         </UiButton>
       </div>
     </div>
 
-    <p v-if="error" class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400">
+    <p v-if="error" class="notice-danger px-3 py-2 text-[12px] text-destructive dark:text-destructive">
       {{ error }}
     </p>
 
@@ -408,7 +408,7 @@ onMounted(() => {
 
     <template v-else-if="env">
       <!-- Environment info (editable) -->
-      <div class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden">
+      <div class="surface-card overflow-hidden">
         <template v-if="!editingEnv">
           <div class="px-5 py-4 space-y-4">
             <div>
@@ -476,20 +476,20 @@ onMounted(() => {
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label class="block text-[12px] font-medium mb-1">Name <span class="text-red-500">*</span></label>
-                <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Production" />
+                <label class="block text-[12px] font-medium mb-1">Name <span class="text-destructive">*</span></label>
+                <input v-model="formName" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35" placeholder="Production" />
               </div>
               <div>
-                <label class="block text-[12px] font-medium mb-1">Slug <span class="text-red-500">*</span></label>
-                <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" placeholder="production" />
+                <label class="block text-[12px] font-medium mb-1">Slug <span class="text-destructive">*</span></label>
+                <input v-model="formSlug" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35" placeholder="production" />
               </div>
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Description</label>
-              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Optional" />
+              <input v-model="formDescription" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35" placeholder="Optional" />
             </div>
 
-            <div class="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
+            <div class="surface-inset p-3 space-y-3">
               <label class="flex items-start gap-2 cursor-pointer">
                 <input v-model="formProtectionEnabled" type="checkbox" class="mt-0.5" />
                 <span class="text-[12px] leading-snug">
@@ -501,7 +501,7 @@ onMounted(() => {
               </label>
               <div>
                 <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
-                <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+                <select v-model="formDeploymentConcurrency" class="field-select w-full">
                   <option value="off">off — no cross-pipeline serialization</option>
                   <option value="queue">queue — FIFO across pipelines</option>
                   <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
@@ -510,35 +510,35 @@ onMounted(() => {
               <template v-if="formProtectionEnabled">
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+                    <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-destructive">*</span></label>
+                    <select v-model="formMinTriggerRole" class="field-select w-full">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+                    <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-destructive">*</span></label>
+                    <select v-model="formMinApproveRole" class="field-select w-full">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Require approvals <span class="text-red-500">*</span></label>
+                    <label class="block text-[12px] font-medium mb-1">Require approvals <span class="text-destructive">*</span></label>
                     <input
                       v-model.number="formRequireApprovals"
                       type="number"
                       min="1"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                      class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                     />
                   </div>
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Timeout (seconds) <span class="text-red-500">*</span></label>
+                    <label class="block text-[12px] font-medium mb-1">Timeout (seconds) <span class="text-destructive">*</span></label>
                     <input
                       v-model.number="formApprovalTimeoutSeconds"
                       type="number"
                       min="60"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                      class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                     />
                   </div>
                 </div>
@@ -554,7 +554,7 @@ onMounted(() => {
               </template>
             </div>
 
-            <div class="flex justify-end gap-3 pt-2 border-t border-border/30">
+            <div class="flex justify-end gap-3 pt-2 border-t border-border/40">
               <UiButton variant="ghost" size="sm" :disabled="savingEnv" @click="cancelEditEnv">Cancel</UiButton>
               <UiButton size="sm" :disabled="savingEnv" @click="saveEnv">{{ savingEnv ? 'Saving…' : 'Save' }}</UiButton>
             </div>
@@ -562,8 +562,8 @@ onMounted(() => {
         </template>
       </div>
 
-      <div class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden">
-        <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30">
+      <div class="surface-card overflow-hidden">
+        <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/40">
           <div>
             <p class="text-[13px] font-medium">Host name / label allowlist</p>
             <p class="mt-0.5 text-[11px] text-muted-foreground">
@@ -572,22 +572,22 @@ onMounted(() => {
           </div>
         </div>
         <div class="p-5 space-y-3">
-          <p v-if="allowlistError" class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400">
+          <p v-if="allowlistError" class="notice-danger px-3 py-2 text-[12px] text-destructive dark:text-destructive">
             {{ allowlistError }}
           </p>
           <form v-if="auth.isPlatformAdmin" class="flex flex-col sm:flex-row gap-2" @submit.prevent="addHostAllowlistEntry">
-            <select v-model="allowlistKind" class="rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+            <select v-model="allowlistKind" class="field-select">
               <option value="name">Host name</option>
               <option value="label">Host label</option>
             </select>
-            <input v-model="allowlistValue" class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" :placeholder="allowlistKind === 'name' ? 'prod-01' : 'production'" />
+            <input v-model="allowlistValue" class="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35" :placeholder="allowlistKind === 'name' ? 'prod-01' : 'production'" />
             <UiButton type="submit" size="sm" :disabled="savingAllowlist || !allowlistValue.trim()"><Plus class="h-3.5 w-3.5" /> Add</UiButton>
           </form>
-          <div v-if="env.host_allowlist.length" class="divide-y divide-border/20 rounded-lg border border-border/30">
+          <div v-if="env.host_allowlist.length" class="divide-y divide-border/20 rounded-lg border border-border/40">
             <div v-for="entry in env.host_allowlist" :key="`${entry.kind}:${entry.value}`" class="flex items-center gap-3 px-3 py-2.5">
               <span class="mono-chip text-[10px] uppercase">{{ entry.kind }}</span>
               <code class="flex-1 break-all text-xs">{{ entry.value }}</code>
-              <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" title="Remove allowlist entry" @click="removeHostAllowlistEntry(entry)"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+              <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" title="Remove allowlist entry" @click="removeHostAllowlistEntry(entry)"><Trash2 class="h-3.5 w-3.5 text-destructive" /></UiButton>
             </div>
           </div>
           <p v-else class="py-3 text-center text-xs text-muted-foreground">
@@ -598,8 +598,8 @@ onMounted(() => {
 
       <!-- Variable | Secret overrides (left / right) -->
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs flex flex-col min-w-0">
-          <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30 shrink-0">
+        <div class="surface-card overflow-hidden flex flex-col min-w-0">
+          <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/40 shrink-0">
             <div class="min-w-0">
               <p class="text-[13px] font-medium">Variable overrides</p>
               <p class="text-[11px] text-muted-foreground mt-0.5 truncate">
@@ -623,7 +623,7 @@ onMounted(() => {
             <div class="overflow-x-auto">
               <table class="w-full text-[13px]">
                 <thead>
-                  <tr class="border-b border-border/30 bg-muted/10">
+                  <tr class="border-b border-border/40 bg-muted/40">
                     <th class="text-left px-4 py-2.5">
                       <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleVarSort('var_name')">
                         Variable
@@ -646,7 +646,7 @@ onMounted(() => {
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-border/20">
-                  <tr v-for="o in pagedOverrides" :key="o.var_id" class="hover:bg-muted/5">
+                  <tr v-for="o in pagedOverrides" :key="o.var_id" class="hover:bg-muted/40">
                     <td class="px-4 py-3">
                       <span
                         class="block font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -663,7 +663,7 @@ onMounted(() => {
                         title="Clear → Inherit"
                         @click="clearOverride(o)"
                       >
-                        <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                        <Trash2 class="h-3.5 w-3.5 text-destructive" />
                       </UiButton>
                     </td>
                   </tr>
@@ -680,8 +680,8 @@ onMounted(() => {
           </template>
         </div>
 
-        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs flex flex-col min-w-0">
-          <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30 shrink-0">
+        <div class="surface-card overflow-hidden flex flex-col min-w-0">
+          <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/40 shrink-0">
             <div class="min-w-0">
               <p class="text-[13px] font-medium">Secret overrides</p>
               <p class="text-[11px] text-muted-foreground mt-0.5 truncate">
@@ -705,7 +705,7 @@ onMounted(() => {
             <div class="overflow-x-auto">
               <table class="w-full text-[13px]">
                 <thead>
-                  <tr class="border-b border-border/30 bg-muted/10">
+                  <tr class="border-b border-border/40 bg-muted/40">
                     <th class="text-left px-4 py-2.5">
                       <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSecretSort('secret_name')">
                         Secret
@@ -728,7 +728,7 @@ onMounted(() => {
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-border/20">
-                  <tr v-for="o in pagedSecretOverrides" :key="o.secret_id" class="hover:bg-muted/5">
+                  <tr v-for="o in pagedSecretOverrides" :key="o.secret_id" class="hover:bg-muted/40">
                     <td class="px-4 py-3">
                       <span
                         class="block font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -747,7 +747,7 @@ onMounted(() => {
                         title="Clear → Inherit"
                         @click="clearSecretOverride(o)"
                       >
-                        <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                        <Trash2 class="h-3.5 w-3.5 text-destructive" />
                       </UiButton>
                     </td>
                   </tr>
@@ -770,27 +770,27 @@ onMounted(() => {
     <Teleport to="body">
       <div v-if="showOverrideDialog" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showOverrideDialog = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6">
           <h3 class="text-[15px] font-semibold mb-5">Add Variable override</h3>
           <p
             v-if="overrideDialogError"
-            class="mb-4 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400"
+            class="mb-4 notice-danger px-3 py-2 text-[12px] text-destructive dark:text-destructive"
           >
             {{ overrideDialogError }}
           </p>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium mb-1">Variable <span class="text-red-500">*</span></label>
-              <select v-model="overrideVarId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50">
+              <label class="block text-[12px] font-medium mb-1">Variable <span class="text-destructive">*</span></label>
+              <select v-model="overrideVarId" class="field-select w-full font-mono">
                 <option v-for="v in unboundVars" :key="v.id" :value="v.id">{{ v.name }}</option>
               </select>
             </div>
             <div>
-              <label class="block text-[12px] font-medium mb-1">Override value <span class="text-red-500">*</span></label>
-              <textarea v-model="overrideValue" rows="4" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 resize-y" />
+              <label class="block text-[12px] font-medium mb-1">Override value <span class="text-destructive">*</span></label>
+              <textarea v-model="overrideValue" rows="4" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35 resize-y" />
             </div>
           </div>
-          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" :disabled="savingOverride" @click="showOverrideDialog = false">Cancel</UiButton>
             <UiButton size="sm" :disabled="savingOverride" @click="saveOverride">{{ savingOverride ? 'Saving…' : 'Save' }}</UiButton>
           </div>
@@ -802,34 +802,34 @@ onMounted(() => {
     <Teleport to="body">
       <div v-if="showSecretOverrideDialog" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showSecretOverrideDialog = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6">
           <h3 class="text-[15px] font-semibold mb-5">Add Secret override</h3>
           <p
             v-if="secretOverrideDialogError"
-            class="mb-4 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400"
+            class="mb-4 notice-danger px-3 py-2 text-[12px] text-destructive dark:text-destructive"
           >
             {{ secretOverrideDialogError }}
           </p>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium mb-1">Secret <span class="text-red-500">*</span></label>
-              <select v-model="overrideSecretId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50">
+              <label class="block text-[12px] font-medium mb-1">Secret <span class="text-destructive">*</span></label>
+              <select v-model="overrideSecretId" class="field-select w-full font-mono">
                 <option v-for="s in unboundSecrets" :key="s.id" :value="s.id">{{ s.name }} ({{ s.kind }})</option>
               </select>
             </div>
             <div>
-              <label class="block text-[12px] font-medium mb-1">Override value <span class="text-red-500">*</span></label>
+              <label class="block text-[12px] font-medium mb-1">Override value <span class="text-destructive">*</span></label>
               <textarea
                 v-model="overrideSecretValue"
                 rows="4"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 resize-y"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35 resize-y"
                 placeholder="Enter the environment-specific secret value"
                 autocomplete="off"
               />
               <p class="mt-1 text-[11px] text-muted-foreground">Stored encrypted. Not shown again after save.</p>
             </div>
           </div>
-          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" :disabled="savingSecretOverride" @click="showSecretOverrideDialog = false">Cancel</UiButton>
             <UiButton size="sm" :disabled="savingSecretOverride" @click="saveSecretOverride">{{ savingSecretOverride ? 'Saving…' : 'Save' }}</UiButton>
           </div>

@@ -282,7 +282,7 @@ describe('PluginSources', () => {
     indexCopy.click()
     await flush()
     expect(writeText).toHaveBeenCalledWith('https://src.example/plugins/index.json')
-    expect(indexCopy.querySelector('svg.text-emerald-500')).toBeTruthy()
+    expect(indexCopy.querySelector('svg.text-success')).toBeTruthy()
 
     const mirrorCopy = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
       (b) => b.getAttribute('aria-label') === 'Copy mirror URL of alice',

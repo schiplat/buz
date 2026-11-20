@@ -80,24 +80,24 @@ async function handleSetup() {
 
       <form @submit.prevent="handleSetup" class="space-y-4">
         <div class="space-y-1.5">
-          <label class="type-label">Username <span class="text-red-500">*</span></label>
+          <label class="type-label">Username <span class="text-destructive">*</span></label>
           <input
             v-model="username"
             type="text"
             autocomplete="username"
             placeholder="admin"
-            class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+            class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
           />
         </div>
         <div class="space-y-1.5">
-          <label class="type-label">Password <span class="text-red-500">*</span></label>
+          <label class="type-label">Password <span class="text-destructive">*</span></label>
           <div class="relative">
             <input
               v-model="password"
               :type="showPassword ? 'text' : 'password'"
               autocomplete="new-password"
               placeholder="e.g. Str0ng!Pass"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
             <button
               type="button"
@@ -112,14 +112,14 @@ async function handleSetup() {
           </p>
         </div>
         <div class="space-y-1.5">
-          <label class="type-label">Confirm password <span class="text-red-500">*</span></label>
+          <label class="type-label">Confirm password <span class="text-destructive">*</span></label>
           <div class="relative">
             <input
               v-model="password2"
               :type="showPassword ? 'text' : 'password'"
               autocomplete="new-password"
               placeholder="Repeat password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
             <button
               type="button"

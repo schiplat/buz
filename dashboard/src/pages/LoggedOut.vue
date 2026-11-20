@@ -7,7 +7,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 
 <template>
   <div class="flex min-h-screen items-center justify-center bg-background px-4">
-    <div class="w-full max-w-sm rounded-2xl border border-border/50 bg-card p-8 text-center shadow-sm">
+    <div class="w-full max-w-sm surface-card p-8 text-center">
       <h1 class="text-lg font-semibold tracking-tight">Signed out</h1>
       <p class="type-meta mt-2">
         You have been signed out of Buz and your identity provider session has

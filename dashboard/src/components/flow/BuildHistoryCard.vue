@@ -107,13 +107,13 @@ watch(
 <template>
   <div
     :id="`hist-job-${job.id}`"
-    class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden"
+    class="surface-card overflow-hidden"
     :class="highlighted ? 'ring-2 ring-primary/40' : ''"
   >
     <!-- Run header bar -->
     <div
-      class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/20 transition-colors"
-      :class="job.status === 'running' ? 'bg-amber-500/4' : job.status === 'failed' ? 'bg-red-500/3' : ''"
+      class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/40 transition-colors"
+      :class="job.status === 'running' ? 'bg-warning/10' : job.status === 'failed' ? 'bg-destructive/10' : ''"
       @click="toggle"
     >
       <ChevronDown v-if="expanded" class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -122,39 +122,39 @@ watch(
       <span class="font-mono text-sm font-semibold tabular-nums text-foreground shrink-0">#{{ runNumber }}</span>
 
       <span
-        class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
+        class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-medium shrink-0"
         :class="job.status === 'success'
-          ? 'bg-emerald-500/10 text-emerald-600'
+          ? 'bg-success/10 text-success'
           : job.status === 'failed'
-            ? 'bg-red-500/10 text-red-500'
+            ? 'bg-destructive/10 text-destructive'
             : job.status === 'running'
-              ? 'bg-amber-500/10 text-amber-600'
+              ? 'bg-warning/10 text-warning'
               : job.status === 'cancelled'
-                ? 'bg-slate-500/10 text-slate-500'
-                : 'bg-slate-500/10 text-slate-500'"
+                ? 'bg-muted/40 text-muted-foreground'
+                : 'bg-muted/40 text-muted-foreground'"
       >
         <span class="w-1.5 h-1.5 rounded-full shrink-0"
           :class="job.status === 'success'
-            ? 'bg-emerald-500'
+            ? 'bg-success'
             : job.status === 'failed'
-              ? 'bg-red-500'
+              ? 'bg-destructive'
               : job.status === 'running'
-                ? 'bg-amber-400 animate-pulse'
-                : 'bg-slate-400'" />
+                ? 'bg-warning animate-pulse'
+                : 'bg-muted-foreground'" />
         {{ job.status }}
       </span>
 
       <!-- Verbose / Debug mode badges -->
       <span
         v-if="job.verbose_logs"
-        class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 shrink-0"
+        class="inline-flex items-center gap-1 rounded-lg bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info shrink-0"
         title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
       >
         <Info class="h-3 w-3" /> Verbose
       </span>
       <span
         v-if="job.debug_unredact"
-        class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 shrink-0"
+        class="inline-flex items-center gap-1 rounded-lg bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning shrink-0"
         title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
       >
         <Lock v-if="debugLogsRestricted" class="h-3 w-3" />
@@ -176,17 +176,17 @@ watch(
         <template v-for="(task, si) in tasks" :key="task.step_order">
           <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0 text-xs">→</span>
           <div
-            class="inline-flex items-center justify-center w-7 h-7 rounded-md text-xs font-bold tabular-nums transition-all shrink-0"
+            class="inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs font-bold tabular-nums transition-all shrink-0"
             :class="[
               getStepStatus(task.step_order) === 'pending'
-                ? 'bg-transparent text-slate-400 border border-slate-200'
+                ? 'bg-muted text-muted-foreground'
                 : getStepStatus(task.step_order) === 'success'
-                  ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-400/40 cursor-pointer hover:bg-emerald-500/20'
+                  ? 'bg-success/10 text-success cursor-pointer hover:bg-muted/40'
                   : getStepStatus(task.step_order) === 'failed'
-                    ? 'bg-red-500/10 text-red-500 border border-red-400/40 cursor-pointer hover:bg-red-500/20'
+                    ? 'bg-destructive/10 text-destructive cursor-pointer hover:bg-muted/40'
                     : getStepStatus(task.step_order) === 'running'
-                      ? 'bg-amber-500/10 text-amber-600 border border-amber-400/40 ring-1 ring-amber-400/20 cursor-pointer'
-                      : 'bg-slate-500/10 text-slate-500 border border-slate-300/50 cursor-pointer',
+                      ? 'bg-warning/10 text-warning cursor-pointer'
+                      : 'bg-muted text-muted-foreground cursor-pointer',
             ]"
             :title="`#${task.step_order + 1} ${task.name} (${fmtStepDuration(task.step_order)})`"
             @click.stop="getStepStatus(task.step_order) !== 'pending' && goToStep(task.step_order)"
@@ -198,12 +198,12 @@ watch(
     </div>
 
     <!-- Expanded detail: per-step log terminals -->
-    <div v-if="expanded" class="border-t border-border/40 bg-muted/10">
+    <div v-if="expanded" class="border-t border-border/40 bg-muted/40">
       <!-- Restricted: debug-job logs are platform-admin only -->
       <div v-if="debugLogsRestricted" class="flex items-start gap-2 px-4 py-3 text-xs text-muted-foreground">
-        <Lock class="mt-0.5 h-3.5 w-3.5 text-amber-600 shrink-0" />
+        <Lock class="mt-0.5 h-3.5 w-3.5 text-warning shrink-0" />
         <span>
-          This run used <span class="font-medium text-amber-700">Debug mode</span> — its logs are unredacted and
+          This run used <span class="font-medium text-warning">Debug mode</span> — its logs are unredacted and
           visible to <span class="font-medium">platform admins only</span>. Request access from an admin if you need to inspect it.
         </span>
       </div>
@@ -215,25 +215,25 @@ watch(
           :key="task.step_order"
           class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0"
           :class="expandedStep === task.step_order
-            ? 'bg-background text-foreground shadow-xs'
+            ? 'bg-background text-foreground'
             : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
           @click="toggleStepLog(task.step_order)"
         >
           <span class="w-1.5 h-1.5 rounded-full"
             :class="getStepStatus(task.step_order) === 'success'
-              ? 'bg-emerald-500'
+              ? 'bg-success'
               : getStepStatus(task.step_order) === 'failed'
-                ? 'bg-red-500'
+                ? 'bg-destructive'
                 : getStepStatus(task.step_order) === 'running'
-                  ? 'bg-amber-400 animate-pulse'
-                  : 'bg-slate-300'" />
+                  ? 'bg-warning animate-pulse'
+                  : 'bg-muted-foreground/40'" />
           {{ task.name }}
         </button>
       </div>
 
       <!-- Selected step log terminal -->
       <div v-if="expandedStep != null" class="px-4 pb-4">
-        <div class="rounded-lg border border-border/60 overflow-hidden" style="height: 280px">
+        <div class="surface-inset overflow-hidden" style="height: 280px">
           <StepLogPanel
             :logs="logs.filter(l => l.step_order === expandedStep)"
             :step-order="expandedStep"

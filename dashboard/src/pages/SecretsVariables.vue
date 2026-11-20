@@ -26,14 +26,14 @@ function go(tab: Tab) {
 <template>
   <div class="flex flex-col gap-5">
     <!-- Tab bar -->
-    <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/70 p-0.5">
+    <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/40 p-0.5">
       <button
         type="button"
         :class="
           cn(
             'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
             activeTab === 'secrets'
-              ? 'bg-background text-foreground shadow-xs'
+              ? 'bg-background text-foreground'
               : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
           )
         "
@@ -48,7 +48,7 @@ function go(tab: Tab) {
           cn(
             'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
             activeTab === 'variables'
-              ? 'bg-background text-foreground shadow-xs'
+              ? 'bg-background text-foreground'
               : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
           )
         "
@@ -64,7 +64,7 @@ function go(tab: Tab) {
           cn(
             'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
             activeTab === 'github-sync'
-              ? 'bg-background text-foreground shadow-xs'
+              ? 'bg-background text-foreground'
               : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
           )
         "

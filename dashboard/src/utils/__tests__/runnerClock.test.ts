@@ -46,8 +46,8 @@ describe('clockSkewInfo', () => {
 
 describe('clockToneClass', () => {
   it('maps tones to dashboard colors', () => {
-    expect(clockToneClass('danger')).toBe('text-red-500')
-    expect(clockToneClass('warn')).toBe('text-amber-500')
+    expect(clockToneClass('danger')).toBe('text-destructive')
+    expect(clockToneClass('warn')).toBe('text-warning')
     expect(clockToneClass('ok')).toBe('')
   })
 })

@@ -295,20 +295,20 @@ onMounted(loadSecrets)
     </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div v-else class="surface-card overflow-hidden">
       <!-- Filter bar -->
-      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+      <div class="px-5 py-3 border-b border-border/40 flex items-center gap-3 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search secrets…"
-          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-44 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
         />
-        <select v-model="filterTeam" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+        <select v-model="filterTeam" class="field-select-sm">
           <option value="">All teams</option>
           <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
         </select>
-        <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+        <select v-model="filterGithub" class="field-select-sm" title="Filter by GitHub sync status">
           <option value="">All GitHub status</option>
           <option value="needs_push">Needs push</option>
         </select>
@@ -320,7 +320,7 @@ onMounted(loadSecrets)
         <div class="overflow-x-auto">
           <table class="w-full text-[13px]">
             <thead>
-              <tr class="border-b border-border/30 bg-muted/10">
+              <tr class="border-b border-border/40 bg-muted/40">
                 <th class="text-left px-4 py-2.5 w-44 min-w-36">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
@@ -361,7 +361,7 @@ onMounted(loadSecrets)
               </tr>
             </thead>
             <tbody class="divide-y divide-border/20">
-              <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
+              <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/40 transition-colors">
                 <td class="px-4 py-3 w-44 min-w-36">
                   <div class="flex flex-col gap-1 min-w-0">
                     <span
@@ -370,7 +370,7 @@ onMounted(loadSecrets)
                     >{{ s.name }}</span>
                     <span
                       v-if="s.kind === 'registry'"
-                      class="inline-flex w-fit items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                      class="inline-flex w-fit items-center rounded-lg bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info dark:text-info"
                       title="Deprecated registry credentials kind; retained for existing secrets only"
                     >Registry (Deprecated)</span>
                     <span
@@ -380,7 +380,7 @@ onMounted(loadSecrets)
                     >Aliyun OSS (Deprecated)</span>
                     <span
                       v-else
-                      class="inline-flex w-fit items-center rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                      class="inline-flex w-fit items-center rounded-md bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
                       title="Generic secret for plugin with, step env, or config.render templates"
                     >Generic</span>
                   </div>
@@ -390,7 +390,7 @@ onMounted(loadSecrets)
                     <code class="mono-chip text-xs select-all break-all whitespace-pre-wrap">{{ s.value }}</code>
                     <span
                       v-if="s.reencrypt_required"
-                      class="text-[10px] font-medium text-amber-600"
+                      class="text-[10px] font-medium text-warning"
                     >
                       Re-save required (legacy plaintext is no longer accepted)
                     </span>
@@ -400,7 +400,7 @@ onMounted(loadSecrets)
                 <td class="px-5 py-3 text-xs whitespace-nowrap">
                   <span
                     v-if="s.share_with_team"
-                    class="inline-flex items-center rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400"
+                    class="inline-flex items-center rounded-lg bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success dark:text-success"
                     title="Same-team pipelines may reference this secret without an explicit binding"
                   >Share with team</span>
                   <span v-else class="text-muted-foreground/70" title="Requires explicit bind or step reference">Explicit</span>
@@ -418,7 +418,7 @@ onMounted(loadSecrets)
                   <div class="flex items-center justify-end gap-1">
                     <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openGithub(s)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
                     <UiButton v-if="auth.hasTeamRole(s.team_id, 'maintainer')" variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton v-if="auth.hasTeamRole(s.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                    <UiButton v-if="auth.hasTeamRole(s.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-destructive" /></UiButton>
                   </div>
                 </td>
               </tr>
@@ -443,16 +443,16 @@ onMounted(loadSecrets)
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
         <div class="fixed inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+        <div class="relative z-10 w-full max-w-md mx-4 my-auto surface-modal flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
           <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Update Secret' : 'New Secret' }}</h3>
           <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-destructive">*</span></label>
               <input
                 :value="formName"
                 :disabled="!!editing"
                 @input="onNameInput"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono uppercase outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono uppercase outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:bg-muted/40 disabled:cursor-not-allowed"
                 placeholder="POSTGRES_PASSWORD"
               />
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
@@ -462,10 +462,10 @@ onMounted(loadSecrets)
               </p>
             </div>
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Team <span class="text-red-500">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Team <span class="text-destructive">*</span></label>
               <select
                 v-model="formTeamId"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="field-select w-full"
               >
                 <option disabled value="">Select a team</option>
                 <option v-for="t in manageableTeams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
@@ -473,10 +473,10 @@ onMounted(loadSecrets)
               <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Share with team is enabled.</p>
             </div>
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Kind <span class="text-red-500">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Kind <span class="text-destructive">*</span></label>
               <select
                 v-model="formKind"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="field-select w-full"
               >
                 <option value="generic">Generic — plugin with / env / config.render</option>
                 <option v-if="editingLegacyKind === 'registry'" value="registry">Registry (Deprecated)</option>
@@ -485,7 +485,7 @@ onMounted(loadSecrets)
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
                 New secrets are Generic. Store one credential or URL per secret and reference it in plugin inputs.
               </p>
-              <p v-if="editingLegacyKind" class="text-[10px] text-amber-600 mt-1 leading-relaxed">
+              <p v-if="editingLegacyKind" class="text-[10px] text-warning mt-1 leading-relaxed">
                 Deprecated kind: saving keeps the original kind unless you explicitly select Generic.
                 Do not pass old credentials JSON directly as a plugin password. Save the username and password
                 separately as Generic secrets for docker-login. For config-fetch, save the full download URL
@@ -515,16 +515,16 @@ onMounted(loadSecrets)
             </div>
             <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">
-                Value <span class="text-red-500">*</span>
+                Value <span class="text-destructive">*</span>
                 <span v-if="editing && !editing.reencrypt_required" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
-                <span v-else-if="editing?.reencrypt_required" class="text-amber-600 font-normal ml-1">(required — re-encrypt)</span>
+                <span v-else-if="editing?.reencrypt_required" class="text-warning font-normal ml-1">(required — re-encrypt)</span>
               </label>
               <div class="relative">
                 <textarea
                   v-model="formValue"
                   rows="6"
                   spellcheck="false"
-                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-14 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-30"
+                  class="w-full rounded-xl border border-border bg-background px-3 py-2 pr-14 text-sm font-mono outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 resize-y min-h-30"
                   :style="showValue ? '' : '-webkit-text-security: disc'"
                   :placeholder="valuePlaceholder"
                 />
@@ -532,7 +532,7 @@ onMounted(loadSecrets)
                   {{ showValue ? 'Hide' : 'Show' }}
                 </button>
               </div>
-              <p v-if="editing?.reencrypt_required" class="text-[10px] text-amber-600 mt-1.5">
+              <p v-if="editing?.reencrypt_required" class="text-[10px] text-warning mt-1.5">
                 This row is not valid ciphertext. Enter the secret again to encrypt it at rest.
               </p>
               <p class="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
@@ -541,7 +541,7 @@ onMounted(loadSecrets)
                 in plugin <code class="mono-chip text-[10px]">with</code>, step <code class="mono-chip text-[10px]">env</code>,
                 or <code class="mono-chip text-[10px]">config.render</code> templates.
               </p>
-              <details class="mt-3 rounded-lg border border-border/50 bg-muted/30">
+              <details class="mt-3 surface-inset">
                 <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground">
                   Private registry — docker-login plugin
                 </summary>
@@ -555,7 +555,7 @@ onMounted(loadSecrets)
                   <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ DOCKER_LOGIN_EXAMPLE }}</pre>
                 </div>
               </details>
-              <details class="mt-2 rounded-lg border border-border/50 bg-muted/30">
+              <details class="mt-2 surface-inset">
                 <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground">
                   Config download — config-fetch plugin
                 </summary>
@@ -573,7 +573,7 @@ onMounted(loadSecrets)
               </details>
             </div>
           </div>
-          <div class="shrink-0 flex items-center justify-end gap-3 px-6 py-5 border-t border-border/30">
+          <div class="shrink-0 flex items-center justify-end gap-3 px-6 py-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving">Cancel</UiButton>
             <UiButton size="sm" @click="handleSave" :disabled="saving">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
           </div>

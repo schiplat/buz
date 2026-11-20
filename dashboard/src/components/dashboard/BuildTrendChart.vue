@@ -160,13 +160,13 @@ function pointTooltip(p: DailyBuildPoint): string {
         <p class="type-eyebrow">Builds</p>
         <p class="mt-1 text-sm font-semibold tracking-tight">Daily build trend</p>
       </div>
-      <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
+      <div class="flex shrink-0 items-center gap-0.5 rounded-xl bg-muted/40 p-0.5">
         <button
           v-for="d in DAY_OPTIONS"
           :key="d"
           type="button"
           class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-          :class="days === d ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+          :class="days === d ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'"
           @click="emit('update:days', d)"
         >
           {{ d }}d

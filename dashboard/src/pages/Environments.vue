@@ -184,13 +184,13 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <p v-if="error" class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400">
+    <p v-if="error" class="notice-danger px-3 py-2 text-[12px] text-destructive dark:text-destructive">
       {{ error }}
     </p>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div v-else class="surface-card overflow-hidden">
       <div v-if="environments.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Layers class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No environments yet</p>
@@ -199,7 +199,7 @@ onMounted(() => {
       <template v-else>
         <table class="w-full text-[13px]">
           <thead>
-            <tr class="border-b border-border/30 bg-muted/10">
+            <tr class="border-b border-border/40 bg-muted/40">
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Name</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Slug</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Protection</th>
@@ -214,7 +214,7 @@ onMounted(() => {
             <tr
               v-for="e in pageItems"
               :key="e.id"
-              class="hover:bg-muted/5 transition-colors cursor-pointer"
+              class="hover:bg-muted/40 transition-colors cursor-pointer"
               @click="openDetail(e)"
             >
               <td class="px-5 py-3">
@@ -227,7 +227,7 @@ onMounted(() => {
               <td class="px-5 py-3">
                 <span
                   v-if="e.protection_enabled"
-                  class="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                  class="inline-flex items-center rounded-lg bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning dark:text-warning"
                 >Protected</span>
                 <span v-else class="text-xs text-muted-foreground/40">—</span>
               </td>
@@ -247,7 +247,7 @@ onMounted(() => {
                 <div v-if="auth.isPlatformAdmin" class="inline-flex gap-1">
                   <UiButton variant="ghost" size="sm" @click="openEditEnv(e)" title="Environment host allowlist"
               ><Pencil class="h-3.5 w-3.5" /></UiButton>
-                  <UiButton variant="ghost" size="sm" @click="deleteEnv(e)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                  <UiButton variant="ghost" size="sm" @click="deleteEnv(e)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-destructive" /></UiButton>
                 </div>
               </td>
             </tr>
@@ -267,23 +267,23 @@ onMounted(() => {
     <Teleport to="body">
       <div v-if="showEnvDialog" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showEnvDialog = false" />
-        <div class="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
+        <div class="relative z-10 w-full max-w-lg mx-4 surface-modal p-6 max-h-[90vh] overflow-y-auto">
           <h3 class="text-[15px] font-semibold mb-5">{{ editingEnv ? 'Edit Environment' : 'New Environment' }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium mb-1">Name <span class="text-red-500">*</span></label>
-              <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Production" />
+              <label class="block text-[12px] font-medium mb-1">Name <span class="text-destructive">*</span></label>
+              <input v-model="formName" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35" placeholder="Production" />
             </div>
             <div>
-              <label class="block text-[12px] font-medium mb-1">Slug <span class="text-red-500">*</span></label>
-              <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" placeholder="production" />
+              <label class="block text-[12px] font-medium mb-1">Slug <span class="text-destructive">*</span></label>
+              <input v-model="formSlug" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35" placeholder="production" />
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Description</label>
-              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Optional" />
+              <input v-model="formDescription" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35" placeholder="Optional" />
             </div>
 
-            <div v-if="auth.isPlatformAdmin" class="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
+            <div v-if="auth.isPlatformAdmin" class="surface-inset p-3 space-y-3">
               <label class="flex items-start gap-2 cursor-pointer">
                 <input v-model="formProtectionEnabled" type="checkbox" class="mt-0.5" />
                 <span class="text-[12px] leading-snug">
@@ -295,7 +295,7 @@ onMounted(() => {
             </label>
             <div>
               <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
-              <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+              <select v-model="formDeploymentConcurrency" class="field-select w-full">
                 <option value="off">off — do not serialize across pipelines</option>
                 <option value="queue">queue — FIFO across pipelines</option>
                 <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
@@ -304,35 +304,35 @@ onMounted(() => {
             <template v-if="formProtectionEnabled">
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+                    <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-destructive">*</span></label>
+                    <select v-model="formMinTriggerRole" class="field-select w-full">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
+                    <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-destructive">*</span></label>
+                    <select v-model="formMinApproveRole" class="field-select w-full">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Require approvals <span class="text-red-500">*</span></label>
+                    <label class="block text-[12px] font-medium mb-1">Require approvals <span class="text-destructive">*</span></label>
                     <input
                       v-model.number="formRequireApprovals"
                       type="number"
                       min="1"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                      class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                     />
                   </div>
                   <div>
-                    <label class="block text-[12px] font-medium mb-1">Timeout (seconds) <span class="text-red-500">*</span></label>
+                    <label class="block text-[12px] font-medium mb-1">Timeout (seconds) <span class="text-destructive">*</span></label>
                     <input
                       v-model.number="formApprovalTimeoutSeconds"
                       type="number"
                       min="60"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                      class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                     />
                   </div>
                 </div>
@@ -348,7 +348,7 @@ onMounted(() => {
               </template>
             </div>
           </div>
-          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" :disabled="savingEnv" @click="showEnvDialog = false">Cancel</UiButton>
             <UiButton size="sm" :disabled="savingEnv" @click="saveEnv">{{ savingEnv ? 'Saving…' : 'Save' }}</UiButton>
           </div>

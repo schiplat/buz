@@ -117,7 +117,7 @@ onUnmounted(() => {
 
 <template>
   <header
-    class="shell-inset sticky top-0 z-10 flex h-14 items-center justify-between gap-4 bg-background/90 backdrop-blur-md"
+    class="shell-inset sticky top-0 z-10 flex h-14 items-center justify-between gap-4 bg-background backdrop-blur-md"
   >
     <div class="flex min-w-0 items-center gap-3">
       <UiButton
@@ -141,7 +141,7 @@ onUnmounted(() => {
       <div ref="menuRoot" class="relative">
         <button
           type="button"
-          class="inline-flex items-center gap-2 rounded-full py-1 pl-1.5 pr-2.5 text-sm transition-colors hover:bg-muted"
+          class="inline-flex items-center gap-2 rounded-xl py-1 pl-1.5 pr-2.5 text-sm transition-colors hover:bg-muted/40"
           :aria-expanded="menuOpen"
           aria-haspopup="menu"
           @click.stop="menuOpen = !menuOpen"
@@ -159,12 +159,12 @@ onUnmounted(() => {
         <div
           v-if="menuOpen"
           role="menu"
-          class="absolute right-0 top-full z-50 mt-1.5 w-44 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-lg"
+          class="absolute right-0 top-full z-50 mt-1.5 w-44 overflow-hidden surface-overlay py-1"
         >
           <button
             type="button"
             role="menuitem"
-            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted/40"
             @click="openChangePassword"
           >
             <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
@@ -173,7 +173,7 @@ onUnmounted(() => {
           <button
             type="button"
             role="menuitem"
-            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted/40"
             @click="handleLogout"
           >
             <LogOut class="h-3.5 w-3.5 text-muted-foreground" />
@@ -190,7 +190,7 @@ onUnmounted(() => {
       class="fixed inset-0 z-50 flex items-center justify-center"
     >
       <div class="absolute inset-0 bg-black/50" @click="closePasswordDialog" />
-      <div class="relative z-10 w-full max-w-sm rounded-xl border border-border bg-background p-6 shadow-2xl">
+      <div class="surface-modal relative z-10 w-full max-w-sm p-6">
         <div class="mb-4 flex items-center gap-2">
           <User class="h-4 w-4 text-muted-foreground" />
           <h2 class="text-base font-semibold">Change password</h2>
@@ -198,37 +198,37 @@ onUnmounted(() => {
         <form class="space-y-3.5" @submit.prevent="submitChangePassword">
           <div>
             <label class="type-label block mb-1.5">
-              Current password <span class="text-red-500">*</span>
+              Current password <span class="text-destructive">*</span>
             </label>
             <input
               v-model="currentPassword"
               type="password"
               autocomplete="current-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="Enter current password"
             />
           </div>
           <div>
             <label class="type-label block mb-1.5">
-              New password <span class="text-red-500">*</span>
+              New password <span class="text-destructive">*</span>
             </label>
             <input
               v-model="newPassword"
               type="password"
               autocomplete="new-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="At least 6 characters"
             />
           </div>
           <div>
             <label class="type-label block mb-1.5">
-              Confirm new password <span class="text-red-500">*</span>
+              Confirm new password <span class="text-destructive">*</span>
             </label>
             <input
               v-model="confirmPassword"
               type="password"
               autocomplete="new-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="Re-enter new password"
             />
           </div>

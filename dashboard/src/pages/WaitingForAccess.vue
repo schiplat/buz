@@ -77,7 +77,7 @@ onUnmounted(() => {
 
 <template>
   <div class="flex min-h-screen items-center justify-center bg-background px-6 py-12">
-    <div class="w-full max-w-md rounded-2xl border border-border/50 bg-card p-8 text-center shadow-xs">
+    <div class="w-full max-w-md surface-card p-8 text-center">
       <div class="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-muted text-muted-foreground">
         <Clock class="h-5 w-5" />
       </div>

@@ -473,15 +473,15 @@ onUnmounted(() => {
       Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab. A source may also publish reviews.json beside its index — the review ledger (which content hashes were human-reviewed) — distinct from the index itself (what exists and where).
     </p>
 
-    <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div class="flex items-center justify-between px-5 py-4 border-b border-border/50">
+    <section class="surface-card overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-border/40">
         <h2 class="text-sm font-semibold">Configured sources</h2>
         <UiButton size="sm" @click="showAddSource = !showAddSource">
           {{ showAddSource ? 'Cancel' : 'Add source' }}
         </UiButton>
       </div>
 
-      <div v-if="showAddSource" class="space-y-3 border-b border-border/50 bg-muted/20 px-5 py-4">
+      <div v-if="showAddSource" class="space-y-3 border-b border-border/40 bg-muted/40 px-5 py-4">
         <div class="grid gap-3 sm:grid-cols-2">
           <div>
             <label class="type-label block mb-1.5">Name</label>
@@ -517,19 +517,19 @@ onUnmounted(() => {
                 <span class="text-sm font-medium">{{ source.name }}</span>
                 <span
                   v-if="source.auto_enable"
-                  class="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary"
+                  class="rounded-lg bg-primary/10 px-2 py-0.5 text-[11px] text-primary"
                 >auto-enable</span>
               </div>
               <div class="mt-0.5 flex items-center gap-1">
                 <p class="min-w-0 truncate font-mono text-[11px] text-muted-foreground" :title="source.url">{{ source.url }}</p>
                 <button
                   type="button"
-                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
                   :aria-label="`Copy index URL of ${source.name}`"
                   title="Copy index URL"
                   @click="copyUrl(source.url)"
                 >
-                  <Check v-if="copiedUrl === source.url" class="h-3 w-3 text-emerald-500" aria-hidden="true" />
+                  <Check v-if="copiedUrl === source.url" class="h-3 w-3 text-success" aria-hidden="true" />
                   <Copy v-else class="h-3 w-3" aria-hidden="true" />
                 </button>
               </div>
@@ -540,19 +540,19 @@ onUnmounted(() => {
                 >mirror: {{ source.mirror_url }}</p>
                 <button
                   type="button"
-                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
                   :aria-label="`Copy mirror URL of ${source.name}`"
                   title="Copy mirror URL"
                   @click="copyUrl(source.mirror_url!)"
                 >
-                  <Check v-if="copiedUrl === source.mirror_url" class="h-3 w-3 text-emerald-500" aria-hidden="true" />
+                  <Check v-if="copiedUrl === source.mirror_url" class="h-3 w-3 text-success" aria-hidden="true" />
                   <Copy v-else class="h-3 w-3" aria-hidden="true" />
                 </button>
               </div>
               <p
                 v-if="mirrorChecks[source.id]"
                 class="mt-0.5 text-[11px]"
-                :class="mirrorChecks[source.id].status === 'in-sync' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"
+                :class="mirrorChecks[source.id].status === 'in-sync' ? 'text-success dark:text-success' : 'text-warning dark:text-warning'"
               >
                 {{ mirrorCheckText(source) }}
                 <span
@@ -562,7 +562,7 @@ onUnmounted(() => {
               </p>
               <p
                 class="mt-0.5 text-[11px]"
-                :class="source.last_sync_error ? 'text-red-500' : 'text-muted-foreground/70'"
+                :class="source.last_sync_error ? 'text-destructive' : 'text-muted-foreground/70'"
               >{{ syncState(source) }}</p>
               <p
                 v-if="source.last_index_sequence !== null"
@@ -581,7 +581,7 @@ onUnmounted(() => {
                 </div>
                 <p
                   class="mt-1 text-[11px]"
-                  :class="progressFailed(source) ? 'text-red-500' : 'text-muted-foreground/70'"
+                  :class="progressFailed(source) ? 'text-destructive' : 'text-muted-foreground/70'"
                 >{{ progressLabel(source) }}</p>
               </div>
             </div>
@@ -619,7 +619,7 @@ onUnmounted(() => {
 
     <!-- ── Platform settings (line-free: hierarchy via spacing, captions,
          and the inputs' own borders) ── -->
-    <section class="rounded-xl border border-border/50 bg-card px-6 py-5">
+    <section class="surface-card px-6 py-5">
       <div class="flex items-baseline justify-between gap-4">
         <h2 class="text-sm font-semibold">Settings</h2>
         <p class="text-[11px] text-muted-foreground">
@@ -636,7 +636,7 @@ onUnmounted(() => {
         <template v-for="key in group.keys" :key="key">
           <div
             v-if="settingByKey(key)"
-            class="mt-3 rounded-lg px-3 py-2 -mx-3 transition-shadow duration-500"
+            class="mt-3 rounded-xl px-3 py-2 -mx-3 transition-shadow duration-500"
             :class="focusedKey === key ? 'setting-pulse' : ''"
             :data-setting-row="key"
           >
@@ -646,7 +646,7 @@ onUnmounted(() => {
               </h3>
               <span
                 v-if="settingByKey(key)!.overridden"
-                class="rounded-full bg-primary/10 px-1.5 py-px text-[10px] text-primary"
+                class="rounded-lg bg-primary/10 px-1.5 py-px text-[10px] text-primary"
               >overridden</span>
             </div>
             <p
@@ -664,7 +664,7 @@ onUnmounted(() => {
                 :aria-checked="settingByKey(key)!.value === 'true'"
                 :disabled="savingSetting === key"
                 :class="[
-                  'relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full transition-colors',
+                  'relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-lg transition-colors',
                   settingByKey(key)!.value === 'true' ? 'bg-primary' : 'bg-muted-foreground/25',
                   savingSetting === key ? 'opacity-60' : '',
                 ]"
@@ -673,7 +673,7 @@ onUnmounted(() => {
               >
                 <span
                   :class="[
-                    'inline-block h-4 w-4 rounded-full bg-background shadow transition-transform',
+                    'inline-block h-4 w-4 rounded-lg bg-background transition-transform',
                     settingByKey(key)!.value === 'true' ? 'translate-x-5' : 'translate-x-0.5',
                   ]"
                 />
@@ -696,16 +696,16 @@ onUnmounted(() => {
                   type="text"
                   :placeholder="settingsMeta[key]?.placeholder ?? settingByKey(key)!.default"
                   :class="[
-                    'rounded-lg border border-border bg-input px-2.5 py-1.5 font-mono text-xs outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15',
+                    'rounded-xl border border-border bg-input px-2.5 py-1.5 font-mono text-xs outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15',
                     settingsMeta[key]?.narrow ? 'w-20' : 'w-full',
-                    justSaved === key ? 'border-green-500/50' : '',
+                    justSaved === key ? 'ring-2 ring-success/30' : '',
                   ]"
                   :data-testid="`input-${key}`"
                 />
                 <span v-if="settingsMeta[key]?.unit" class="text-xs text-muted-foreground">
                   {{ settingsMeta[key]?.unit }}
                 </span>
-                <span v-if="justSaved === key" class="text-xs text-green-600 dark:text-green-400">✓</span>
+                <span v-if="justSaved === key" class="text-xs text-success dark:text-success">✓</span>
                 <button
                   v-if="settingDrafts[key] !== settingByKey(key)!.value"
                   type="button"
@@ -716,7 +716,7 @@ onUnmounted(() => {
                 <button
                   v-if="settingByKey(key)!.overridden"
                   type="button"
-                  class="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  class="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
                   title="Reset to the manager.toml default"
                   :data-testid="`reset-${key}`"
                   :disabled="savingSetting === key"
@@ -730,7 +730,7 @@ onUnmounted(() => {
               >{{ settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default }}</p>
               <p
                 v-if="key === 'plugin_reviewed_manifest' && ['missing', 'unreadable'].includes(settingByKey(key)!.fileState ?? '')"
-                class="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
+                class="mt-1 text-[11px] text-warning dark:text-warning"
                 data-testid="manifest-missing-hint"
               >
                 {{
@@ -747,7 +747,7 @@ onUnmounted(() => {
 
             <p
               v-if="key === 'plugin_sync_timeout' && settingByKey(key)!.value === '0'"
-              class="mt-2 text-[11px] font-medium text-red-600 dark:text-red-400"
+              class="mt-2 text-[11px] font-medium text-destructive dark:text-destructive"
               data-testid="timeout-disabled-warning"
             >
               ⚠️ Timeout disabled — a hung source will block pipeline saves indefinitely.
