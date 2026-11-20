@@ -221,6 +221,34 @@ return the Manager container IP) and compare against
 Same-compose default is container-to-container: `manager_url =
 "http://manager:8080"` with `depends_on: manager: condition: service_healthy`.
 
+### Upgrading across the v8 team-binding normalization
+
+The first start after
+this upgrade applies SQLite schema v8 / PostgreSQL schema v7 automatically.
+It materialises a team for every legacy `owner_group` slug that lacks one,
+backfills `team_id`, drops the `owner_group` columns from `pipelines` and
+`secrets`, renames `secrets.team_shared` to `share_with_team`, and scopes name
+uniqueness to the owner (`UNIQUE(team_id, name)` for secrets; per-owner
+partial indexes for hosts). Take a database backup first — there is no down
+migration.
+
+What changes for clients:
+
+- `POST` / `PUT /api/v1/secrets` read `share_with_team`; the old `team_shared`
+  field is ignored. Responses return `share_with_team`.
+- `owner_group` remains accepted as a deprecated team-selector alias (API and
+  YAML `owner_group:`) and is still returned as the **derived** team slug;
+  prefer `team_id` / YAML `team:`.
+- Direct SQL or reporting that selected `pipelines.owner_group` /
+  `secrets.owner_group` must join `teams` on `team_id`.
+- Secret and host names are now unique per owner, so two teams may each own
+  the same name.
+
+Verify after the upgrade with `buz-manager check-data` (read-only); it reports
+empty/unknown team ids and cross-team `pipeline_secrets` bindings. See
+[Database Schema](/docs/02-development/database-schema/) and
+[CLI Reference](/docs/03-operations/cli-reference/).
+
 **Upgrading Runner and Manager authentication behavior.** Where practical,
 upgrade Runners before the Manager, then upgrade the Manager. New Runner
 builds persist their Manager-issued JWT at `runner.token_cache_path` (default

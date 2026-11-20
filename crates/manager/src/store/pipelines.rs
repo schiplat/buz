@@ -220,7 +220,8 @@ pub async fn full_row(pool: &DbPool, id: &str) -> Result<Option<PipelineFullRow>
         pool,
         "SELECT id, name, description, trigger_type, webhook_path, webhook_secret, cron_expr,
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
-                owner_group, team_id, created_at, updated_at,
+                COALESCE((SELECT slug FROM teams WHERE id = pipelines.team_id), '') AS owner_group,
+                team_id, created_at, updated_at,
                 concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
                 yaml_path, environments, notify_json
          FROM pipelines WHERE id = ?",
@@ -626,7 +627,10 @@ pub async fn update_facts(
 ) -> Result<Option<(String, String, String, String, bool)>, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
+        "SELECT name, trigger_type, team_id,
+                COALESCE((SELECT slug FROM teams WHERE id = pipelines.team_id), '') AS owner_group,
+                is_active
+         FROM pipelines WHERE id = ?",
         &[id.into()],
     )
     .await?;
@@ -637,7 +641,7 @@ pub async fn update_facts(
 pub async fn owner_group_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
     Ok(exec::fetch_optional(
         pool,
-        "SELECT owner_group FROM pipelines WHERE id = ?",
+        "SELECT COALESCE((SELECT slug FROM teams WHERE id = pipelines.team_id), '') FROM pipelines WHERE id = ?",
         &[id.into()],
     )
     .await?
@@ -700,7 +704,10 @@ pub async fn delete_facts(
 ) -> Result<Option<(String, String, String, String, String, Option<String>)>, AppError> {
     Ok(exec::fetch_optional(
         pool,
-        "SELECT name, trigger_type, team_id, owner_group, source, yaml_path FROM pipelines WHERE id = ?",
+        "SELECT name, trigger_type, team_id,
+                COALESCE((SELECT slug FROM teams WHERE id = pipelines.team_id), '') AS owner_group,
+                source, yaml_path
+         FROM pipelines WHERE id = ?",
         &[id.into()],
     )
     .await?
@@ -810,7 +817,6 @@ pub struct NewPipeline {
     pub concurrency_mode: String,
     pub concurrency_max_queue: i64,
     pub concurrency_queue_timeout_seconds: i64,
-    pub owner_group: String,
     pub team_id: String,
     pub input_defs: String,
     pub environments: String,
@@ -824,8 +830,8 @@ pub async fn insert_tx(tx: &mut DbTx<'_>, p: &NewPipeline) -> Result<(), AppErro
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
          cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
-         owner_group, team_id, input_defs, environments, notify_json, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         team_id, input_defs, environments, notify_json, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         &[
             p.id.as_str().into(),
             p.name.as_str().into(),
@@ -840,7 +846,6 @@ pub async fn insert_tx(tx: &mut DbTx<'_>, p: &NewPipeline) -> Result<(), AppErro
             p.concurrency_mode.as_str().into(),
             SqlValue::Int(p.concurrency_max_queue),
             SqlValue::Int(p.concurrency_queue_timeout_seconds),
-            p.owner_group.as_str().into(),
             p.team_id.as_str().into(),
             p.input_defs.as_str().into(),
             p.environments.as_str().into(),
@@ -866,7 +871,6 @@ pub struct UpdatePipeline {
     pub concurrency_mode: String,
     pub concurrency_max_queue: i64,
     pub concurrency_queue_timeout_seconds: i64,
-    pub owner_group: String,
     pub team_id: String,
     pub input_defs: String,
     pub environments: String,
@@ -881,7 +885,7 @@ pub async fn update_tx(tx: &mut DbTx<'_>, id: &str, p: &UpdatePipeline) -> Resul
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
-         concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
+         concurrency_queue_timeout_seconds = ?, team_id = ?, input_defs = ?,
          environments = ?, notify_json = ?, updated_at = datetime('now')
          WHERE id = ?",
             &[
@@ -897,7 +901,6 @@ pub async fn update_tx(tx: &mut DbTx<'_>, id: &str, p: &UpdatePipeline) -> Resul
                 p.concurrency_mode.as_str().into(),
                 SqlValue::Int(p.concurrency_max_queue),
                 SqlValue::Int(p.concurrency_queue_timeout_seconds),
-                p.owner_group.as_str().into(),
                 p.team_id.as_str().into(),
                 p.input_defs.as_str().into(),
                 p.environments.as_str().into(),
@@ -1178,7 +1181,7 @@ pub async fn list_rows(
         let sql = format!(
         "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
                 p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
-                p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
+                p.source, p.team_id, COALESCE((SELECT slug FROM teams WHERE id = p.team_id), '') AS owner_group, p.created_at, p.updated_at,
                 j.id as latest_job_id, j.status as latest_job_status,
                 j.start_time as latest_job_start,
                 COALESCE(js.job_total, 0) as job_total,
@@ -1218,7 +1221,7 @@ pub async fn list_rows(
     let base = format!(
         "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
                 p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
-                p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
+                p.source, p.team_id, COALESCE((SELECT slug FROM teams WHERE id = p.team_id), '') AS owner_group, p.created_at, p.updated_at,
                 j.id as latest_job_id, j.status as latest_job_status,
                 j.start_time as latest_job_start,
                 COALESCE(js.job_total, 0) as job_total,
@@ -1467,7 +1470,8 @@ pub async fn definition_backfill_rows(pool: &DbPool) -> Result<Vec<BackfillRow>,
         "SELECT id, name, source, yaml_path, description, trigger_type, webhook_path,
                 webhook_secret, webhook_environment, cron_expr, cron_environment,
                 runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
-                concurrency_max_queue, concurrency_queue_timeout_seconds, owner_group,
+                concurrency_max_queue, concurrency_queue_timeout_seconds,
+                COALESCE((SELECT slug FROM teams WHERE id = pipelines.team_id), '') AS owner_group,
                 environments, notify_json, input_defs
          FROM pipelines WHERE yaml_source = '' ORDER BY created_at ASC",
         &[],
@@ -1725,7 +1729,6 @@ pub struct YamlPipelineUpdate<'a> {
     pub concurrency_mode: &'a str,
     pub concurrency_max_queue: i64,
     pub concurrency_queue_timeout_seconds: i64,
-    pub owner_group: &'a str,
     pub team_id: &'a str,
     pub input_defs: &'a str,
     pub environments: &'a str,
@@ -1755,7 +1758,7 @@ pub async fn yaml_update_tx(
          resource_profile = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
          concurrency_queue_timeout_seconds = ?,
-         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+         team_id = ?, input_defs = ?, environments = ?,
          notify_json = ?,
          yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
          WHERE id = ? AND yaml_source = ?",
@@ -1764,7 +1767,7 @@ pub async fn yaml_update_tx(
          resource_profile = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
          concurrency_queue_timeout_seconds = ?,
-         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+         team_id = ?, input_defs = ?, environments = ?,
          notify_json = ?,
          yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
          WHERE id = ?",
@@ -1785,7 +1788,6 @@ pub async fn yaml_update_tx(
         p.concurrency_mode.into(),
         SqlValue::Int(p.concurrency_max_queue),
         SqlValue::Int(p.concurrency_queue_timeout_seconds),
-        p.owner_group.into(),
         p.team_id.into(),
         p.input_defs.into(),
         p.environments.into(),
@@ -1820,7 +1822,6 @@ pub struct YamlPipelineInsert<'a> {
     pub concurrency_mode: &'a str,
     pub concurrency_max_queue: i64,
     pub concurrency_queue_timeout_seconds: i64,
-    pub owner_group: &'a str,
     pub team_id: &'a str,
     pub yaml_path: &'a str,
     pub yaml_sha256: &'a str,
@@ -1843,8 +1844,8 @@ pub async fn yaml_insert_tx(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
          webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
-        owner_group, team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)
+        team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT DO NOTHING",
         &[
             p.id.into(),
@@ -1863,7 +1864,6 @@ pub async fn yaml_insert_tx(
             p.concurrency_mode.into(),
             SqlValue::Int(p.concurrency_max_queue),
             SqlValue::Int(p.concurrency_queue_timeout_seconds),
-            p.owner_group.into(),
             p.team_id.into(),
             p.yaml_path.into(),
             p.yaml_sha256.into(),

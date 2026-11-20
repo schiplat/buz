@@ -24,9 +24,9 @@ runner:
 env:
   SMOKE_ENV: from-pipeline
 
-# Explicit pipeline secrets bind (Team share not required).
+# Explicit pipeline secrets bind (Share with team not required).
 # Create DOCKER_REGISTRY_PASS under Secrets & Variables → Secrets (same team),
-# or enable Team share for auto-inject. Secret names are UPPER_SNAKE_CASE.
+# or enable Share with team to allowlist `${secrets.NAME}` without a per-pipeline binding. Secret names are UPPER_SNAKE_CASE.
 secrets:
   - DOCKER_REGISTRY_PASS
 

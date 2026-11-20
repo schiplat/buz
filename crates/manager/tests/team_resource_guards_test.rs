@@ -38,8 +38,8 @@ async fn secret_move_is_refused_while_bound_to_a_pipeline() {
     let app = TestApp::boot().await;
     seed_beta(&app).await;
     for sql in [
-        "INSERT INTO secrets (id, name, value, owner_group, team_id)
-         VALUES ('s1', 'DEPLOY_KEY', 'x', 'alpha', 'team-1')",
+        "INSERT INTO secrets (id, name, value, team_id)
+         VALUES ('s1', 'DEPLOY_KEY', 'x', 'team-1')",
         "INSERT INTO pipelines (id, name, team_id) VALUES ('p1', 'alpha-pipe', 'team-1')",
         "INSERT INTO pipeline_secrets (pipeline_id, secret_id) VALUES ('p1', 's1')",
     ] {
@@ -124,11 +124,11 @@ async fn consistency_report_flags_legacy_binding_rows() {
     for sql in [
         "INSERT INTO pipelines (id, name, team_id) VALUES ('p-orphan', 'orphan-pipe', 'gone')",
         "INSERT INTO pipelines (id, name, team_id) VALUES ('p-empty', 'empty-pipe', '')",
-        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s-orphan', 'ORPHAN', 'x', 'gone', 'gone')",
-        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s-empty', 'EMPTY', 'x', '', '')",
+        "INSERT INTO secrets (id, name, value, team_id) VALUES ('s-orphan', 'ORPHAN', 'x', 'gone')",
+        "INSERT INTO secrets (id, name, value, team_id) VALUES ('s-empty', 'EMPTY', 'x', '')",
         "INSERT INTO hosts (id, name, host, username, team_id) VALUES ('h-orphan', 'orphan-host', '10.0.0.9', 'root', 'gone')",
         "INSERT INTO pipelines (id, name, team_id) VALUES ('p1', 'alpha-pipe', 'team-1')",
-        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s1', 'DEPLOY_KEY', 'x', 'alpha', 'team-1')",
+        "INSERT INTO secrets (id, name, value, team_id) VALUES ('s1', 'DEPLOY_KEY', 'x', 'team-1')",
         "INSERT INTO pipeline_secrets (pipeline_id, secret_id) VALUES ('p1', 's1')",
         "UPDATE secrets SET team_id = 'team-2' WHERE id = 's1'",
     ] {
@@ -147,4 +147,84 @@ async fn consistency_report_flags_legacy_binding_rows() {
     assert_eq!(report.hosts_unknown_team, 1, "{report:?}");
     assert_eq!(report.cross_team_secret_bindings, 1, "{report:?}");
     assert!(!report.is_clean());
+}
+
+#[tokio::test]
+async fn normalized_schema_drops_legacy_identity_and_scopes_names() {
+    let app = TestApp::boot().await;
+    seed_beta(&app).await;
+
+    // The duplicated identity and the misleading column name are gone.
+    for legacy in [
+        "SELECT owner_group FROM pipelines LIMIT 0",
+        "SELECT owner_group FROM secrets LIMIT 0",
+        "SELECT team_shared FROM secrets LIMIT 0",
+    ] {
+        assert!(
+            exec::fetch_all(&app.pool, legacy, &[]).await.is_err(),
+            "legacy column still present: {legacy}"
+        );
+    }
+    exec::fetch_all(
+        &app.pool,
+        "SELECT share_with_team FROM secrets LIMIT 0",
+        &[],
+    )
+    .await
+    .expect("share_with_team column");
+
+    // Secrets: the same name may exist in two teams, not twice in one.
+    for (id, team) in [("sa", "team-1"), ("sb", "team-2")] {
+        exec::execute(
+            &app.pool,
+            "INSERT INTO secrets (id, name, value, team_id) VALUES (?, 'DEPLOY_KEY', 'x', ?)",
+            &[id.into(), team.into()],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    assert!(
+        exec::execute(
+            &app.pool,
+            "INSERT INTO secrets (id, name, value, team_id) VALUES ('sc', 'DEPLOY_KEY', 'x', 'team-1')",
+            &[],
+        )
+        .await
+        .is_err(),
+        "duplicate name in one team must be rejected"
+    );
+
+    // Hosts: per-team and per-platform-tier uniqueness.
+    for (id, team) in [("ha", Some("team-1")), ("hb", Some("team-2"))] {
+        exec::execute(
+            &app.pool,
+            "INSERT INTO hosts (id, name, host, username, team_id) VALUES (?, 'web', '10.0.0.1', 'root', ?)",
+            &[id.into(), team.into()],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    assert!(
+        exec::execute(
+            &app.pool,
+            "INSERT INTO hosts (id, name, host, username, team_id) VALUES ('hc', 'web', '10.0.0.2', 'root', 'team-1')",
+            &[],
+        )
+        .await
+        .is_err(),
+        "duplicate host name in one team must be rejected"
+    );
+    for id in ["hp1", "hp2"] {
+        let result = exec::execute(
+            &app.pool,
+            "INSERT INTO hosts (id, name, host, username, team_id) VALUES (?, 'shared-web', '10.0.0.3', 'root', NULL)",
+            &[id.into()],
+        )
+        .await;
+        if id == "hp1" {
+            result.expect("first platform host");
+        } else {
+            assert!(result.is_err(), "platform host names are unique");
+        }
+    }
 }

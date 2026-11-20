@@ -319,9 +319,9 @@ pub async fn id_and_slug_by_id(
 }
 
 /// Startup team bootstrap: create the `default` team, attach active platform
-/// admins as owners, create teams for legacy `owner_group` values, and
-/// backfill `team_id` on pipelines/secrets. Idempotent; failures that the
-/// legacy path swallowed stay best effort.
+/// admins as owners, and send any remaining empty `team_id` rows to it. The
+/// legacy `owner_group` slug is resolved by the v8 migration before that
+/// column is dropped. Idempotent.
 pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
     let default_team_id = ensure(pool, "default", "Default").await?;
 
@@ -335,51 +335,9 @@ pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
         .await?;
     }
 
-    let groups = exec::fetch_all(
-        pool,
-        "SELECT DISTINCT owner_group FROM (
-            SELECT owner_group FROM pipelines WHERE owner_group != ''
-            UNION
-            SELECT owner_group FROM secrets WHERE owner_group != ''
-         ) AS legacy_groups",
-        &[],
-    )
-    .await?
-    .into_iter()
-    .map(|r| r.text(0))
-    .collect::<Vec<_>>();
-
-    for slug in groups {
-        ensure(pool, &slug, &slug).await?;
-    }
-
-    // Match by owner_group slug, then send the remainder to the default team.
-    let _ = exec::execute(
-        pool,
-        "UPDATE pipelines SET team_id = (
-            SELECT t.id FROM teams t WHERE t.slug = pipelines.owner_group
-         )
-         WHERE (team_id IS NULL OR team_id = '')
-           AND owner_group != ''
-           AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = pipelines.owner_group)",
-        &[],
-    )
-    .await;
-    let _ = exec::execute(
-        pool,
-        "UPDATE secrets SET team_id = (
-            SELECT t.id FROM teams t WHERE t.slug = secrets.owner_group
-         )
-         WHERE (team_id IS NULL OR team_id = '')
-           AND owner_group != ''
-           AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = secrets.owner_group)",
-        &[],
-    )
-    .await;
-
     let pipelines = exec::execute(
         pool,
-        "UPDATE pipelines SET team_id = ?, owner_group = 'default'
+        "UPDATE pipelines SET team_id = ?
          WHERE team_id IS NULL OR team_id = ''",
         &[default_team_id.as_str().into()],
     )
@@ -389,7 +347,7 @@ pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
     }
     let secrets = exec::execute(
         pool,
-        "UPDATE secrets SET team_id = ?, owner_group = 'default'
+        "UPDATE secrets SET team_id = ?
          WHERE team_id IS NULL OR team_id = ''",
         &[default_team_id.as_str().into()],
     )

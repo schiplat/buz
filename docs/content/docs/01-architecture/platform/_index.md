@@ -11,7 +11,7 @@ You administer the **Manager control plane**: who can use what (RBAC, secret acc
 ## Reading order
 
 1. [Users, Teams & RBAC](./rbac/)
-2. [Secrets Access Control](./secrets-access-control/) — kind, team_shared, bindings
+2. [Secrets Access Control](./secrets-access-control/) — kind, share_with_team, bindings
 3. [Environments](./environments/) — Variable / Secret overlays at Trigger / claim
 4. [Environment Approval Gates](./environment-approvals/) — protected env Trigger ACL + approvals
 5. [Ops Approval Switch](./ops-approval-switch/) — two-person approval for host-config and grant changes
@@ -25,7 +25,7 @@ Pipeline YAML fields: [Authoring → Pipeline Format](/docs/01-architecture/auth
 
 {{< cards >}}
   {{< card link="rbac/" title="Users, Teams & RBAC" subtitle="Roles, team scope, hosts" >}}
-  {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="kind, team_shared, bindings" >}}
+  {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="kind, share_with_team, bindings" >}}
   {{< card link="environments/" title="Environments" subtitle="Staging/prod overlays for Variable & Secret defaults" >}}
   {{< card link="environment-approvals/" title="Environment Approval Gates" subtitle="Protected env Trigger ACL + append-only records" >}}
   {{< card link="ops-approval-switch/" title="Ops Approval Switch" subtitle="Two-person approval for host-config changes" >}}

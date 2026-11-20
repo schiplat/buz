@@ -370,7 +370,7 @@ pub fn team_in_clause(auth: &AuthUser, column: &str) -> Option<(String, Vec<Stri
     }
 }
 
-/// Bootstrap default team + migrate owner_group → team_id.
+/// Bootstrap the default team and backfill any empty `team_id` rows.
 /// First platform admin is created via `POST /auth/setup` (web UI), not from config.
 pub async fn bootstrap(pool: &DbPool) -> anyhow::Result<()> {
     crate::store::teams::bootstrap(pool)

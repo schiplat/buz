@@ -12,7 +12,7 @@ aliases:
 
 **Implemented (Phase 2 + Phase 3 auth items).** Multi-user login, teams, four team roles, required `team_id` on pipelines/secrets, optional host team, membership-filtered list APIs, platform-admin API tokens, and tiered audit-log visibility (super admin vs regular admin).
 
-Related: [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) (`owner_group` synced from team slug; runtime prefers `team_id`).
+Related: [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) (`team_id` is the only stored owner; the legacy `owner_group` column was removed and the slug is derived on read).
 
 ---
 
@@ -142,20 +142,20 @@ pipelines.team_id  TEXT NOT NULL → teams(id)   -- after migration; required
 secrets.team_id    TEXT NOT NULL → teams(id)
 hosts.team_id      TEXT NULL → teams(id)       -- optional
 
--- Transition: keep owner_group TEXT until migration complete;
--- runtime prefers team_id match; may fall back to slug == owner_group.
+-- v8 migration: owner_group columns dropped; team_id is the only
+-- stored identity and the slug is derived on read.
 ```
 
-### Migration from Phase 1 `owner_group`
+### Phase 1 → Phase 2 migration (complete)
 
-1. Create `users` / `teams` / `team_members`.
-2. If `users` is empty, create the first `platform_admin` via Web UI `/setup` (or `POST /auth/setup`).
-3. For each distinct non-empty `owner_group` on pipelines/secrets: upsert `teams` with `slug = owner_group`.
-4. Backfill `team_id`; fail closed on create/update if `team_id` missing.
-5. UI: Owner Group text field → **Team** dropdown.
-6. Deprecate writing free-form `owner_group`; keep column read-only or synced from `teams.slug` during transition.
+1. Created `users` / `teams` / `team_members`.
+2. First `platform_admin` is created via Web UI `/setup` (or `POST /auth/setup`) when `users` is empty.
+3. The v8 migration backfills `team_id` from each non-empty legacy `owner_group` slug, then falls back to the `default` team for any remaining empty rows.
+4. Create/update fail closed when `team_id` is missing or the caller lacks the team role.
+5. UI: the Owner Group text field is gone; ownership is the **Team** selector.
+6. Writing `owner_group` is deprecated: it remains accepted as an input alias (API and YAML) but is no longer stored; the slug is derived from `team_id` on read.
 
-Empty `owner_group` rows from Phase 1 must be assigned a team during upgrade (operator chooses default team or admin-only quarantine team).
+Unknown team ids that survive the backfill are reported by `buz-manager check-data` (read-only).
 
 ---
 
@@ -191,13 +191,13 @@ Credentials remain encrypted server-side; UI never receives plaintext (unchanged
 
 ---
 
-## Secret Resolution (Team-backed + `team_shared`)
+## Secret Resolution (Team-backed + `share_with_team`)
 
-1. **Team auto-access (opt-in)**: `secret.team_id == pipeline.team_id` **and** `secret.team_shared == true`
+1. **Team allowlist (opt-in)**: `secret.team_id == pipeline.team_id` **and** `secret.share_with_team == true`
 2. **Explicit binding**: `pipeline_secrets` / YAML `secrets:` (bind requires Maintainer+; same team only)
 3. **Step name reference**: step `secrets:` or purpose slots resolved at dispatch only if `secret.team_id == pipeline.team_id`
 
-New secrets default to `team_shared = false` (no auto-inject). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+New secrets default to `share_with_team = false` (no implicit allowlist; map explicitly to env). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 
 Cross-team secret use: forbidden in Phase 2 (future Phase 3 grant). Binding UI lists secrets from the **same team** (+ admin override).
 

@@ -39,7 +39,7 @@ env:
   NAMESPACE: apps
   IMAGE_NAME: my-service
 
-# Explicit bind — Team share not required. Secrets must exist in the same team.
+# Explicit bind — Share with team not required. Secrets must exist in the same team.
 secrets:
   - DOCKER_REGISTRY_USER
   - DOCKER_REGISTRY_PASS

@@ -19,7 +19,7 @@ async fn seed_other_team(app: &TestApp) {
     for sql in [
         "INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Beta', 'beta')",
         "INSERT INTO pipelines (id, name, team_id) VALUES ('p2', 'beta-pipe', 'team-2')",
-        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s2', 'BETA_SECRET', 'x', 'beta', 'team-2')",
+        "INSERT INTO secrets (id, name, value, team_id) VALUES ('s2', 'BETA_SECRET', 'x', 'team-2')",
         "INSERT INTO hosts (id, name, host, username, team_id) VALUES ('h2', 'beta-host', '10.0.0.9', 'root', 'team-2')",
         "INSERT INTO environments (id, name, slug) VALUES ('env-1', 'Production', 'production')",
         "INSERT INTO environment_secret_overrides (environment_id, secret_id, value) VALUES ('env-1', 's2', 'x')",

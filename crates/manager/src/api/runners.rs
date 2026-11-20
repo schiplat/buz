@@ -1255,8 +1255,8 @@ async fn build_claim_payload(
         crate::store::runners::live_task_rows(&state.db(), &pipeline_id).await?
     };
 
-    // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
-    // `secrets:` / team_shared are an **allowlist** for `${secrets.NAME}` —
+    // Resolve pipeline secrets from explicit bindings + share_with_team (sensitive).
+    // `secrets:` / share_with_team are an **allowlist** for `${secrets.NAME}` —
     // values are NOT auto-injected as `$NAME`. Call sites must map explicitly:
     //   env:
     //     GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
@@ -1268,7 +1268,7 @@ async fn build_claim_payload(
     let mut secret_env_keys: Vec<String> = Vec::new();
 
     // Environment Secret overrides (name → plaintext). Applied only when the
-    // secret is already on the job allowlist (bound / team_shared / implied).
+    // secret is already on the job allowlist (bound / share_with_team / implied).
     let env_secret_overrides: std::collections::HashMap<String, String> =
         if let Some(ref env_id) = job_environment_id {
             super::environments::load_secret_override_plaintexts(
@@ -1305,9 +1305,9 @@ async fn build_claim_payload(
         }
     }
 
-    // ── Team auto-access: same team_id AND team_shared opt-in ──
+    // ── Team auto-access: same team_id AND share_with_team opt-in ──
     let team_secret_rows =
-        crate::store::runners::team_shared_secret_values(&state.db(), &pipeline_id).await?;
+        crate::store::runners::share_with_team_secret_values(&state.db(), &pipeline_id).await?;
     for (name, stored) in team_secret_rows {
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(decrypted) => {

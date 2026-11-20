@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   1) Secrets & Variables → Secrets (plain values, encrypted at rest):
-#      REGISTRY_USERNAME / REGISTRY_PASSWORD — leave **Team share OFF** (default);
+#      REGISTRY_USERNAME / REGISTRY_PASSWORD — leave **Share with team OFF** (default);
 #      allowlist via secrets:.
 #   2) Runner with Docker CLI/daemon and labels: [linux-x64].
 #

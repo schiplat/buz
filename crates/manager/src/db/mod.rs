@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -532,6 +532,7 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         5 => apply_v5_oidc_settings(pool).await,
         6 => apply_v6_session_revocation(pool).await,
         7 => apply_v7_pending_identities(pool).await,
+        8 => apply_v8_normalize_bindings(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
 }
@@ -571,6 +572,225 @@ async fn apply_v7_pending_identities(pool: &SqlitePool) -> anyhow::Result<()> {
         )",
     )
     .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v8: normalise team bindings.
+///
+/// `team_id` becomes the only stored identity: the legacy `owner_group` slug
+/// is backfilled once (then dropped) and read paths derive the slug from a
+/// join. Secrets rename `team_shared` to the accurate `share_with_team` and
+/// move name uniqueness from global to per team; hosts gain per-owner
+/// uniqueness (team rows, or the platform tier when `team_id` is NULL/'').
+///
+/// SQLite table rebuilds run on one dedicated connection with foreign keys
+/// disabled: dropping `secrets` would otherwise cascade into
+/// `pipeline_secrets` / `secret_github_binds` / `environment_secret_overrides`.
+async fn apply_v8_normalize_bindings(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
+
+    let pipelines_has_owner_group =
+        sqlite_column_exists(&mut conn, "pipelines", "owner_group").await?;
+    let secrets_has_owner_group = sqlite_column_exists(&mut conn, "secrets", "owner_group").await?;
+    let secrets_has_team_shared = sqlite_column_exists(&mut conn, "secrets", "team_shared").await?;
+    let hosts_normalized: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'index' AND name = 'idx_hosts_team_name'",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    // Phase 1 databases had only free-form `owner_group` slugs. Materialise a
+    // team for every slug that lacks one before dropping the column; the old
+    // startup bootstrap did this, but migrations run first now.
+    if pipelines_has_owner_group && secrets_has_owner_group {
+        sqlx::query(
+            "INSERT OR IGNORE INTO teams (id, name, slug)
+             SELECT 'legacy-' || g.owner_group, g.owner_group, g.owner_group
+             FROM (
+                 SELECT DISTINCT owner_group FROM pipelines WHERE owner_group != ''
+                 UNION
+                 SELECT DISTINCT owner_group FROM secrets WHERE owner_group != ''
+             ) AS g
+             WHERE NOT EXISTS (SELECT 1 FROM teams t WHERE t.slug = g.owner_group)",
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    // Backfill before any column disappears. Unknown teams are left for
+    // `buz-manager check-data`; the default tier is only a fallback when it
+    // exists (a fresh database has no rows here).
+    if pipelines_has_owner_group {
+        sqlx::query(
+            "UPDATE pipelines SET team_id = (
+                 SELECT t.id FROM teams t WHERE t.slug = pipelines.owner_group
+             )
+             WHERE (team_id IS NULL OR team_id = '') AND owner_group != ''
+               AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = pipelines.owner_group)",
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    if secrets_has_owner_group {
+        sqlx::query(
+            "UPDATE secrets SET team_id = (
+                 SELECT t.id FROM teams t WHERE t.slug = secrets.owner_group
+             )
+             WHERE (team_id IS NULL OR team_id = '') AND owner_group != ''
+               AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = secrets.owner_group)",
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    for sql in [
+        "UPDATE pipelines SET team_id = (SELECT id FROM teams WHERE slug = 'default')
+         WHERE (team_id IS NULL OR team_id = '')
+           AND EXISTS (SELECT 1 FROM teams WHERE slug = 'default')",
+        "UPDATE secrets SET team_id = (SELECT id FROM teams WHERE slug = 'default')
+         WHERE (team_id IS NULL OR team_id = '')
+           AND EXISTS (SELECT 1 FROM teams WHERE slug = 'default')",
+    ] {
+        sqlx::query(sql).execute(&mut *conn).await?;
+    }
+
+    if secrets_has_owner_group || secrets_has_team_shared {
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+        let result = rebuild_secrets_v8(&mut conn, secrets_has_team_shared).await;
+        let _ = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+        result?;
+    }
+
+    if hosts_normalized == 0 {
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+        let result = rebuild_hosts_v8(&mut conn).await;
+        let _ = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+        result?;
+    }
+
+    if pipelines_has_owner_group {
+        sqlx::query("ALTER TABLE pipelines DROP COLUMN owner_group")
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn sqlite_column_exists(
+    conn: &mut sqlx::SqliteConnection,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<bool> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")
+            .bind(table)
+            .bind(column)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(count > 0)
+}
+
+async fn rebuild_secrets_v8(
+    conn: &mut sqlx::SqliteConnection,
+    has_team_shared: bool,
+) -> anyhow::Result<()> {
+    sqlx::query("DROP TABLE IF EXISTS secrets_v8")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE secrets_v8 (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            team_id TEXT NOT NULL DEFAULT '',
+            share_with_team INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'generic',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(team_id, name)
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+    let shared_column = if has_team_shared {
+        "team_shared"
+    } else {
+        "share_with_team"
+    };
+    let copy = format!(
+        "INSERT INTO secrets_v8 (id, name, value, team_id, share_with_team, kind, updated_at)
+         SELECT id, name, value, team_id, {shared_column}, kind, updated_at FROM secrets"
+    );
+    sqlx::query(&copy).execute(&mut *conn).await?;
+    sqlx::query("DROP TABLE secrets")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("ALTER TABLE secrets_v8 RENAME TO secrets")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_secrets_team ON secrets(team_id)")
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+async fn rebuild_hosts_v8(conn: &mut sqlx::SqliteConnection) -> anyhow::Result<()> {
+    sqlx::query("DROP TABLE IF EXISTS hosts_v8")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE hosts_v8 (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL DEFAULT 22,
+            username TEXT NOT NULL,
+            credential_type TEXT NOT NULL DEFAULT 'vault',
+            credential_data TEXT NOT NULL DEFAULT '',
+            credential_passphrase TEXT NOT NULL DEFAULT '',
+            labels TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            team_id TEXT
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO hosts_v8 (id, name, host, port, username, credential_type, credential_data,
+             credential_passphrase, labels, created_at, updated_at, team_id)
+         SELECT id, name, host, port, username, credential_type, credential_data,
+             credential_passphrase, labels, created_at, updated_at, team_id
+         FROM hosts",
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("DROP TABLE hosts").execute(&mut *conn).await?;
+    sqlx::query("ALTER TABLE hosts_v8 RENAME TO hosts")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_hosts_team ON hosts(team_id)")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_team_name
+         ON hosts(team_id, name) WHERE team_id IS NOT NULL AND team_id != ''",
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_platform_name
+         ON hosts(name) WHERE team_id IS NULL OR team_id = ''",
+    )
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }

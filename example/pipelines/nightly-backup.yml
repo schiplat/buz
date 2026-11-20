@@ -2,7 +2,7 @@
 # Scheduled backup: dump databases, sync logs, archive to remote storage.
 #
 # Trigger: cron (daily at 2:00 AM)
-# Bind backup credentials via secrets: or step secrets: (Team share OFF by default).
+# Bind backup credentials via secrets: or step secrets: (Share with team OFF by default).
 # Note: Buz has no $GITHUB_ENV — pass state with ordinary shell vars / files.
 
 name: Nightly Backup

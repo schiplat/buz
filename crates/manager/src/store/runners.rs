@@ -1485,8 +1485,8 @@ pub async fn bound_secret_values(
 }
 
 /// `(name, value)` of secrets a pipeline inherits from its team (opt-in
-/// `team_shared = 1`), excluding the unassigned pseudo-team.
-pub async fn team_shared_secret_values(
+/// `share_with_team = 1`), excluding the unassigned pseudo-team.
+pub async fn share_with_team_secret_values(
     pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
@@ -1495,7 +1495,7 @@ pub async fn team_shared_secret_values(
         "SELECT s.name, s.value
          FROM secrets s
          JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-         WHERE p.id = ? AND s.team_shared = 1",
+         WHERE p.id = ? AND s.share_with_team = 1",
         &[pipeline_id.into()],
     )
     .await?

@@ -188,6 +188,12 @@ Then complete `/setup` as above.
 
 Goal: new image, **same data volumes**, **same `BUZ_JWT_SECRET`**.
 
+> A build that includes the v8 team-binding normalization migrates the
+> database on first start (drops `owner_group`, renames `team_shared` to
+> `share_with_team`, scopes names per team). Back up the data volume first;
+> there is no down migration. See
+> [Deployment → v8 upgrade notes](./deployment.md#upgrading-across-the-v8-team-binding-normalization).
+
 ### Compose (preferred)
 
 ```bash

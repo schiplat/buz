@@ -259,3 +259,25 @@ describe('Users & teams', () => {
     expect(document.body.textContent).not.toContain('accounts have no team yet')
   })
 })
+
+describe('Users & teams — delete guard', () => {
+  it('surfaces the team-delete conflict instead of failing silently', async () => {
+    vi.mocked(dialog.confirm).mockResolvedValueOnce(true)
+    vi.mocked(teamsApi.delete).mockRejectedValueOnce({
+      response: { data: { message: 'team still has 1 pipeline(s), 0 secret(s), 1 host(s)' } },
+    })
+    mount()
+    await flush()
+
+    buttonByText('team-alpha').click()
+    await flush()
+    const del = document.querySelector<HTMLButtonElement>('button[title="Delete team"]')
+    expect(del, 'Missing delete-team button').not.toBeNull()
+    del!.click()
+    await flush()
+
+    expect(vi.mocked(dialog.alert)).toHaveBeenCalledWith(
+      'team still has 1 pipeline(s), 0 secret(s), 1 host(s)',
+    )
+  })
+})

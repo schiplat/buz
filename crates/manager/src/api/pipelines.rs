@@ -167,7 +167,6 @@ pub async fn create(
             concurrency_max_queue: req.concurrency_max_queue.unwrap_or(3) as i64,
             concurrency_queue_timeout_seconds: req.concurrency_queue_timeout_seconds.unwrap_or(1800)
                 as i64,
-            owner_group: owner_group.clone(),
             team_id: team_id.clone(),
             input_defs: input_defs_json,
             environments: environments_json,
@@ -501,7 +500,6 @@ pub async fn update(
             concurrency_max_queue: req.concurrency_max_queue.unwrap_or(3) as i64,
             concurrency_queue_timeout_seconds: req.concurrency_queue_timeout_seconds.unwrap_or(1800)
                 as i64,
-            owner_group: owner_group.clone(),
             team_id: team_id.clone(),
             input_defs: input_defs_json,
             environments: environments_json,

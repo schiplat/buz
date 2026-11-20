@@ -37,9 +37,10 @@ SSH remote host configuration. Stores encrypted credentials (private key or pass
 
 | Column | Type | Notes |
 |--------|------|-------|
+| name | TEXT | Unique per owner: per team when scoped, per platform tier when `team_id` is `NULL`/`''` |
 | credential_type | TEXT | `vault`, `key_path`, or `agent` |
 | credential_data | TEXT | AES-256-GCM encrypted private key or password; empty for `agent` |
-| team_id | TEXT NULL | Optional team scope; `NULL` = shared (platform-admin managed) |
+| team_id | TEXT NULL | `NULL`/`''` = platform-owned (usable by every team, platform-admin managed); otherwise team-scoped |
 
 ### users / teams / team_members (Phase 2 RBAC)
 
@@ -60,7 +61,7 @@ Runtime **projection** of pipeline definitions. For `source=yaml`, the file unde
 | team_id | TEXT | **Required** team ownership (Phase 2) |
 | trigger_type | TEXT | `manual`, `webhook`, or `cron` |
 | concurrency_group | TEXT | Prevents concurrent execution of same pipeline |
-| owner_group | TEXT | Team slug mirror (Phase 1 namespace). Phase 2: ownership via `team_id` — see [RBAC](/docs/01-architecture/platform/rbac/) |
+| ~~owner_group~~ | — | **Removed** in the v8 migration; `team_id` is the only stored owner. API responses derive the slug on read; YAML `owner_group:` remains a deprecated input alias |
 | source | TEXT | Prefer `yaml` (file authority). Legacy `form` until migrated |
 | yaml_path | TEXT | **Basename only** (e.g. `demo.yml`) when `source=yaml`; flat scan dir — no subdirectories |
 | is_active | INTEGER | Toggle sticks across scanner upserts (not forced back to `1`) |
@@ -120,11 +121,10 @@ Secret storage. Values are stored in the database and injected as environment va
 | Column | Type | Notes |
 |--------|------|-------|
 | id | TEXT PK | UUID v4 |
-| name | TEXT UNIQUE | Secret name (e.g. `DOCKER_PASS`, `GIT_SSH_KEY`) |
+| name | TEXT | Secret name (e.g. `DOCKER_PASS`, `GIT_SSH_KEY`); unique per `(team_id, name)` |
 | value | TEXT | AES-256-GCM ciphertext only (plaintext rows are rejected at decrypt) |
-| owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/platform/rbac/) |
 | team_id | TEXT | Owning team (required after bootstrap) |
-| team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
+| share_with_team | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines may reference this secret without an explicit binding (allowlist only, never env injection); `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = legacy JSON credentials retained on existing rows (no longer creatable or validated; kernel support removed in the 2.x retirement). Historical backfill marked decryptable registry JSON as `registry`. |
 | created_at, updated_at | TEXT | Auto-managed |
 

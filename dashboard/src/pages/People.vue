@@ -324,6 +324,10 @@ async function removeTeam(teamId: string, name: string) {
   try {
     await teamsApi.delete(teamId)
     await load()
+  } catch (e: any) {
+    // The delete guard reports pipelines/secrets/hosts/runners in a 409 —
+    // surface it instead of failing silently.
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete team')
   } finally {
     acting.value = false
   }

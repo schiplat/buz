@@ -3,7 +3,7 @@
 #
 # Trigger: manual (with inputs) or webhook
 # Registry credentials: add a login step (buz/docker-login template or inline
-# docker login) when credentials are needed (Team share OFF by default).
+# docker login) when credentials are needed (Share with team OFF by default).
 #
 # Run blocks: $INPUT_<KEY>. host: field: $target (trigger input name, not $INPUT_TARGET).
 

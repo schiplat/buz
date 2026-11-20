@@ -5,6 +5,10 @@
 //! list/read rows carry the stored value verbatim — decryption, masking and
 //! the `reencrypt_required` fallback are API-display concerns.
 //!
+//! `team_id` is the only stored owner identity; `owner_group` on the row is
+//! the team slug derived by joining `teams`, kept for API/audit compatibility.
+//! Names are unique per owner team, not globally.
+//!
 //! On the dual-backend dispatcher (`store::exec`): statements travel as plain
 //! SQLite-dialect strings with backend-neutral binds, rows decode by column
 //! name. Strict one-row reads keep `fetch_one` semantics via
@@ -14,8 +18,9 @@ use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
-/// One secret row as stored. `value` is the ciphertext; `team_shared` is the
-/// raw 0/1 column.
+/// One secret row as stored. `value` is the ciphertext; `share_with_team` is
+/// the raw 0/1 opt-in that exposes the secret to every pipeline in its owner
+/// team; `owner_group` is the derived team slug.
 #[derive(Debug, Clone)]
 pub struct SecretRow {
     pub id: String,
@@ -23,7 +28,7 @@ pub struct SecretRow {
     pub value: String,
     pub owner_group: String,
     pub team_id: String,
-    pub team_shared: i64,
+    pub share_with_team: i64,
     pub kind: String,
     pub updated_at: Option<String>,
 }
@@ -35,11 +40,15 @@ fn secret_row(r: crate::store::exec::GenericRow) -> SecretRow {
         value: r.text_of("value"),
         owner_group: r.text_of("owner_group"),
         team_id: r.text_of("team_id"),
-        team_shared: r.i64_of("team_shared"),
+        share_with_team: r.i64_of("share_with_team"),
         kind: r.text_of("kind"),
         updated_at: r.opt_text_of("updated_at"),
     }
 }
+
+const SELECT_SECRET: &str = "SELECT s.id, s.name, s.value, COALESCE(t.slug, '') AS owner_group, \
+     s.team_id, s.share_with_team, s.kind, s.updated_at \
+     FROM secrets s LEFT JOIN teams t ON t.id = s.team_id";
 
 /// All secrets, name-ordered. `visible_team_ids = None` is unrestricted
 /// (super admin); `Some([])` yields nothing (the caller's team filter is
@@ -49,62 +58,58 @@ pub async fn list(
     visible_team_ids: Option<&[String]>,
 ) -> Result<Vec<SecretRow>, AppError> {
     let Some(ids) = visible_team_ids else {
-        let rows = exec::fetch_all(
-            pool,
-            "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets ORDER BY name ASC",
-            &[],
-        )
-        .await?;
+        let rows =
+            exec::fetch_all(pool, &format!("{SELECT_SECRET} ORDER BY s.name ASC"), &[]).await?;
         return Ok(rows.into_iter().map(secret_row).collect());
     };
     if ids.is_empty() {
         return Ok(Vec::new());
     }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE 1=1 AND team_id IN ({placeholders}) ORDER BY name ASC"
-    );
+    let sql = format!("{SELECT_SECRET} WHERE s.team_id IN ({placeholders}) ORDER BY s.name ASC");
     let binds: Vec<SqlValue> = ids.iter().map(|id| id.as_str().into()).collect();
     let rows = exec::fetch_all(pool, &sql, &binds).await?;
     Ok(rows.into_iter().map(secret_row).collect())
 }
 
-/// Id of the secret with this name — the create-time duplicate check
-/// (`name` is globally UNIQUE).
-pub async fn find_id_by_name(pool: &DbPool, name: &str) -> Result<Option<String>, AppError> {
+/// Id of the secret with this name in this team — the create-time duplicate
+/// check (`(team_id, name)` is the unique key).
+pub async fn find_id_by_name(
+    pool: &DbPool,
+    team_id: &str,
+    name: &str,
+) -> Result<Option<String>, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT id FROM secrets WHERE name = ?",
-        &[name.into()],
+        "SELECT id FROM secrets WHERE team_id = ? AND name = ?",
+        &[team_id.into(), name.into()],
     )
     .await?;
     Ok(row.map(|r| r.text_of("id")))
 }
 
-/// Insert one secret. `value` is the ciphertext; `owner_group` is the team
-/// slug; `team_shared_i` is the raw 0/1 column value.
+/// Insert one secret. `value` is the ciphertext; `share_with_team_i` is the
+/// raw 0/1 column value.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
     pool: &DbPool,
     id: &str,
     name: &str,
     value: &str,
-    owner_group: &str,
     team_id: &str,
-    team_shared_i: i64,
+    share_with_team_i: i64,
     kind: &str,
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "INSERT INTO secrets (id, name, value, owner_group, team_id, team_shared, kind) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO secrets (id, name, value, team_id, share_with_team, kind) \
+         VALUES (?, ?, ?, ?, ?, ?)",
         &[
             id.into(),
             name.into(),
             value.into(),
-            owner_group.into(),
             team_id.into(),
-            SqlValue::Int(team_shared_i),
+            SqlValue::Int(share_with_team_i),
             kind.into(),
         ],
     )
@@ -116,18 +121,19 @@ pub async fn insert(
 pub async fn find_by_id(pool: &DbPool, id: &str) -> Result<Option<SecretRow>, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE id = ?",
+        &format!("{SELECT_SECRET} WHERE s.id = ?"),
         &[id.into()],
     )
     .await?;
     Ok(row.map(secret_row))
 }
 
-/// `owner_group` slug of one secret — the update path's team fallback.
+/// `owner_group` slug of one secret (derived from its team).
 pub async fn owner_group_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT owner_group FROM secrets WHERE id = ?",
+        "SELECT COALESCE(t.slug, '') AS owner_group
+         FROM secrets s LEFT JOIN teams t ON t.id = s.team_id WHERE s.id = ?",
         &[id.into()],
     )
     .await?
@@ -135,14 +141,14 @@ pub async fn owner_group_of(pool: &DbPool, id: &str) -> Result<String, AppError>
     Ok(row.text_of("owner_group"))
 }
 
-/// Pre-update facts: name, owner_group, team_id, team_shared (raw 0/1),
-/// kind and the stored (encrypted) value — the audit before-snapshot and
+/// Pre-update facts: name, derived owner_group, team_id, share_with_team (raw
+/// 0/1), kind and the stored (encrypted) value — the audit before-snapshot and
 /// the changed-value detection read these. `None` = no such secret.
 pub struct SecretUpdateFacts {
     pub name: String,
     pub owner_group: String,
     pub team_id: String,
-    pub team_shared: i64,
+    pub share_with_team: i64,
     pub kind: String,
     pub value: String,
 }
@@ -150,7 +156,9 @@ pub struct SecretUpdateFacts {
 pub async fn update_facts(pool: &DbPool, id: &str) -> Result<SecretUpdateFacts, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT name, owner_group, team_id, team_shared, kind, value FROM secrets WHERE id = ?",
+        "SELECT s.name, COALESCE(t.slug, '') AS owner_group, s.team_id,
+                s.share_with_team, s.kind, s.value
+         FROM secrets s LEFT JOIN teams t ON t.id = s.team_id WHERE s.id = ?",
         &[id.into()],
     )
     .await?
@@ -159,7 +167,7 @@ pub async fn update_facts(pool: &DbPool, id: &str) -> Result<SecretUpdateFacts, 
         name: row.text_of("name"),
         owner_group: row.text_of("owner_group"),
         team_id: row.text_of("team_id"),
-        team_shared: row.i64_of("team_shared"),
+        share_with_team: row.i64_of("share_with_team"),
         kind: row.text_of("kind"),
         value: row.text_of("value"),
     })
@@ -170,19 +178,17 @@ pub async fn update_facts(pool: &DbPool, id: &str) -> Result<SecretUpdateFacts, 
 pub async fn update_metadata(
     pool: &DbPool,
     id: &str,
-    owner_group: &str,
     team_id: &str,
-    team_shared_i: i64,
+    share_with_team_i: i64,
     kind: &str,
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "UPDATE secrets SET owner_group = ?, team_id = ?, team_shared = ?, kind = ?, \
+        "UPDATE secrets SET team_id = ?, share_with_team = ?, kind = ?, \
              updated_at = datetime('now') WHERE id = ?",
         &[
-            owner_group.into(),
             team_id.into(),
-            SqlValue::Int(team_shared_i),
+            SqlValue::Int(share_with_team_i),
             kind.into(),
             id.into(),
         ],
@@ -197,20 +203,18 @@ pub async fn update_value_and_metadata(
     pool: &DbPool,
     id: &str,
     value: &str,
-    owner_group: &str,
     team_id: &str,
-    team_shared_i: i64,
+    share_with_team_i: i64,
     kind: &str,
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, team_shared = ?, kind = ?, \
+        "UPDATE secrets SET value = ?, team_id = ?, share_with_team = ?, kind = ?, \
              updated_at = datetime('now') WHERE id = ?",
         &[
             value.into(),
-            owner_group.into(),
             team_id.into(),
-            SqlValue::Int(team_shared_i),
+            SqlValue::Int(share_with_team_i),
             kind.into(),
             id.into(),
         ],
@@ -219,20 +223,22 @@ pub async fn update_value_and_metadata(
     Ok(())
 }
 
-/// Pre-delete facts: name, owner_group, team_id, team_shared (raw 0/1), kind
-/// — the audit before-snapshot. `None` = no such secret.
+/// Pre-delete facts: name, derived owner_group, team_id, share_with_team (raw
+/// 0/1), kind — the audit before-snapshot. `None` = no such secret.
 pub struct SecretDeleteFacts {
     pub name: String,
     pub owner_group: String,
     pub team_id: String,
-    pub team_shared: i64,
+    pub share_with_team: i64,
     pub kind: String,
 }
 
 pub async fn delete_facts(pool: &DbPool, id: &str) -> Result<SecretDeleteFacts, AppError> {
     let row = exec::fetch_optional(
         pool,
-        "SELECT name, owner_group, team_id, team_shared, kind FROM secrets WHERE id = ?",
+        "SELECT s.name, COALESCE(t.slug, '') AS owner_group, s.team_id,
+                s.share_with_team, s.kind
+         FROM secrets s LEFT JOIN teams t ON t.id = s.team_id WHERE s.id = ?",
         &[id.into()],
     )
     .await?
@@ -241,7 +247,7 @@ pub async fn delete_facts(pool: &DbPool, id: &str) -> Result<SecretDeleteFacts, 
         name: row.text_of("name"),
         owner_group: row.text_of("owner_group"),
         team_id: row.text_of("team_id"),
-        team_shared: row.i64_of("team_shared"),
+        share_with_team: row.i64_of("share_with_team"),
         kind: row.text_of("kind"),
     })
 }

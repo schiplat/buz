@@ -55,7 +55,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
         const t = teams.value.find(x => x.id === row.team_id)
         return t ? t.name : (row.team_id || '')
       }
-      case 'team_shared': return row.team_shared ? 1 : 0
+      case 'share_with_team': return row.share_with_team ? 1 : 0
       case 'kind': return row.kind || 'generic'
       case 'github_status': return githubStatusValue(row)
       case 'updated_at': return row.updated_at || ''
@@ -107,7 +107,7 @@ const editing = ref<Secret | null>(null)
 const formName = ref('')
 const formValue = ref('')
 const formTeamId = ref('')
-const formTeamShared = ref(false)
+const formShareWithTeam = ref(false)
 const formKind = ref<SecretKind>('generic')
 const saving = ref(false)
 const showValue = ref(false)
@@ -156,7 +156,7 @@ function openCreate() {
     ?? manageableTeams.value.find((t) => t.id === preferred)
     ?? manageableTeams.value[0]
   )?.id ?? ''
-  formTeamShared.value = false
+  formShareWithTeam.value = false
   formKind.value = 'generic'
   showValue.value = false
   showDialog.value = true
@@ -167,7 +167,7 @@ function openEdit(s: Secret) {
   formName.value = s.name
   formValue.value = ''
   formTeamId.value = s.team_id || ''
-  formTeamShared.value = !!s.team_shared
+  formShareWithTeam.value = !!s.share_with_team
   formKind.value = normalizeSecretKind(s.kind)
   showValue.value = false
   showDialog.value = true
@@ -212,7 +212,7 @@ async function handleSave() {
       const res = await secretsApi.update(editing.value.id, {
         value: formValue.value,
         team_id: formTeamId.value,
-        team_shared: formTeamShared.value,
+        share_with_team: formShareWithTeam.value,
         kind: formKind.value,
       })
       showDialog.value = false
@@ -233,7 +233,7 @@ async function handleSave() {
         name: formName.value.trim().toUpperCase(),
         value: formValue.value,
         team_id: formTeamId.value,
-        team_shared: formTeamShared.value,
+        share_with_team: formShareWithTeam.value,
         kind: formKind.value,
       })
       showDialog.value = false
@@ -283,7 +283,7 @@ onMounted(loadSecrets)
          the page header, the TopNav carries the title) -->
     <div class="flex items-center gap-3 flex-wrap">
       <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
-        Encrypted credentials. Reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code> in plugin with, step env, or config.render templates. Team share is optional; values are masked in logs.
+        Encrypted credentials. Reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code> in plugin with, step env, or config.render templates. Share with team is optional; values are masked in logs.
       </p>
       <UiButton
         v-if="auth.isPlatformAdmin || manageableTeams.length > 0"
@@ -340,9 +340,9 @@ onMounted(loadSecrets)
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
-                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team_shared')">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('share_with_team')">
                     Share
-                    <span class="font-mono text-xs">{{ sortIndicator('team_shared') }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('share_with_team') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
@@ -399,10 +399,10 @@ onMounted(loadSecrets)
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
                 <td class="px-5 py-3 text-xs whitespace-nowrap">
                   <span
-                    v-if="s.team_shared"
+                    v-if="s.share_with_team"
                     class="inline-flex items-center rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400"
-                    title="Same-team pipelines auto-receive this secret"
-                  >Team share</span>
+                    title="Same-team pipelines may reference this secret without an explicit binding"
+                  >Share with team</span>
                   <span v-else class="text-muted-foreground/70" title="Requires explicit bind or step reference">Explicit</span>
                 </td>
                 <td class="px-5 py-3">
@@ -434,7 +434,7 @@ onMounted(loadSecrets)
           Create generic secrets here, then reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
           in plugin <code class="mono-chip text-[10px]">with</code>, step <code class="mono-chip text-[10px]">env</code>,
           or <code class="mono-chip text-[10px]">config.render</code> templates.
-          Enable <span class="font-medium text-foreground">Team share</span> only when every same-team pipeline needs access.
+          Enable <span class="font-medium text-foreground">Share with team</span> only when every same-team pipeline needs access.
         </p>
       </div>
     </div>
@@ -470,7 +470,7 @@ onMounted(loadSecrets)
                 <option disabled value="">Select a team</option>
                 <option v-for="t in manageableTeams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
               </select>
-              <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Team share is enabled.</p>
+              <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Share with team is enabled.</p>
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Kind <span class="text-red-500">*</span></label>
@@ -495,17 +495,19 @@ onMounted(loadSecrets)
             <div>
               <label class="flex items-start gap-2.5 cursor-pointer">
                 <input
-                  v-model="formTeamShared"
+                  v-model="formShareWithTeam"
                   type="checkbox"
                   class="mt-0.5 h-3.5 w-3.5 rounded-sm border-border accent-primary cursor-pointer"
                 />
                 <span>
-                  <span class="block text-[12px] font-medium text-foreground">Team share</span>
+                  <span class="block text-[12px] font-medium text-foreground">Share with team</span>
                   <span class="block text-[10px] text-muted-foreground mt-0.5 leading-relaxed">
-                    When enabled, every pipeline in this team auto-receives this secret as an env var at job claim.
-                    Leave off for sensitive credentials — reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
-                    explicitly in plugin <code class="mono-chip text-[10px]">with</code> or step
-                    <code class="mono-chip text-[10px]">env</code>. For <code class="mono-chip text-[10px]">config.render</code>
+                    When enabled, every pipeline in this team may reference this secret via
+                    <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code> without an explicit binding.
+                    It is not injected as an env var — map it explicitly in plugin
+                    <code class="mono-chip text-[10px]">with</code> or step
+                    <code class="mono-chip text-[10px]">env</code>. Leave off for sensitive credentials. For
+                    <code class="mono-chip text-[10px]">config.render</code>
                     templates, authorize only the needed names with step <code class="mono-chip text-[10px]">secrets: [NAME]</code>.
                   </span>
                 </span>
