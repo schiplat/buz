@@ -247,7 +247,6 @@ pub async fn upsert_from_yaml(
                 concurrency_queue_timeout_seconds: parse_concurrency_timeout_seconds(
                     concurrency_queue_timeout.as_deref(),
                 ),
-                owner_group: &resolved_slug,
                 team_id: &team_id,
                 input_defs: &input_defs_json,
                 environments: &environments_json,
@@ -359,7 +358,6 @@ pub async fn upsert_from_yaml(
                 concurrency_queue_timeout_seconds: parse_concurrency_timeout_seconds(
                     concurrency_queue_timeout.as_deref(),
                 ),
-                owner_group: &resolved_slug,
                 team_id: &team_id,
                 yaml_path: &yaml_key,
                 yaml_sha256: &yaml_sha256,

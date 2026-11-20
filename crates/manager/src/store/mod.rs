@@ -27,6 +27,7 @@
 pub mod api_tokens;
 pub mod audit_logs;
 pub mod auth;
+pub mod consistency;
 pub mod dialect;
 pub mod environments;
 pub mod exec;

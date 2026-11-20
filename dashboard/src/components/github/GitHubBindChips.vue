@@ -13,26 +13,26 @@ defineEmits<{ open: [] }>()
 function chipClass(status: string) {
   switch (status) {
     case 'ok':
-      return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20'
+      return 'bg-success/10 text-success dark:text-success '
     case 'failed':
-      return 'bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20'
+      return 'bg-destructive/10 text-destructive dark:text-destructive '
     case 'stale':
-      return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20'
+      return 'bg-warning/10 text-warning dark:text-warning '
     default:
-      return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20'
+      return 'bg-warning/10 text-warning dark:text-warning '
   }
 }
 
 function dotClass(status: string) {
   switch (status) {
     case 'ok':
-      return 'bg-emerald-500'
+      return 'bg-success'
     case 'failed':
-      return 'bg-red-500'
+      return 'bg-destructive'
     case 'stale':
-      return 'bg-amber-500'
+      return 'bg-warning'
     default:
-      return 'bg-amber-500'
+      return 'bg-warning'
   }
 }
 
@@ -59,7 +59,7 @@ function chipTitle(b: GitHubBind): string {
       :key="b.id"
       type="button"
       :title="chipTitle(b)"
-      class="inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:brightness-95"
+      class="inline-flex cursor-pointer items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:brightness-95"
       :class="chipClass(b.last_status)"
       @click="$emit('open')"
     >

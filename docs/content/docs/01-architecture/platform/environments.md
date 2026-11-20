@@ -94,7 +94,7 @@ CREATE TABLE environment_secret_overrides (
 
 **Secrets**
 
-1. Explicit `pipeline_secrets` + `team_shared` allowlist (and later implied
+1. Explicit `pipeline_secrets` + `share_with_team` allowlist (and later implied
    `${secrets.X}` / purpose slots)
 2. Environment Secret overrides for names **already on the allowlist**
 3. Expansion / masking use the effective value

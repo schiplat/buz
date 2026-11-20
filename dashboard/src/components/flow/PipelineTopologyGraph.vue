@@ -40,10 +40,10 @@ type FilterKey = 'all' | 'success' | 'failed' | 'pending'
 const activeFilter = ref<FilterKey>('all')
 
 const filterOptions: { key: FilterKey; label: string; dot: string }[] = [
-  { key: 'all', label: 'All', dot: 'bg-slate-400' },
-  { key: 'success', label: 'Success', dot: 'bg-emerald-500' },
-  { key: 'failed', label: 'Failed', dot: 'bg-red-500' },
-  { key: 'pending', label: 'Pending', dot: 'bg-slate-300' },
+  { key: 'all', label: 'All', dot: 'bg-muted-foreground' },
+  { key: 'success', label: 'Success', dot: 'bg-success' },
+  { key: 'failed', label: 'Failed', dot: 'bg-destructive' },
+  { key: 'pending', label: 'Pending', dot: 'bg-muted-foreground/40' },
 ]
 
 const nodes = ref<any[]>([])
@@ -64,7 +64,7 @@ function toggleFullscreen() {
 
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement === graphRoot.value
-  nextTick(() => fitView({ padding: 0.15, duration: 200 }))
+  nextTick(() => fitView({ padding: 0.15, maxZoom: 1.25, duration: 200 }))
 }
 
 onMounted(() => {
@@ -167,7 +167,7 @@ function buildGraph() {
 
   const dagreGraph = new dagre.graphlib.Graph()
   dagreGraph.setDefaultEdgeLabel(() => ({}))
-  dagreGraph.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 40 })
+  dagreGraph.setGraph({ rankdir: 'LR', nodesep: 48, ranksep: 56 })
 
   rawNodes.forEach(n => {
     dagreGraph.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
@@ -194,7 +194,7 @@ function buildGraph() {
     if (focus != null) {
       focusCamera(focus)
     } else {
-      fitView({ padding: 0.15, duration: 200 })
+      fitView({ padding: 0.15, maxZoom: 1.25, duration: 200 })
     }
   })
 }
@@ -202,7 +202,7 @@ function buildGraph() {
 function focusCamera(stepIndex: number) {
   const n = nodes.value.find((node) => node.id === `step-${stepIndex}`)
   if (!n) {
-    fitView({ padding: 0.15, duration: 200 })
+    fitView({ padding: 0.15, maxZoom: 1.25, duration: 200 })
     return
   }
   const x = n.position.x + NODE_WIDTH / 2
@@ -238,12 +238,12 @@ defineExpose({ refresh: buildGraph })
 <template>
   <div
     ref="graphRoot"
-    class="pipeline-topology h-[360px] w-full rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs relative"
+    class="pipeline-topology h-[420px] w-full surface-card overflow-hidden relative"
     :class="{ 'pipeline-topology--fullscreen': isFullscreen }"
   >
     <div
       v-if="tasks.length > 0"
-      class="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded-lg bg-card/95 border border-border/50 px-2 py-1.5 shadow-xs backdrop-blur-sm"
+      class="absolute top-3 left-3 z-10 flex items-center gap-1.5 surface-overlay px-2 py-1.5 backdrop-blur-sm"
     >
       <button
         v-for="opt in filterOptions"
@@ -262,7 +262,7 @@ defineExpose({ refresh: buildGraph })
 
     <button
       v-if="tasks.length > 0"
-      class="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-lg bg-card/95 border border-border/50 shadow-xs backdrop-blur-sm text-muted-foreground hover:text-foreground transition-colors"
+      class="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 surface-overlay backdrop-blur-sm text-muted-foreground hover:text-foreground transition-colors"
       :title="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
       @click="toggleFullscreen"
     >
@@ -280,8 +280,8 @@ defineExpose({ refresh: buildGraph })
       v-model:edges="edges"
       :node-types="nodeTypes as any"
       :default-viewport="{ zoom: 1, x: 0, y: 0 }"
-      :min-zoom="0.15"
-      :max-zoom="2"
+      :min-zoom="0.45"
+      :max-zoom="1.25"
       :nodes-draggable="false"
       :nodes-connectable="false"
       :elements-selectable="true"
@@ -297,8 +297,8 @@ defineExpose({ refresh: buildGraph })
 
 <style>
 .pipeline-topology .vue-flow__node-step-node {
-  width: 170px !important;
-  height: 88px !important;
+  width: 200px !important;
+  height: 100px !important;
   padding: 0 !important;
   border: none !important;
   background: transparent !important;

@@ -27,15 +27,15 @@ function triggerLabel(triggerBy: string): string {
 function statusDotClass(status: string): string {
   switch (status) {
     case 'success':
-      return 'bg-emerald-500'
+      return 'bg-success'
     case 'failed':
-      return 'bg-red-500'
+      return 'bg-destructive'
     case 'running':
-      return 'bg-amber-400 animate-pulse'
+      return 'bg-warning animate-pulse'
     case 'cancelled':
-      return 'bg-slate-400'
+      return 'bg-muted-foreground'
     default:
-      return 'bg-slate-300'
+      return 'bg-muted-foreground/40'
   }
 }
 
@@ -76,7 +76,7 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
       <div v-if="loading" class="space-y-1 px-3 py-1">
         <div v-for="n in 6" :key="n" class="animate-pulse">
           <div class="h-4 w-3/4 rounded-sm bg-muted" />
-          <div class="mt-1.5 h-3 w-1/2 rounded-sm bg-muted/70" />
+          <div class="mt-1.5 h-3 w-1/2 rounded-sm bg-muted/40" />
         </div>
       </div>
 
@@ -88,7 +88,7 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
         <li v-for="j in jobs" :key="j.id">
           <a
             :href="`/jobs/${j.id}`"
-            class="group flex items-start gap-2.5 rounded-xl px-3 py-2.5 transition-colors hover:bg-muted/70"
+            class="group flex items-start gap-2.5 rounded-xl px-3 py-2.5 transition-colors hover:bg-muted/40"
             @click.prevent="router.push(`/jobs/${j.id}`)"
           >
             <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full" :class="statusDotClass(j.status)" />
@@ -98,7 +98,7 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
               </span>
               <span class="mt-0.5 flex items-center gap-1.5">
                 <span
-                  class="rounded-sm border border-border bg-muted/60 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                  class="rounded-lg bg-muted/40 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
                 >
                   {{ triggerLabel(j.trigger_by) }}
                 </span>
@@ -109,11 +109,11 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
               class="shrink-0 text-[10px] font-semibold uppercase tracking-wide"
               :class="
                 j.status === 'success'
-                  ? 'text-emerald-600'
+                  ? 'text-success'
                   : j.status === 'failed'
-                    ? 'text-red-500'
+                    ? 'text-destructive'
                     : j.status === 'running'
-                      ? 'text-amber-600'
+                      ? 'text-warning'
                       : 'text-muted-foreground'
               "
             >

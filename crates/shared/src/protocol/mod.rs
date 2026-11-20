@@ -1136,7 +1136,7 @@ pub struct CreateSecretRequest {
     /// `${secrets.NAME}` resolution (still not auto-injected as `$NAME`).
     /// Defaults to false (explicit bind / step reference / purpose slots).
     #[serde(default)]
-    pub team_shared: Option<bool>,
+    pub share_with_team: Option<bool>,
     /// `generic` (default) or `aliyun_oss_auth` (legacy OSS credentials).
     #[serde(default)]
     pub kind: Option<String>,
@@ -1149,9 +1149,9 @@ pub struct UpdateSecretRequest {
     pub owner_group: Option<String>,
     #[serde(default)]
     pub team_id: Option<String>,
-    /// When set, updates the opt-in team auto-inject flag.
+    /// When set, updates the opt-in team auto-allowlist flag.
     #[serde(default)]
-    pub team_shared: Option<bool>,
+    pub share_with_team: Option<bool>,
     /// When set, updates secret kind (`generic` | `aliyun_oss_auth`).
     #[serde(default)]
     pub kind: Option<String>,

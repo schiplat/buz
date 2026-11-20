@@ -295,6 +295,10 @@ pub async fn resolve_required_team_id(
     }
 
     if let Some(slug) = owner_group.map(str::trim).filter(|s| !s.is_empty()) {
+        tracing::warn!(
+            slug = %slug,
+            "owner_group is deprecated as a team selector; pass team_id (YAML: `team:`) instead"
+        );
         return crate::store::teams::id_and_slug_by_slug(pool, slug)
             .await?
             .ok_or_else(|| {
@@ -366,7 +370,7 @@ pub fn team_in_clause(auth: &AuthUser, column: &str) -> Option<(String, Vec<Stri
     }
 }
 
-/// Bootstrap default team + migrate owner_group → team_id.
+/// Bootstrap the default team and backfill any empty `team_id` rows.
 /// First platform admin is created via `POST /auth/setup` (web UI), not from config.
 pub async fn bootstrap(pool: &DbPool) -> anyhow::Result<()> {
     crate::store::teams::bootstrap(pool)

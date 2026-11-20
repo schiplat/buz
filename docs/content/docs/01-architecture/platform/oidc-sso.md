@@ -12,8 +12,10 @@ authentication origins, ticket handoff), **web-based configuration**
 and **provider-initiated session revocation** (back-channel logout: disabling
 or logging out a subject at the IdP kills that user's Buz JWTs within
 seconds). Local login is unchanged; account conversion and group→workspace
-mapping remain future phases. This page is both the design record and the
-operator reference.
+mapping remain future phases. The implementation is **end-to-end verified
+against Signet**; for the operator walkthrough see
+[SSO in Ten Minutes with Signet](/docs/00-quick-start/signet-sso/). This page
+is both the design record and the operator reference.
 
 ## Goals
 

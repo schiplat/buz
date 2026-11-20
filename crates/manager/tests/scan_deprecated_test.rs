@@ -55,7 +55,7 @@ async fn scan_reports_tasks_secrets_and_files() {
     ] {
         exec::execute(
             &pool,
-            "INSERT INTO secrets (id, name, value, owner_group, kind) VALUES (?, ?, 'x', '', ?)",
+            "INSERT INTO secrets (id, name, value, kind) VALUES (?, ?, 'x', ?)",
             &[id.into(), name.into(), kind.into()],
         )
         .await

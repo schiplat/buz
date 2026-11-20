@@ -532,14 +532,14 @@ const clockChip = computed(() => {
 type ResourceTone = 'ok' | 'warn' | 'crit'
 /** Amber past 80%, red past 95% — color only signals stress. */
 const resourceTone = (pct: number): ResourceTone => (pct > 95 ? 'crit' : pct > 80 ? 'warn' : 'ok')
-const toneBarClass: Record<ResourceTone, string> = { ok: 'bg-emerald-400', warn: 'bg-amber-500', crit: 'bg-red-500' }
-const toneTextClass: Record<ResourceTone, string> = { ok: '', warn: 'text-amber-500', crit: 'text-red-500' }
+const toneBarClass: Record<ResourceTone, string> = { ok: 'bg-success', warn: 'bg-warning', crit: 'bg-destructive' }
+const toneTextClass: Record<ResourceTone, string> = { ok: '', warn: 'text-warning', crit: 'text-destructive' }
 const toneStatusClass: Record<ResourceTone, string> = {
-  ok: 'text-emerald-600 dark:text-emerald-400',
-  warn: 'text-amber-600 dark:text-amber-400',
-  crit: 'text-red-600 dark:text-red-400',
+  ok: 'text-success dark:text-success',
+  warn: 'text-warning dark:text-warning',
+  crit: 'text-destructive dark:text-destructive',
 }
-const toneDotClass: Record<ResourceTone, string> = { ok: 'bg-emerald-500', warn: 'bg-amber-500', crit: 'bg-red-500' }
+const toneDotClass: Record<ResourceTone, string> = { ok: 'bg-success', warn: 'bg-warning', crit: 'bg-destructive' }
 
 const cpuUsage = computed(() => activeRunner.value?.system_info?.cpu_usage_percent ?? 0)
 const memUsage = computed(() => {
@@ -648,12 +648,12 @@ async function copyNetValue(value: string) {
 
 const eventBadge = (t: string) => {
   const m: Record<string, string> = {
-    created: 'bg-slate-500/10 text-slate-600',
-    registered: 'bg-emerald-500/10 text-emerald-600',
-    job_dispatched: 'bg-blue-500/10 text-blue-600',
-    frozen: 'bg-sky-500/10 text-sky-600',
-    unfrozen: 'bg-sky-500/10 text-sky-600',
-    offline: 'bg-red-500/10 text-red-500',
+    created: 'bg-muted/40 text-muted-foreground',
+    registered: 'bg-success/10 text-success',
+    job_dispatched: 'bg-info/10 text-info',
+    frozen: 'bg-info/10 text-info',
+    unfrozen: 'bg-info/10 text-info',
+    offline: 'bg-destructive/10 text-destructive',
   }
   return m[t] || 'bg-muted text-muted-foreground'
 }
@@ -667,30 +667,30 @@ const eventBadge = (t: string) => {
       </template>
     </PageHeader>
 
-    <div v-if="runners.some((runner) => !runner.team_id)" role="note" class="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-xs text-muted-foreground">
+    <div v-if="runners.some((runner) => !runner.team_id)" role="note" class="notice-warning px-4 py-3 text-xs">
       <span class="font-semibold text-warning">Shared Runner trust boundary.</span>
       Shared Runners can execute jobs from every team. Use only for mutually trusted workloads; bind a Runner to a team to restrict Manager dispatch. Team binding does not sandbox jobs that share the same OS user or host.
     </div>
 
-    <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div class="surface-card overflow-hidden">
       <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
       <template v-else-if="runners.length > 0">
         <!-- Filter bar -->
-        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+        <div class="px-5 py-3 border-b border-border/40 flex items-center gap-3 flex-wrap">
           <input
             v-model="searchQuery"
             type="text"
             placeholder="Search runners…"
-            class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-44 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
           />
-          <select v-model="filterStatus" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+          <select v-model="filterStatus" class="field-select-sm">
             <option value="">All statuses</option>
             <option value="online">Online</option>
             <option value="offline">Offline</option>
             <option value="error">Error</option>
           </select>
-          <select v-model="filterFrozen" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+          <select v-model="filterFrozen" class="field-select-sm">
             <option value="">All</option>
             <option value="frozen">Frozen</option>
             <option value="active">Active</option>
@@ -702,7 +702,7 @@ const eventBadge = (t: string) => {
         <div class="overflow-x-auto">
           <table class="w-full text-[13px]">
             <thead>
-              <tr class="border-b border-border/30 bg-muted/10">
+              <tr class="border-b border-border/40 bg-muted/40">
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
@@ -741,7 +741,7 @@ const eventBadge = (t: string) => {
               </tr>
             </thead>
             <tbody class="divide-y divide-border/20">
-              <tr v-for="r in pagedRunners" :key="r.id" class="hover:bg-muted/5 transition-colors">
+              <tr v-for="r in pagedRunners" :key="r.id" class="hover:bg-muted/40 transition-colors">
                 <td class="px-5 py-3 whitespace-nowrap">
                   <div class="inline-flex items-center gap-1.5 max-w-full">
                     <button
@@ -752,19 +752,19 @@ const eventBadge = (t: string) => {
                     >{{ r.name }}</button>
                     <button
                       type="button"
-                      class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-muted hover:text-foreground transition-colors"
+                      class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-lg text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground transition-colors"
                       title="Copy name"
                       @click="copyRunnerName(r, $event)"
                     >
-                      <Check v-if="copiedNameId === r.id" class="h-3 w-3 text-emerald-500" />
+                      <Check v-if="copiedNameId === r.id" class="h-3 w-3 text-success" />
                       <Copy v-else class="h-3 w-3" />
                     </button>
-                    <span v-if="r.is_frozen" class="text-[10px] text-sky-500 font-normal">(frozen)</span>
+                    <span v-if="r.is_frozen" class="text-[10px] text-info font-normal">(frozen)</span>
                   </div>
                 </td>
                 <td class="px-5 py-3 text-xs">
                   <span v-if="r.team_id" class="text-foreground">{{ teams.find((team) => team.id === r.team_id)?.name || 'Bound team' }}</span>
-                  <span v-else class="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">Shared</span>
+                  <span v-else class="inline-flex items-center rounded-lg bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning dark:text-warning">Shared</span>
                 </td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.hostname || '—' }}</td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.ip_addresses?.[0] || '—' }}</td>
@@ -778,7 +778,7 @@ const eventBadge = (t: string) => {
                 <td class="px-5 py-3 text-right">
                   <div class="flex items-center justify-end gap-1">
                     <UiButton variant="ghost" size="sm" @click="handleToggleFreeze(r)" :title="r.is_frozen ? 'Unfreeze' : 'Freeze'">
-                      <Snowflake class="h-3.5 w-3.5" :class="r.is_frozen ? 'text-sky-500' : 'text-muted-foreground'" />
+                      <Snowflake class="h-3.5 w-3.5" :class="r.is_frozen ? 'text-info' : 'text-muted-foreground'" />
                     </UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleRestart(r)" title="Restart">
                       <RotateCcw class="h-3.5 w-3.5 text-muted-foreground" />
@@ -813,14 +813,14 @@ const eventBadge = (t: string) => {
       >
         <div class="absolute inset-0 transition-all duration-300" :class="drawerOpen ? 'bg-black/40' : 'bg-transparent'" @click="closeDetail"></div>
 
-        <div class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300" :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'">
+        <div class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border overflow-y-auto transition-transform duration-300" :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'">
           <!-- Header -->
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-6 py-4">
             <div class="flex items-center gap-3 min-w-0">
               <h2 class="text-base font-semibold tracking-tight truncate">{{ activeRunner?.name || 'Runner' }}</h2>
               <StatusBadge v-if="activeRunner" :status="activeRunner.status" />
             </div>
-            <button class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0" @click="closeDetail">
+            <button class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors shrink-0" @click="closeDetail">
               <X class="h-4 w-4" />
             </button>
           </div>
@@ -830,23 +830,23 @@ const eventBadge = (t: string) => {
             <!-- Tabs: rendered even before the first heartbeat so Policy stays reachable -->
             <div class="flex rounded-xl bg-muted p-1">
               <button
-                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                :class="detailTab === 'overview' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                class="flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'overview' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="detailTab = 'overview'"
               >Overview</button>
               <button
-                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                :class="detailTab === 'policy' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                class="flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'policy' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="detailTab = 'policy'"
-              >Policy<span v-if="policyDirty()" class="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500" title="Unsaved policy changes"></span></button>
+              >Policy<span v-if="policyDirty()" class="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-warning" title="Unsaved policy changes"></span></button>
               <button
-                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                :class="detailTab === 'network' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                class="flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'network' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="detailTab = 'network'"
               >Network</button>
               <button
-                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                :class="detailTab === 'logs' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                class="flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'logs' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="detailTab = 'logs'"
               >Log</button>
             </div>
@@ -854,7 +854,7 @@ const eventBadge = (t: string) => {
             <!-- Overview tab: platform dossier + resources -->
             <div v-show="detailTab === 'overview'" class="space-y-3">
               <template v-if="hasInfo(activeRunner)">
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+                <div class="rounded-xl border border-border/40 bg-background px-3.5 py-3.5">
                   <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Platform</div>
                   <div class="text-[15px] font-semibold tracking-tight leading-snug mt-2">{{ activeRunner.system_info!.os }}</div>
                   <div class="font-mono text-[11.5px] text-muted-foreground mt-1">{{ activeRunner.system_info!.hostname }}</div>
@@ -893,7 +893,7 @@ const eventBadge = (t: string) => {
                   </dl>
                 </div>
 
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+                <div class="rounded-xl border border-border/40 bg-background px-3.5 py-3.5">
                   <div class="flex items-center justify-between mb-3">
                     <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Resources</span>
                     <span
@@ -938,7 +938,7 @@ const eventBadge = (t: string) => {
                   </div>
                 </div>
               </template>
-              <div v-else class="rounded-xl border border-border/60 bg-muted/30 px-4 py-6 text-center">
+              <div v-else class="surface-inset px-4 py-6 text-center">
                 <Monitor class="h-8 w-8 mx-auto text-muted-foreground/40 mb-3" />
                 <p class="text-sm text-muted-foreground">Waiting for first heartbeat</p>
                 <p class="text-xs text-muted-foreground/60 mt-1">System info will appear once the Runner reports in.</p>
@@ -946,22 +946,22 @@ const eventBadge = (t: string) => {
             </div>
 
             <!-- Policy tab: UI-managed runner policy -->
-            <div v-show="detailTab === 'policy'" class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3 space-y-3">
+            <div v-show="detailTab === 'policy'" class="surface-inset px-3.5 py-3 space-y-3">
               <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Runner Policy</div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Team scope</label>
-                <select v-model="editTeamId" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
+                <select v-model="editTeamId" class="field-select-sm w-full">
                   <option value="shared">Shared — all teams</option>
                   <option v-for="team in teams" :key="team.id" :value="team.id">{{ team.name }} ({{ team.slug }})</option>
                 </select>
-                <p v-if="editTeamId === 'shared'" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                <p v-if="editTeamId === 'shared'" class="mt-1 text-[10px] text-warning dark:text-warning">
                   Shared dispatch crosses teams; use only for mutually trusted workloads.
                 </p>
                 <p v-else class="mt-1 text-[10px] text-muted-foreground">
                   Only this team’s jobs are dispatched here. This does not isolate jobs sharing the Runner OS user.
                 </p>
               </div>
-              <div class="rounded-lg border border-border/50 bg-background/70 p-3 space-y-2">
+              <div class="rounded-xl border border-border bg-background/70 p-3 space-y-2">
                 <div class="flex items-center justify-between gap-2">
                   <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
                   <div class="flex shrink-0 items-center gap-2">
@@ -980,14 +980,14 @@ const eventBadge = (t: string) => {
                 <!-- re-probe lifecycle: vertical stepper sized for this drawer -->
                 <div v-if="reprobePhase !== 'idle'" class="mb-2 space-y-1">
                   <div
-                    class="flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[11px]"
-                    :class="reprobePhase === 'probing' ? 'border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-400'
-                      : reprobePhase === 'queued' ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'"
+                    class="flex items-center gap-2.5 rounded-xl bg-muted/40 px-3 py-2 text-[11px]"
+                    :class="reprobePhase === 'probing' ? 'bg-info/10 text-info'
+                      : reprobePhase === 'queued' ? 'bg-warning/10 text-warning'
+                      : 'bg-success/10 text-success'"
                   >
                     <span
-                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white"
-                      :class="reprobePhase === 'probing' ? 'bg-blue-600' : reprobePhase === 'queued' ? 'bg-amber-600' : 'bg-emerald-600'"
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-lg text-white"
+                      :class="reprobePhase === 'probing' ? 'bg-info' : reprobePhase === 'queued' ? 'bg-warning' : 'bg-success'"
                     >
                       <Check v-if="reprobePhase === 'done'" class="h-2.5 w-2.5" />
                       <LoaderCircle v-else class="h-2.5 w-2.5 animate-spin" />
@@ -1003,10 +1003,10 @@ const eventBadge = (t: string) => {
                     v-if="reprobePhase !== 'done'"
                     class="ml-3 flex items-center gap-2.5 border-l border-dashed border-border pl-3 text-[10.5px] text-muted-foreground"
                   >
-                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="activeRunner?.status !== 'online' ? 'bg-muted-foreground/40' : 'bg-emerald-500'" />
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="activeRunner?.status !== 'online' ? 'bg-muted-foreground/40' : 'bg-success'" />
                     <span class="min-w-0 flex-1">{{ reprobeStep2Text }}</span>
                   </div>
-                  <p v-if="reprobeTimedOut" class="ml-3 flex items-start gap-1.5 pl-3 text-[10px] text-amber-600">
+                  <p v-if="reprobeTimedOut" class="ml-3 flex items-start gap-1.5 pl-3 text-[10px] text-warning">
                     <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
                     <span>Taking longer than expected — check the Runner's log (probes run create → exec → remove per tier), or request again.</span>
                   </p>
@@ -1027,13 +1027,13 @@ const eventBadge = (t: string) => {
               </div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Job execution mode</label>
-                <select v-model="editExecutionMode" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
+                <select v-model="editExecutionMode" class="field-select-sm w-full">
                   <option value="host">L0 Host — no per-job isolation (free, default)</option>
                   <option value="container" :disabled="!containerSupport.supported">L1 Container — hardened, shares host kernel (free)</option>
                   <option value="sandbox" :disabled="!sandboxSupport.supported">L2 Sandbox — userspace kernel, no KVM needed (low cost)</option>
                   <option value="vm" :disabled="!vmSupport.supported">L3 VM — hardware boundary, needs Linux + KVM (highest cost)</option>
                 </select>
-                <p v-if="!canSelectMode(editExecutionMode)" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                <p v-if="!canSelectMode(editExecutionMode)" class="mt-1 text-[10px] text-warning dark:text-warning">
                   {{ modeBlockReason(editExecutionMode) }}
                 </p>
                 <p class="mt-1 text-[10px] text-muted-foreground">
@@ -1106,7 +1106,7 @@ const eventBadge = (t: string) => {
                 <label class="text-xs text-muted-foreground w-28 shrink-0">SSH host key</label>
                 <select
                   v-model="editSshHostKeyPolicy"
-                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
+                  class="field-select-sm flex-1"
                 >
                   <option value="insecure">insecure (accept any)</option>
                   <option value="known_hosts">known_hosts</option>
@@ -1117,7 +1117,7 @@ const eventBadge = (t: string) => {
                 <div class="flex-1">
                   <select
                     v-model="editClaimStrategy"
-                    class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
+                    class="field-select-sm w-full"
                   >
                     <option value="backfill">backfill (skip jobs that do not fit)</option>
                     <option value="fifo">fifo (strict order within eligible set)</option>
@@ -1153,7 +1153,7 @@ const eventBadge = (t: string) => {
 
             <!-- Network tab: interfaces with bound IPs + MAC -->
             <div v-show="detailTab === 'network'" class="space-y-3">
-              <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+              <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/40 bg-background px-3.5 py-3.5">
                 <div class="flex items-center justify-between">
                   <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Interfaces</span>
                   <span v-if="allIfaces.length" class="text-[10px] text-muted-foreground/70">
@@ -1165,13 +1165,13 @@ const eventBadge = (t: string) => {
                 <div
                   v-for="nic in physicalIfaces"
                   :key="nic.name"
-                  class="py-2.5 border-b border-border/30 last:border-b-0"
+                  class="py-2.5 border-b border-border/40 last:border-b-0"
                 >
                   <div class="flex items-center gap-2">
                     <span class="text-[13px] font-semibold">{{ nic.name }}</span>
                     <span
                       v-if="primaryIp && nic.ips.includes(primaryIp)"
-                      class="inline-flex items-center rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400"
+                      class="inline-flex items-center rounded-lg bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info dark:text-info"
                       title="Primary address — same subnet as the Manager"
                     >to Manager</span>
                   </div>
@@ -1179,14 +1179,14 @@ const eventBadge = (t: string) => {
                   <div v-for="ip in nic.ips" :key="ip" class="flex items-center justify-between gap-2 mt-1.5">
                     <span class="font-mono text-[12.5px]">{{ ip }}</span>
                     <button type="button" class="text-muted-foreground/60 hover:text-foreground transition-colors" :title="`Copy ${ip}`" @click="copyNetValue(ip)">
-                      <Check v-if="copiedNetValue === ip" class="h-3 w-3 text-emerald-500" />
+                      <Check v-if="copiedNetValue === ip" class="h-3 w-3 text-success" />
                       <Copy v-else class="h-3 w-3" />
                     </button>
                   </div>
                   <div v-if="nic.mac" class="flex items-center justify-between gap-2 mt-2">
                     <span class="text-[11px] text-muted-foreground">MAC <span class="font-mono text-[11.5px]">{{ nic.mac }}</span></span>
                     <button type="button" class="text-muted-foreground/60 hover:text-foreground transition-colors" title="Copy MAC" @click="copyNetValue(nic.mac)">
-                      <Check v-if="copiedNetValue === nic.mac" class="h-3 w-3 text-emerald-500" />
+                      <Check v-if="copiedNetValue === nic.mac" class="h-3 w-3 text-success" />
                       <Copy v-else class="h-3 w-3" />
                     </button>
                   </div>
@@ -1195,7 +1195,7 @@ const eventBadge = (t: string) => {
                 <div
                   v-if="ifaceFolds.length"
                   class="divide-y divide-border/30"
-                  :class="physicalIfaces.length ? 'border-t border-border/30' : ''"
+                  :class="physicalIfaces.length ? 'border-t border-border/40' : ''"
                 >
                   <div v-for="fold in ifaceFolds" :key="fold.key" class="py-1">
                     <button
@@ -1223,7 +1223,7 @@ const eventBadge = (t: string) => {
             <!-- Log tab -->
             <div v-show="detailTab === 'logs'" class="space-y-2">
               <div v-if="eventsLoading" class="text-center py-8 text-xs text-muted-foreground">Loading…</div>
-              <div v-else-if="runnerEvents.length === 0" class="rounded-xl border border-border/60 bg-background px-4 py-8 text-center">
+              <div v-else-if="runnerEvents.length === 0" class="rounded-xl border border-border/40 bg-background px-4 py-8 text-center">
                 <ScrollText class="h-8 w-8 mx-auto text-muted-foreground/30 mb-3" />
                 <p class="text-sm text-muted-foreground">No events recorded yet</p>
                 <p class="text-xs text-muted-foreground/60 mt-1">Events appear when the runner registers, claims jobs, or changes state.</p>
@@ -1235,7 +1235,7 @@ const eventBadge = (t: string) => {
                   class="rounded-lg border border-border/40 bg-background px-3.5 py-2.5 flex items-start gap-3"
                 >
                   <span
-                    class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide mt-0.5 shrink-0"
+                    class="inline-flex items-center rounded-lg px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide mt-0.5 shrink-0"
                     :class="eventBadge(ev.event_type)"
                   >{{ ev.event_type }}</span>
                   <div class="min-w-0 flex-1">
@@ -1247,7 +1247,7 @@ const eventBadge = (t: string) => {
                 <div v-if="eventsTotalPages > 1" class="flex items-center justify-center gap-1 pt-2 pb-1">
                   <button
                     class="px-2 py-1 rounded-sm text-[10px] transition-colors"
-                    :class="eventsPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    :class="eventsPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
                     :disabled="eventsPage === 1"
                     @click="eventsGo(eventsPage - 1)"
                   >Prev</button>
@@ -1255,12 +1255,12 @@ const eventBadge = (t: string) => {
                     v-for="p in Math.min(eventsTotalPages, 5)"
                     :key="'ep-'+p"
                     class="w-6 h-6 rounded-sm text-[10px] tabular-nums transition-colors"
-                    :class="p === eventsPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    :class="p === eventsPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
                     @click="eventsGo(p)"
                   >{{ p }}</button>
                   <button
                     class="px-2 py-1 rounded-sm text-[10px] transition-colors"
-                    :class="eventsPage === eventsTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    :class="eventsPage === eventsTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
                     :disabled="eventsPage === eventsTotalPages"
                     @click="eventsGo(eventsPage + 1)"
                   >Next</button>
@@ -1276,10 +1276,10 @@ const eventBadge = (t: string) => {
     <!-- ── Reissued register token dialog ── -->
     <Teleport to="body">
       <div v-if="reissuedToken" class="fixed inset-0 z-60 flex items-start justify-center overflow-y-auto bg-black/40 py-8" @click.self="closeReissuedToken">
-        <div class="soft-panel w-full max-w-md p-6 space-y-4">
+        <div class="surface-modal w-full max-w-md p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">Register token reissued</h2>
-            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" @click="closeReissuedToken"><X class="h-4 w-4" /></button>
+            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground" @click="closeReissuedToken"><X class="h-4 w-4" /></button>
           </div>
           <p class="text-sm text-muted-foreground">New token for <span class="font-medium text-foreground">{{ reissuedRunnerName }}</span>. It is shown only now; copy it before closing.</p>
           <div class="rounded-xl bg-muted px-4 py-3">
@@ -1303,26 +1303,26 @@ const eventBadge = (t: string) => {
     <!-- ── Create dialog ── -->
     <Teleport to="body">
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8" @click.self="showCreate = false">
-        <div class="soft-panel w-full max-w-md p-6 space-y-5">
+        <div class="surface-modal w-full max-w-md p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">New Runner</h2>
-            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" @click="showCreate = false"><X class="h-4 w-4" /></button>
+            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground" @click="showCreate = false"><X class="h-4 w-4" /></button>
           </div>
 
           <template v-if="!createdToken">
             <div class="space-y-4">
               <div>
-                <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
+                <label class="type-label block mb-1.5">Name <span class="text-destructive">*</span></label>
                 <input v-model="newName" type="text" placeholder="e.g. prod-runner-01" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
               </div>
               <div>
-                <label class="type-label block mb-1.5">Team / isolation scope <span class="text-red-500">*</span></label>
-                <select v-model="newTeamId" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden focus:border-ring/40">
+                <label class="type-label block mb-1.5">Team / isolation scope <span class="text-destructive">*</span></label>
+                <select v-model="newTeamId" class="field-select w-full">
                   <option disabled value="">Choose a team or Shared</option>
                   <option value="shared">Shared — jobs from all teams</option>
                   <option v-for="team in teams" :key="team.id" :value="team.id">{{ team.name }} ({{ team.slug }})</option>
                 </select>
-                <p v-if="newTeamId === 'shared'" class="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                <p v-if="newTeamId === 'shared'" class="mt-1.5 text-[11px] text-warning dark:text-warning">
                   Shared Runners may execute any team’s job. Use only when those teams belong to the same trust domain.
                 </p>
                 <p v-else class="mt-1.5 text-[11px] text-muted-foreground">
@@ -1331,7 +1331,7 @@ const eventBadge = (t: string) => {
               </div>
               <div>
                 <label class="type-label block mb-1.5">Job execution mode</label>
-                <select v-model="newExecutionMode" disabled class="w-full rounded-xl border border-border bg-muted px-3 py-2 text-sm opacity-70">
+                <select v-model="newExecutionMode" disabled class="field-select w-full">
                   <option value="host">Host (initial mode)</option>
                 </select>
                 <p class="mt-1.5 text-[11px] text-muted-foreground">
@@ -1354,7 +1354,7 @@ const eventBadge = (t: string) => {
                 />
                 <p class="text-[11px] text-muted-foreground mt-1">How many jobs this runner may run in parallel (1–32). Default 1.</p>
               </div>
-              <div class="space-y-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
+              <div class="space-y-2 surface-inset px-3 py-3">
                 <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Policy</div>
                 <label class="flex items-start gap-2 text-xs cursor-pointer">
                   <input v-model="newCleanWorkspace" type="checkbox" class="rounded-sm border-border mt-0.5" />
@@ -1388,7 +1388,7 @@ const eventBadge = (t: string) => {
                   <label class="type-label block mb-1.5 mt-1">SSH host key policy</label>
                   <select
                     v-model="newSshHostKeyPolicy"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden"
+                    class="field-select w-full"
                   >
                     <option value="insecure">insecure (accept any)</option>
                     <option value="known_hosts">known_hosts</option>

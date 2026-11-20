@@ -80,7 +80,7 @@ function nodeClass(active: boolean) {
     'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors',
     active
       ? 'bg-muted font-medium text-foreground'
-      : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+      : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
   ]
 }
 
@@ -324,6 +324,10 @@ async function removeTeam(teamId: string, name: string) {
   try {
     await teamsApi.delete(teamId)
     await load()
+  } catch (e: any) {
+    // The delete guard reports pipelines/secrets/hosts/runners in a 409 —
+    // surface it instead of failing silently.
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete team')
   } finally {
     acting.value = false
   }
@@ -424,7 +428,7 @@ onMounted(load)
          pending approvals and no accounts are waiting for a team) -->
     <div
       v-if="isAdmin && pending.length === 0 && actionableUngrouped.length === 0"
-      class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-border/50 bg-card p-3.5 text-xs text-muted-foreground shadow-xs"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 surface-card p-3.5 text-xs text-muted-foreground"
     >
       <span class="font-medium text-foreground">Identity &amp; access in three steps:</span>
       <span>
@@ -443,8 +447,8 @@ onMounted(load)
 
     <template v-else>
       <!-- SSO identity approval queue -->
-      <div v-if="isAdmin && pending.length > 0" class="rounded-xl border border-amber-500/30 bg-amber-500/5 overflow-hidden">
-        <div class="px-5 py-3 border-b border-amber-500/20">
+      <div v-if="isAdmin && pending.length > 0" class="notice-warning overflow-hidden">
+        <div class="px-5 py-3 border-b ">
           <p class="text-[13px] font-medium">Pending SSO identities</p>
           <p class="text-[11px] text-muted-foreground mt-0.5">
             Sign-ins refused because auto-provision is off. Approve to bind to an account (or create a new one), or dismiss.
@@ -460,7 +464,7 @@ onMounted(load)
             <div class="flex flex-wrap items-center gap-2 text-xs">
               <select
                 v-model="bindTarget[item.id]"
-                class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs"
+                class="field-select-sm"
               >
                 <option value="">Create new user</option>
                 <option v-for="u in users.filter((u) => u.auth_source === 'local' && u.is_active)" :key="u.id" :value="u.id">
@@ -472,7 +476,7 @@ onMounted(load)
                 v-model="bindUsername[item.id]"
                 type="text"
                 :placeholder="`Username (default: ${(item.email || 'sso-user').split('@')[0]})`"
-                class="w-52 rounded-lg border border-border/60 bg-background px-2 py-1 text-xs"
+                class="w-52 rounded-xl border border-border bg-background px-2 py-1 text-xs"
               />
               <label v-if="bindTarget[item.id]" class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                 <input v-model="bindDisablePassword[item.id]" type="checkbox" class="rounded-sm" />
@@ -490,9 +494,9 @@ onMounted(load)
       <!-- accounts that can sign in but hold no team: the admin action cue -->
       <div
         v-if="isAdmin && pending.length === 0 && actionableUngrouped.length > 0"
-        class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs"
+        class="flex flex-wrap items-center gap-x-3 gap-y-2 notice-warning px-4 py-3 text-xs"
       >
-        <Clock class="h-3.5 w-3.5 shrink-0 text-amber-600" />
+        <Clock class="h-3.5 w-3.5 shrink-0 text-warning" />
         <span class="font-medium text-foreground">
           {{ actionableUngrouped.length }} account{{ actionableUngrouped.length === 1 ? '' : 's' }}
           {{ actionableUngrouped.length === 1 ? 'has' : 'have' }} no team yet
@@ -503,7 +507,7 @@ onMounted(load)
 
       <div class="grid items-start gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
         <!-- ── left: teams tree ─────────────────────────────────────────── -->
-        <aside class="overflow-hidden rounded-xl border border-border/50 bg-card shadow-xs">
+        <aside class="overflow-hidden surface-card">
           <div v-if="!isAdmin" class="flex items-center justify-between px-4 pt-3.5 pb-2.5">
             <h2 class="text-[13.5px] font-semibold">My teams</h2>
           </div>
@@ -530,7 +534,7 @@ onMounted(load)
             >
               <Clock class="h-4 w-4 shrink-0" />
               <span class="min-w-0 flex-1 truncate text-left">Ungrouped</span>
-              <span class="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">
+              <span class="rounded-lg bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
                 {{ ungroupedUsers.length }} no team
               </span>
             </button>
@@ -573,7 +577,7 @@ onMounted(load)
         <!-- ── right: selected view ─────────────────────────────────────── -->
         <section
           v-if="isAllSelected && isAdmin"
-          class="min-w-0 overflow-hidden rounded-xl border border-border/50 bg-card shadow-xs"
+          class="min-w-0 overflow-hidden surface-card"
         >
           <div class="flex flex-wrap items-center gap-3 px-4 pt-3.5 pb-3">
             <div class="min-w-0">
@@ -584,7 +588,7 @@ onMounted(load)
               v-model="searchQuery"
               type="text"
               placeholder="Search accounts…"
-              class="ml-auto w-48 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+              class="ml-auto w-48 rounded-xl border border-border bg-background px-2.5 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
             <UiButton size="sm" @click="showCreateUser = true"><Plus class="h-3.5 w-3.5" /> New user</UiButton>
           </div>
@@ -597,7 +601,7 @@ onMounted(load)
             <div class="overflow-x-auto">
               <table class="w-full text-[13px]">
                 <thead>
-                  <tr class="border-y border-border/30 bg-muted/10">
+                  <tr class="border-y border-border/40 bg-muted/40">
                     <th class="text-left px-4 py-2.5">
                       <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('username')">
                         Account
@@ -621,12 +625,12 @@ onMounted(load)
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-border/20">
-                  <tr v-for="u in pageItems" :key="u.id" class="hover:bg-muted/5">
+                  <tr v-for="u in pageItems" :key="u.id" class="hover:bg-muted/40">
                     <td class="px-4 py-2.5">
                       <span class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all" :title="u.username">{{ u.username }}</span>
                       <span
                         v-if="u.auth_source === 'oidc'"
-                        class="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary align-middle"
+                        class="ml-2 inline-flex items-center rounded-lg bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary align-middle"
                         title="Signs in through SSO; no local password"
                       >SSO</span>
                       <span v-if="u.display_name" class="ml-2 text-xs text-muted-foreground">{{ u.display_name }}</span>
@@ -640,7 +644,7 @@ onMounted(load)
                       <span v-else>no team</span>
                     </td>
                     <td class="px-4 py-2.5 text-xs">
-                      <span v-if="u.is_super_admin" class="font-semibold text-amber-500">super admin</span>
+                      <span v-if="u.is_super_admin" class="font-semibold text-warning">super admin</span>
                       <span v-else-if="u.is_platform_admin">platform admin</span>
                       <span v-else>member</span>
                     </td>
@@ -653,7 +657,7 @@ onMounted(load)
                         {{ u.is_active ? 'Disable' : 'Enable' }}
                       </UiButton>
                       <UiButton variant="ghost" size="sm" :disabled="acting" @click="deleteUser(u)">
-                        <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                        <Trash2 class="h-3.5 w-3.5 text-destructive" />
                       </UiButton>
                     </td>
                   </tr>
@@ -666,7 +670,7 @@ onMounted(load)
 
         <section
           v-else-if="selectedTeam"
-          class="min-w-0 overflow-hidden rounded-xl border border-border/50 bg-card shadow-xs"
+          class="min-w-0 overflow-hidden surface-card"
         >
           <div class="flex flex-wrap items-start gap-3 px-4 pt-3.5 pb-3">
             <div class="min-w-0">
@@ -676,7 +680,7 @@ onMounted(load)
               </p>
             </div>
             <div class="ml-auto flex items-center gap-2">
-              <span v-if="selectedTeam.my_role" class="rounded-full bg-muted px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground">
+              <span v-if="selectedTeam.my_role" class="rounded-lg bg-muted px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground">
                 your role: {{ selectedTeam.my_role }}
               </span>
               <UiButton
@@ -687,7 +691,7 @@ onMounted(load)
                 :disabled="acting"
                 @click="removeTeam(selectedTeam.id, selectedTeam.name)"
               >
-                <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                <Trash2 class="h-3.5 w-3.5 text-destructive" />
               </UiButton>
             </div>
           </div>
@@ -695,14 +699,14 @@ onMounted(load)
           <div class="overflow-x-auto">
             <table class="w-full text-[13px]">
               <thead>
-                <tr class="border-y border-border/30 bg-muted/10">
+                <tr class="border-y border-border/40 bg-muted/40">
                   <th class="text-left px-4 py-2.5 text-[11px] uppercase text-muted-foreground">Member</th>
                   <th class="text-left px-4 py-2.5 text-[11px] uppercase text-muted-foreground">Role</th>
                   <th class="text-right px-4 py-2.5 w-24" />
                 </tr>
               </thead>
               <tbody class="divide-y divide-border/20">
-                <tr v-for="m in membersOf(selectedTeam.id)" :key="m.user_id" class="hover:bg-muted/5">
+                <tr v-for="m in membersOf(selectedTeam.id)" :key="m.user_id" class="hover:bg-muted/40">
                   <td class="px-4 py-2.5">
                     <span class="font-mono text-[12px] font-medium text-foreground/90">{{ m.username }}</span>
                     <span v-if="m.user_id === auth.userId" class="ml-2 text-[10px] text-muted-foreground">you</span>
@@ -712,7 +716,7 @@ onMounted(load)
                     <select
                       v-if="canManageTeam(selectedTeam)"
                       :value="m.role"
-                      class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs"
+                      class="field-select-sm"
                       :disabled="acting"
                       @change="onRoleChange(selectedTeam.id, m, $event)"
                     >
@@ -729,7 +733,7 @@ onMounted(load)
                       :disabled="acting"
                       @click="removeMember(selectedTeam.id, m)"
                     >
-                      <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                      <Trash2 class="h-3.5 w-3.5 text-destructive" />
                     </UiButton>
                   </td>
                 </tr>
@@ -744,11 +748,11 @@ onMounted(load)
             v-if="isAdmin && canManageTeam(selectedTeam)"
             class="flex flex-wrap items-center gap-2 border-t border-border/40 px-4 py-3"
           >
-            <select v-model="memberUserId" class="min-w-40 rounded-lg border border-border/60 bg-background px-2 py-1.5 text-xs">
+            <select v-model="memberUserId" class="field-select-sm min-w-40">
               <option value="">Select account</option>
               <option v-for="u in addableUsers" :key="u.id" :value="u.id">{{ u.username }}</option>
             </select>
-            <select v-model="memberRole" class="rounded-lg border border-border/60 bg-background px-2 py-1.5 text-xs">
+            <select v-model="memberRole" class="field-select-sm">
               <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
             </select>
             <UiButton size="sm" :disabled="acting || !memberUserId" @click="addMember">Add</UiButton>
@@ -763,7 +767,7 @@ onMounted(load)
 
         <section
           v-else-if="isUngroupedSelected && isAdmin"
-          class="min-w-0 overflow-hidden rounded-xl border border-border/50 bg-card shadow-xs"
+          class="min-w-0 overflow-hidden surface-card"
         >
           <div class="px-4 pt-3.5 pb-3">
             <h2 class="text-[13.5px] font-semibold">Ungrouped</h2>
@@ -776,19 +780,19 @@ onMounted(load)
           <template v-else>
             <table class="w-full text-[13px]">
               <thead>
-                <tr class="border-y border-border/30 bg-muted/10">
+                <tr class="border-y border-border/40 bg-muted/40">
                   <th class="text-left px-4 py-2.5 text-[11px] uppercase text-muted-foreground">Account</th>
                   <th class="text-left px-4 py-2.5 text-[11px] uppercase text-muted-foreground">Status</th>
                   <th class="text-left px-4 py-2.5 text-[11px] uppercase text-muted-foreground">Assign team</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-border/20">
-                <tr v-for="u in ungroupedUsers" :key="u.id" class="hover:bg-muted/5">
+                <tr v-for="u in ungroupedUsers" :key="u.id" class="hover:bg-muted/40">
                   <td class="px-4 py-2.5">
                     <span class="font-mono text-[12px] font-medium text-foreground/90">{{ u.username }}</span>
                     <span
                       v-if="u.auth_source === 'oidc'"
-                      class="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary align-middle"
+                      class="ml-2 inline-flex items-center rounded-lg bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary align-middle"
                     >SSO</span>
                   </td>
                   <td class="px-4 py-2.5 text-xs">{{ u.is_active ? 'active' : 'disabled' }}</td>
@@ -796,7 +800,7 @@ onMounted(load)
                     <div v-if="u.is_active && !u.is_platform_admin" class="flex flex-wrap items-center gap-1.5">
                       <select
                         v-model="grantTeam[u.id]"
-                        class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs"
+                        class="field-select-sm"
                         :disabled="acting || teams.length === 0"
                       >
                         <option value="">Select team</option>
@@ -804,7 +808,7 @@ onMounted(load)
                       </select>
                       <select
                         v-model="grantRole[u.id]"
-                        class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs"
+                        class="field-select-sm"
                         :disabled="acting || teams.length === 0"
                       >
                         <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
@@ -821,7 +825,7 @@ onMounted(load)
 
         <section
           v-else
-          class="flex min-w-0 flex-col items-center justify-center rounded-xl border border-border/50 bg-card py-16 text-center shadow-xs"
+          class="flex min-w-0 flex-col items-center justify-center surface-card py-16 text-center"
         >
           <Users class="h-10 w-10 mb-3 text-muted-foreground/20" />
           <p class="text-sm font-medium text-foreground">No team yet</p>
@@ -836,20 +840,20 @@ onMounted(load)
     <Teleport to="body">
       <div v-if="showCreateUser" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showCreateUser = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6">
           <h3 class="text-[15px] font-semibold mb-5">New user</h3>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium mb-1">Username <span class="text-red-500">*</span></label>
-              <input v-model="formUsername" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
+              <label class="block text-[12px] font-medium mb-1">Username <span class="text-destructive">*</span></label>
+              <input v-model="formUsername" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm" />
             </div>
             <div>
-              <label class="block text-[12px] font-medium mb-1">Password <span class="text-red-500">*</span></label>
-              <input v-model="formPassword" type="password" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
+              <label class="block text-[12px] font-medium mb-1">Password <span class="text-destructive">*</span></label>
+              <input v-model="formPassword" type="password" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm" />
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Display name</label>
-              <input v-model="formDisplay" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
+              <input v-model="formDisplay" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm" />
             </div>
             <label class="flex items-center gap-2 text-sm">
               <input v-model="formAdmin" type="checkbox" class="rounded-sm" />
@@ -860,7 +864,7 @@ onMounted(load)
               Super admin (sees all API tokens &amp; audit logs)
             </label>
           </div>
-          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" @click="showCreateUser = false">Cancel</UiButton>
             <UiButton size="sm" :disabled="saving" @click="createUser">{{ saving ? 'Creating…' : 'Create' }}</UiButton>
           </div>
@@ -871,23 +875,23 @@ onMounted(load)
     <Teleport to="body">
       <div v-if="showCreateTeam" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showCreateTeam = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6">
           <h3 class="text-[15px] font-semibold mb-5">New team</h3>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium mb-1">Name <span class="text-red-500">*</span></label>
-              <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" placeholder="Backend" />
+              <label class="block text-[12px] font-medium mb-1">Name <span class="text-destructive">*</span></label>
+              <input v-model="formName" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm" placeholder="Backend" />
             </div>
             <div>
-              <label class="block text-[12px] font-medium mb-1">Slug <span class="text-red-500">*</span></label>
-              <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono" placeholder="backend" />
+              <label class="block text-[12px] font-medium mb-1">Slug <span class="text-destructive">*</span></label>
+              <input v-model="formSlug" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono" placeholder="backend" />
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Description</label>
-              <input v-model="formDesc" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
+              <input v-model="formDesc" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm" />
             </div>
           </div>
-          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" @click="showCreateTeam = false">Cancel</UiButton>
             <UiButton size="sm" :disabled="saving" @click="createTeam">{{ saving ? 'Creating…' : 'Create' }}</UiButton>
           </div>

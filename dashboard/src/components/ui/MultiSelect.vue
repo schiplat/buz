@@ -85,7 +85,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
   <div ref="triggerRef" class="relative">
     <div
       :class="cn(
-        'w-full min-h-[44px] rounded-xl border bg-input px-3 py-2 cursor-pointer transition-colors',
+        'w-full min-h-[44px] rounded-xl border border-border bg-input px-3 py-2 cursor-pointer transition-colors',
         'border-border',
         'flex flex-wrap items-center gap-1.5'
       )"
@@ -94,7 +94,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
       <span
         v-for="item in selectedItems"
         :key="item.id"
-        class="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+        class="inline-flex items-center gap-1 rounded-lg bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
       >
         {{ item.label }}
         <button type="button" class="hover:text-destructive transition-colors" @click.stop="remove(item.id)">
@@ -114,7 +114,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
         v-if="open"
         ref="dropdownRef"
         :style="dropdownStyle"
-        class="z-9999 rounded-xl border border-border bg-popover shadow-lg"
+        class="z-9999 surface-overlay"
       >
         <div class="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -133,7 +133,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
             v-for="opt in filteredOptions"
             :key="opt.id"
             type="button"
-            class="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+            class="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 transition-colors"
             @click.stop="toggle(opt.id)"
           >
             {{ opt.label }}

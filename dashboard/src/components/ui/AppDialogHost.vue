@@ -84,7 +84,7 @@ function onCancel() {
     >
       <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="onBackdrop" />
       <div
-        class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6"
+        class="surface-modal relative z-10 w-full max-w-md mx-4 p-6"
         @click.stop
       >
         <h3 class="text-[15px] font-semibold mb-2">{{ dialog.title }}</h3>
@@ -93,14 +93,14 @@ function onCancel() {
         <div v-if="dialog.kind === 'prompt'" class="mt-4">
           <label class="block text-[12px] font-medium mb-1">
             {{ dialog.label }}
-            <span v-if="dialog.required" class="text-red-500">*</span>
+            <span v-if="dialog.required" class="text-destructive">*</span>
           </label>
           <textarea
             v-if="dialog.multiline"
             ref="inputEl"
             v-model="promptDraft"
             rows="4"
-            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 resize-y"
+            class="field-input resize-y"
             :placeholder="dialog.placeholder"
             @keydown.meta.enter.prevent="onPrimary"
           />
@@ -109,7 +109,7 @@ function onCancel() {
             ref="inputEl"
             v-model="promptDraft"
             type="text"
-            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+            class="field-input"
             :placeholder="dialog.placeholder"
             @keydown.enter.prevent="onPrimary"
           />
@@ -122,12 +122,12 @@ function onCancel() {
           <input
             v-model="checkboxDraft"
             type="checkbox"
-            class="h-4 w-4 rounded-sm border-border/60 accent-primary cursor-pointer"
+            class="h-4 w-4 rounded-sm border-border accent-primary cursor-pointer"
           />
           {{ dialog.checkboxLabel }}
         </label>
 
-        <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+        <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/40">
           <UiButton
             v-if="dialog.kind === 'alert' && dialog.actionLabel"
             variant="ghost"
@@ -147,7 +147,7 @@ function onCancel() {
           </UiButton>
           <UiButton
             size="sm"
-            :class="dialog.kind === 'confirm' && dialog.danger ? 'bg-red-600 hover:bg-red-600/90 text-white' : ''"
+            :class="dialog.kind === 'confirm' && dialog.danger ? 'bg-destructive hover:bg-destructive/90 text-destructive-foreground' : ''"
             :disabled="promptOkDisabled"
             @click="onPrimary"
           >

@@ -36,7 +36,7 @@ function errorDetail(err: unknown): string {
 <template>
   <div
     v-if="error"
-    class="flex min-h-[50vh] flex-col items-center justify-center rounded-xl border border-destructive/30 bg-destructive/5 px-6 py-10 text-center text-sm"
+    class="flex min-h-[50vh] flex-col items-center justify-center rounded-xl bg-destructive/10 px-6 py-10 text-center text-sm"
   >
     <span aria-hidden="true" class="text-3xl">🛠️</span>
     <p class="mt-3 font-medium text-destructive">This page failed to render.</p>
@@ -46,7 +46,7 @@ function errorDetail(err: unknown): string {
     </p>
     <p
       v-if="errorDetail(error)"
-      class="mt-3 max-w-lg wrap-break-word rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground"
+      class="mt-3 max-w-lg wrap-break-word surface-inset px-3 py-2 font-mono text-xs text-muted-foreground"
     >
       {{ errorDetail(error) }}
     </p>

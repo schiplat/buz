@@ -56,7 +56,7 @@ const pageItems = computed<PageItem[]>(() => {
 <template>
   <div
     v-if="total > 0"
-    class="flex flex-col gap-2.5 border-t border-border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3.5"
+    class="flex flex-col gap-2.5 border-t border-border/40 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3.5"
   >
     <p class="text-[11px] text-muted-foreground shrink-0">{{ rangeLabel }}</p>
     <div class="flex w-full min-w-0 items-center justify-between gap-2 sm:w-auto sm:justify-end sm:gap-3">
@@ -65,7 +65,7 @@ const pageItems = computed<PageItem[]>(() => {
         <span class="sm:hidden">Rows</span>
         <select
           v-model.number="pageSize"
-          class="h-8 w-auto min-w-15 rounded-lg border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+          class="field-select-sm w-auto min-w-15"
         >
           <option v-for="n in PAGE_SIZE_OPTIONS" :key="n" :value="n">{{ n }}</option>
         </select>
@@ -73,7 +73,7 @@ const pageItems = computed<PageItem[]>(() => {
       <div class="flex shrink-0 items-center gap-0.5 sm:gap-1">
         <button
           class="inline-flex items-center justify-center rounded-md px-2 sm:px-2.5 py-1 text-[11px] font-medium transition-colors"
-          :class="page <= 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+          :class="page <= 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
           :disabled="page <= 1"
           @click="page = page - 1"
         >
@@ -89,7 +89,7 @@ const pageItems = computed<PageItem[]>(() => {
               :aria-current="item.page === page ? 'page' : undefined"
               :aria-label="`Page ${item.page}`"
               class="inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-medium tabular-nums transition-colors"
-              :class="item.page === page ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+              :class="item.page === page ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
               @click="page = item.page"
             >
               {{ item.label }}
@@ -101,7 +101,7 @@ const pageItems = computed<PageItem[]>(() => {
         </span>
         <button
           class="inline-flex items-center justify-center rounded-md px-2 sm:px-2.5 py-1 text-[11px] font-medium transition-colors"
-          :class="page >= pageCount ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+          :class="page >= pageCount ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
           :disabled="page >= pageCount"
           @click="page = page + 1"
         >

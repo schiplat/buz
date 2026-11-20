@@ -1,3 +1,4 @@
+pub mod consistency_scan;
 pub mod cron_scheduler;
 pub mod debug_log_cleanup;
 pub mod definition_backfill;

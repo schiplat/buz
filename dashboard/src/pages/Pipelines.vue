@@ -451,69 +451,69 @@ async function handleToggleActive(p: Pipeline) {
     <!-- ── Jobs status summary bar (aggregate; click a status to filter) ── -->
     <div
       v-if="!loading && allJobs.length > 0"
-      class="mb-4 flex flex-wrap items-center gap-1 rounded-xl border border-border/60 bg-card px-2.5 py-2"
+      class="mb-4 flex flex-wrap items-center gap-1 surface-card px-2.5 py-2"
       role="group"
       aria-label="Run status summary — click a status to filter the table"
     >
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
-        :class="statusFilter === 'running' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'running' ? 'bg-muted font-medium text-foreground' : 'text-foreground/80 hover:bg-muted/40'"
         :aria-pressed="statusFilter === 'running'"
         title="Show pipelines with a running job"
         @click="toggleStatusFilter('running')"
       >
-        <span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true"></span>
         <span class="font-mono text-[12px] font-medium tabular-nums" :class="runningJobs.length === 0 && 'text-muted-foreground/50'">{{ runningJobs.length }}</span>
         <span>Running</span>
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
-        :class="statusFilter === 'approval' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'approval' ? 'bg-muted font-medium text-foreground' : 'text-foreground/80 hover:bg-muted/40'"
         :aria-pressed="statusFilter === 'approval'"
         title="Show pipelines waiting for approval"
         @click="toggleStatusFilter('approval')"
       >
-        <span class="h-1.5 w-1.5 rounded-full bg-violet-500" aria-hidden="true"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true"></span>
         <span class="font-mono text-[12px] font-medium tabular-nums" :class="pendingJobs.length === 0 && 'text-muted-foreground/50'">{{ pendingJobs.length }}</span>
         <span>Approval</span>
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
-        :class="statusFilter === 'queued' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'queued' ? 'bg-muted font-medium text-foreground' : 'text-foreground/80 hover:bg-muted/40'"
         :aria-pressed="statusFilter === 'queued'"
         title="Show pipelines with queued jobs"
         @click="toggleStatusFilter('queued')"
       >
-        <span class="h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden="true"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-info" aria-hidden="true"></span>
         <span class="font-mono text-[12px] font-medium tabular-nums" :class="queuedJobs.length === 0 && 'text-muted-foreground/50'">{{ queuedJobs.length }}</span>
         <span>Queued</span>
       </button>
       <span class="mx-2 hidden h-3.5 w-px bg-border/60 sm:block" aria-hidden="true"></span>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
-        :class="statusFilter === 'passed' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'passed' ? 'bg-muted font-medium text-foreground' : 'text-foreground/80 hover:bg-muted/40'"
         :aria-pressed="statusFilter === 'passed'"
         title="Show pipelines that passed in the last 24h"
         @click="toggleStatusFilter('passed')"
       >
-        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true"></span>
         <span class="font-mono text-[12px] font-medium tabular-nums" :class="passedJobs24h.length === 0 && 'text-muted-foreground/50'">{{ passedJobs24h.length }}</span>
         <span>Passed · 24h</span>
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
-        :class="statusFilter === 'failed' ? 'bg-muted font-medium text-foreground ring-1 ring-red-500/40' : 'text-foreground/80 hover:bg-muted/60'"
+        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'failed' ? 'bg-muted font-medium text-foreground' : 'text-foreground/80 hover:bg-muted/40'"
         :aria-pressed="statusFilter === 'failed'"
         title="Show pipelines that failed in the last 24h"
         @click="toggleStatusFilter('failed')"
       >
-        <span class="h-1.5 w-1.5 rounded-full bg-red-500" aria-hidden="true"></span>
-        <span class="font-mono text-[12px] font-medium tabular-nums" :class="failedJobs24h.length === 0 ? 'text-muted-foreground/50' : 'text-red-600'">{{ failedJobs24h.length }}</span>
+        <span class="h-1.5 w-1.5 rounded-full bg-destructive" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="failedJobs24h.length === 0 ? 'text-muted-foreground/50' : 'text-destructive'">{{ failedJobs24h.length }}</span>
         <span>Failed · 24h</span>
       </button>
       <span class="ml-auto inline-flex items-center gap-2.5 pl-3 text-[10.5px] text-muted-foreground">
@@ -521,7 +521,7 @@ async function handleToggleActive(p: Pipeline) {
         <button
           v-if="statusFilter"
           type="button"
-          class="inline-flex items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-muted"
+          class="inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-muted/40"
           @click="statusFilter = ''"
         >
           Clear filter <X class="h-2.5 w-2.5" />
@@ -530,7 +530,7 @@ async function handleToggleActive(p: Pipeline) {
           class="inline-flex items-center gap-1 font-mono text-[8.5px] uppercase tracking-[0.08em] text-muted-foreground/60"
           title="Auto-refreshes every 5s"
         >
-          <span class="h-1 w-1 rounded-full bg-emerald-500" aria-hidden="true"></span>
+          <span class="h-1 w-1 rounded-full bg-success" aria-hidden="true"></span>
           Live
         </span>
       </span>
@@ -544,25 +544,25 @@ async function handleToggleActive(p: Pipeline) {
       </div>
 
       <div v-else class="surface-card overflow-hidden">
-        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+        <div class="px-5 py-3 border-b border-border/40 flex items-center gap-3 flex-wrap">
           <input
             v-model="searchQuery"
             type="text"
             placeholder="Search pipelines…"
-            class="w-full max-w-52 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-52 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
           />
-          <select v-model="filterTrigger" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+          <select v-model="filterTrigger" class="field-select-sm">
             <option value="">All triggers</option>
             <option value="manual">Manual</option>
             <option value="webhook">Webhook</option>
             <option value="cron">Cron</option>
           </select>
-          <select v-model="filterSource" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+          <select v-model="filterSource" class="field-select-sm">
             <option value="">All sources</option>
             <option value="form">Form</option>
             <option value="yaml">YAML</option>
           </select>
-          <select v-model="filterActive" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+          <select v-model="filterActive" class="field-select-sm">
             <option value="">All</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
@@ -620,14 +620,14 @@ async function handleToggleActive(p: Pipeline) {
                     >{{ p.name }}</button>
                     <span
                       v-if="Array.isArray(p.input_defs) && p.input_defs.length > 0"
-                      class="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+                      class="inline-flex items-center gap-1 surface-inset px-2 py-0.5 text-xs text-muted-foreground"
                       :title="(p.input_defs || []).some((d) => d.masking) ? 'Params (some masking)' : 'Params'"
                     >
                       <Puzzle class="h-3 w-3" />
                       Params
                       <span
                         v-if="(p.input_defs || []).some((d) => d.masking)"
-                        class="text-[10px] uppercase tracking-wide text-violet-600/90"
+                        class="text-[10px] uppercase tracking-wide text-info/90"
                       >mask</span>
                     </span>
                   </div>
@@ -654,18 +654,18 @@ async function handleToggleActive(p: Pipeline) {
                       <span
                         :class="cn(
                           'w-2 h-2 rounded-full shrink-0',
-                          p.latest_job_status === 'success' ? 'bg-emerald-500' :
-                          p.latest_job_status === 'failed' ? 'bg-red-500' :
-                          p.latest_job_status === 'running' ? 'bg-amber-400 animate-pulse' :
-                          'bg-slate-300'
+                          p.latest_job_status === 'success' ? 'bg-success' :
+                          p.latest_job_status === 'failed' ? 'bg-destructive' :
+                          p.latest_job_status === 'running' ? 'bg-warning animate-pulse' :
+                          'bg-muted-foreground/40'
                         )"
                       />
                       <span
                         :class="cn(
                           'text-xs font-medium group-hover:underline',
-                          p.latest_job_status === 'success' ? 'text-emerald-600' :
-                          p.latest_job_status === 'failed' ? 'text-red-500' :
-                          p.latest_job_status === 'running' ? 'text-amber-600' :
+                          p.latest_job_status === 'success' ? 'text-success' :
+                          p.latest_job_status === 'failed' ? 'text-destructive' :
+                          p.latest_job_status === 'running' ? 'text-warning' :
                           'text-muted-foreground'
                         )"
                       >{{ p.latest_job_status || '—' }}</span>
@@ -730,7 +730,7 @@ async function handleToggleActive(p: Pipeline) {
     <Teleport to="body">
       <div v-if="triggerTarget" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="cancelTriggerDialog()" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6 max-h-[90vh] overflow-y-auto">
           <h2 class="text-[15px] font-semibold tracking-tight">Trigger Pipeline</h2>
           <p v-if="triggerHasInputDefs" class="mt-1.5 text-[12px] text-muted-foreground leading-relaxed">
             Keys available as <code class="mono-chip text-[11px]">$INPUT_&lt;KEY&gt;</code> in step commands.
@@ -743,13 +743,13 @@ async function handleToggleActive(p: Pipeline) {
           <div
             v-if="triggerError"
             role="alert"
-            class="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-destructive"
+            class="mt-4 rounded-xl bg-destructive/10 px-3 py-2.5 text-destructive"
           >
             <p class="text-[13px] font-semibold tracking-tight">{{ triggerError.title }}</p>
             <p v-if="triggerError.summary" class="mt-1 text-[11px] font-mono text-destructive/80 truncate" :title="triggerError.summary">
               {{ triggerError.summary }}
             </p>
-            <ul class="mt-2.5 space-y-2 border-t border-destructive/20 pt-2.5">
+            <ul class="mt-2.5 space-y-2 border-t border-border/40 pt-2.5">
               <li
                 v-for="(item, i) in triggerError.items"
                 :key="i"
@@ -768,27 +768,27 @@ async function handleToggleActive(p: Pipeline) {
             <div
               v-for="(pair, idx) in triggerInputPairs"
               :key="idx"
-              class="rounded-lg border px-3 py-2.5 transition-colors"
-              :class="triggerErrorFields.has(pair.key) ? 'border-destructive/60 bg-destructive/5' : 'border-border/40 bg-muted/20'"
+              class="surface-inset px-3 py-2.5 transition-colors"
+              :class="triggerErrorFields.has(pair.key) ? 'bg-destructive/10' : ''"
             >
               <div class="mb-1.5 flex flex-wrap items-center gap-1.5">
                 <span class="text-[13px] font-mono font-medium text-foreground">{{ pair.key }}</span>
-                <span v-if="pair.required" class="text-red-500 text-[12px] leading-none" title="required">*</span>
+                <span v-if="pair.required" class="text-destructive text-[12px] leading-none" title="required">*</span>
                 <span v-else class="text-[11px] text-muted-foreground/70">(optional)</span>
                 <span
                   v-if="pair.masking"
-                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-600 border border-violet-500/20"
+                  class="rounded-lg bg-info/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-info"
                 >masking</span>
                 <span
                   v-if="pair.type"
-                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-600 border border-sky-500/20"
+                  class="rounded-lg bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info"
                 >{{ pair.type }}</span>
               </div>
               <select
                 v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
-                :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
+                class="field-select w-full"
+                :class="triggerErrorFields.has(pair.key) ? 'ring-2 ring-destructive/30' : ''"
                 :disabled="triggeringId !== null"
               >
                 <option v-if="!pair.options?.length" value="" disabled>select…</option>
@@ -805,8 +805,8 @@ async function handleToggleActive(p: Pipeline) {
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
-                :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
+                :class="triggerErrorFields.has(pair.key) ? 'ring-2 ring-destructive/30' : ''"
                 :disabled="triggeringId !== null"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
               />
@@ -839,19 +839,19 @@ async function handleToggleActive(p: Pipeline) {
                 <input
                   v-model="pair.key"
                   placeholder="key"
-                  class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                  class="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                   :disabled="triggeringId !== null"
                 />
                 <input
                   v-model="pair.value"
                   type="text"
                   placeholder="value"
-                  class="flex-2 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+                  class="flex-2 rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35"
                   :disabled="triggeringId !== null"
                 />
                 <button
                   type="button"
-                  class="shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
+                  class="shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-muted/40 hover:text-destructive transition-colors"
                   :disabled="triggeringId !== null"
                   @click="removeTriggerInputPair(idx)"
                 >
@@ -870,10 +870,10 @@ async function handleToggleActive(p: Pipeline) {
           </div>
 
           <div class="mt-5">
-            <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-red-500">*</span></label>
+            <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-destructive">*</span></label>
             <select
               v-model="triggerEnvironment"
-              class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
+              class="field-select w-full"
               :disabled="triggeringId !== null"
             >
               <option value="" disabled>Select a declared environment…</option>
@@ -889,7 +889,7 @@ async function handleToggleActive(p: Pipeline) {
             </p>
             <p
               v-else-if="selectedTriggerEnv?.protection_enabled"
-              class="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300"
+              class="mt-1.5 notice-warning px-2.5 py-1.5 text-[11px] leading-relaxed text-warning dark:text-warning"
             >
               Requires approval after trigger (min role:
               {{ selectedTriggerEnv.min_trigger_role || 'developer' }}).
@@ -916,9 +916,9 @@ async function handleToggleActive(p: Pipeline) {
               class="flex cursor-pointer items-center gap-2 text-[12px]"
             >
               <input v-model="triggerDebug" type="checkbox" :disabled="triggeringId !== null" />
-              <span class="font-medium text-amber-700">Debug — show secrets (24h)</span>
+              <span class="font-medium text-warning">Debug — show secrets (24h)</span>
               <span
-                class="inline-flex text-amber-600/50 hover:text-amber-700"
+                class="inline-flex text-warning/50 hover:text-warning"
                 title="Unredacted logs; platform admin only; purged after 24h"
                 @click.prevent
               >
@@ -927,7 +927,7 @@ async function handleToggleActive(p: Pipeline) {
             </label>
           </div>
 
-          <div class="mt-6 flex items-center justify-end gap-3 border-t border-border/30 pt-5">
+          <div class="mt-6 flex items-center justify-end gap-3 border-t border-border/40 pt-5">
             <UiButton variant="outline" size="sm" @click="cancelTriggerDialog()">Cancel</UiButton>
             <UiButton size="sm" @click="doTrigger(triggerTarget!)" :disabled="triggeringId !== null || environmentLoadFailed || !triggerEnvironment || declaredTriggerEnvironments.length === 0">
               <Loader2 v-if="triggeringId === triggerTarget?.id" class="mr-1.5 h-4 w-4 animate-spin" />

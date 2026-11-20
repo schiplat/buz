@@ -18,7 +18,7 @@ const emit = defineEmits<{ refresh: [] }>()
     >
       <span
         class="mt-1.5 h-1 w-1 shrink-0 rounded-full"
-        :class="notice.tone === 'danger' ? 'bg-red-500' : 'bg-amber-500'"
+        :class="notice.tone === 'danger' ? 'bg-destructive' : 'bg-warning'"
         aria-hidden="true"
       ></span>
       <p class="m-0">
@@ -26,8 +26,8 @@ const emit = defineEmits<{ refresh: [] }>()
           class="font-medium"
           :class="
             notice.tone === 'danger'
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-amber-600 dark:text-amber-400'
+              ? 'text-destructive dark:text-destructive'
+              : 'text-warning dark:text-warning'
           "
         >{{ notice.summary }}</span>
         <span class="text-muted-foreground"> — {{ notice.hint }}</span>
@@ -37,8 +37,8 @@ const emit = defineEmits<{ refresh: [] }>()
           class="ml-1.5 inline-flex items-center gap-0.5 font-semibold"
           :class="
             notice.tone === 'danger'
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-amber-600 dark:text-amber-400'
+              ? 'text-destructive dark:text-destructive'
+              : 'text-warning dark:text-warning'
           "
           title="Re-fetch this plugin's versions from its source"
           @click="emit('refresh')"

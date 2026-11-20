@@ -17,7 +17,7 @@ GitHub Actions, with expression syntax `${secrets.X}` / `${vars.X}` (not `${{ }}
 
 Related deep-dives:
 
-- [Secrets Access Control](../platform/secrets-access-control.md) — who can use what: kind, `team_shared`, bindings
+- [Secrets Access Control](../platform/secrets-access-control.md) — who can use what: kind, `share_with_team`, bindings
 - [Pipeline Format](./pipeline-format.md) — field catalogue
 - [Migrating from the kernel `config:` block](./migration-config-block.md) — legacy render/delivery
 - [YAML-First Authoring](./yaml-first-authoring.md) — file authority
@@ -30,7 +30,7 @@ Related deep-dives:
 2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in the 2.x retirement.
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Render templates get their values via `buz/env-render`'s `values` map.** One `NAME=${secrets.NAME}` line per referenced secret in `with:` — the kernel `config.render` block still works for existing pipelines, but the plugin is the recommended path.
-5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
+5. **Secrets with Share with team enabled** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
 6. **Top-level `secrets:` is optional** for references the validator can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates.
 
 ---
@@ -38,7 +38,7 @@ Related deep-dives:
 ## Mental model (3 layers)
 
 ```
-① DECLARE / REFERENCE (allow)   →  ${secrets.NAME} in env/slot  |  secrets: [NAME]  |  team_shared
+① DECLARE / REFERENCE (allow)   →  ${secrets.NAME} in env/slot  |  secrets: [NAME]  |  share_with_team
 ② RESOLVE (expression, non-run) →  ${secrets.NAME}   /  ${vars.NAME}
 ③ CONSUME (shell / process)     →  $KEY              /  $INPUT_*
 ```
@@ -58,7 +58,7 @@ Related deep-dives:
 | Use-site `${secrets.NAME}` reference | **Implicit allowlist** for that name (same team) |
 | Step `secrets: [NAME]` | Explicit step allowlist (optional narrowing) |
 | Pipeline top-level `secrets:` | Optional overview + `pipeline_secrets` bind |
-| `team_shared: true` | Auto-allowlisted for every same-team job |
+| `share_with_team: true` | Auto-allowlisted for every same-team job |
 
 Aligned with GitHub Actions day-to-day authoring, ordinary workflows do not
 maintain a YAML secret inventory. Two styles:
@@ -94,7 +94,7 @@ Platform Variables bound via `variables:` **are** injected as `$NAME` into every
 
 | Expression | Domain | Typical sources |
 |------------|--------|-----------------|
-| `${secrets.NAME}` | Secrets | Manager Secrets (UPPER_SNAKE_CASE), must be allowlisted (or `team_shared`) |
+| `${secrets.NAME}` | Secrets | Manager Secrets (UPPER_SNAKE_CASE), must be allowlisted (or `share_with_team`) |
 | `${vars.NAME}` | Vars | Pipeline `env:` keys + trigger inputs (`NAME` and/or `INPUT_NAME`) |
 | `${vars.NAME:-default}` | Vars | Same; fallback if missing (render / expand) |
 | `${secrets.NAME:-default}` | Secrets | Allowed by expander; prefer fail-fast in render templates |
@@ -231,7 +231,7 @@ steps:
 
 | I want to… | Write |
 |------------|--------|
-| Let this job use secret `X` | Pipeline or step `secrets: [X]` (or Team share) |
+| Let this job use secret `X` | Pipeline or step `secrets: [X]` (or Share with team) |
 | Put secret `X` into `$X` for scripts | `env: X: ${secrets.X}` |
 | Log in to a private registry | `buz/docker-login` plugin template (`registry` / `username` / `password` via `${secrets.X}`) |
 | Fetch OSS config bundle | `buz/config-fetch` plugin step (`url` input = `${secrets.CONFIG_BUNDLE_URL}` presigned) |
@@ -277,9 +277,9 @@ Step env  >  Pipeline env  >  Platform variables
 
 ---
 
-## Allowlist & Team share (short)
+## Allowlist & Share with team (short)
 
-| Secret `team_shared` | Effect on expressions |
+| Secret `share_with_team` | Effect on expressions |
 |----------------------|------------------------|
 | `false` (default) | Must appear in pipeline/step `secrets:` (or the resolve path of a plugin input) |
 | `true` | Auto-allowlisted for same-team jobs — **still** needs `${secrets.X}` / `env:` to inject |

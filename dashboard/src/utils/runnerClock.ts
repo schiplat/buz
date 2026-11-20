@@ -46,7 +46,7 @@ export function clockSkewInfo(skew: number | null | undefined): ClockSkewInfo | 
 
 /** Tailwind text class for a tone (matches the rest of the dashboard palette). */
 export function clockToneClass(tone: ClockTone): string {
-  if (tone === 'danger') return 'text-red-500'
-  if (tone === 'warn') return 'text-amber-500'
+  if (tone === 'danger') return 'text-destructive'
+  if (tone === 'warn') return 'text-warning'
   return ''
 }

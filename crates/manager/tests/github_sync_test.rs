@@ -1794,7 +1794,7 @@ async fn metadata_only_secret_update_does_not_mark_stale() {
         &app,
         &token,
         &format!("/api/v1/secrets/{secret_id}"),
-        serde_json::json!({ "value": "", "team_id": "team-1", "team_shared": true }),
+        serde_json::json!({ "value": "", "team_id": "team-1", "share_with_team": true }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

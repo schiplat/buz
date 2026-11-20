@@ -2,7 +2,7 @@
 # Minimal end-to-end test for SSH remote execution.
 #
 # Secrets: this pipeline does NOT declare secrets: / registry_secret.
-# With team_shared defaulting to false, same-team secrets (e.g. ACR JSON)
+# With share_with_team defaulting to false, same-team secrets (e.g. ACR JSON)
 # are NOT auto-injected into these steps.
 #
 # Prerequisites:

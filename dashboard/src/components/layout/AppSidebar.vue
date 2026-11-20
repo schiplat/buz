@@ -157,7 +157,7 @@ function onLogoClick(e: MouseEvent) {
     >
       <a
         href="/"
-        class="group flex min-w-0 items-center gap-2.5 rounded-xl px-1 py-1 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring/25"
+        class="group flex min-w-0 items-center gap-2.5 rounded-xl px-1 py-1 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
         :title="ui.isCollapsed ? 'Buz' : undefined"
         @click="onLogoClick"
       >
@@ -174,7 +174,7 @@ function onLogoClick(e: MouseEvent) {
       <button
         v-if="!ui.isCollapsed"
         type="button"
-        class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+        class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
         title="Collapse sidebar (⌘B)"
         @click="ui.toggleSidebar()"
       >

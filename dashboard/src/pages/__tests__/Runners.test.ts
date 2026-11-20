@@ -359,8 +359,8 @@ describe('Runner detail drawer tabs', () => {
 
     tab('Policy')!.click()
     await nextTick()
-    expect(tab('Policy')!.className).toContain('bg-card')
-    expect(tab('Overview')!.className).not.toContain('bg-card')
+    expect(tab('Policy')!.className).toContain('bg-muted text-foreground')
+    expect(tab('Overview')!.className).not.toContain('bg-muted text-foreground')
 
     const policyHeading = [...document.body.querySelectorAll('div')]
       .find((d) => d.textContent?.trim() === 'Runner Policy')

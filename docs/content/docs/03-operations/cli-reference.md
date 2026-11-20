@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 weight: 60
-description: operator subcommands for buz-manager and buz-sandboxd — scan, rotate, plan, tokens, doctor
+description: operator subcommands for buz-manager and buz-sandboxd — scan, consistency, rotate, plan, tokens, doctor
 ---
 
 `buz-manager` ships operator subcommands alongside the server. All of them
@@ -20,6 +20,24 @@ buz-manager scan-deprecated
 
 Run it **before upgrading an old instance** — it tells you exactly what to
 migrate and how. Nothing is modified.
+
+## check-data
+
+Read-only team-binding consistency report. Lists rows the write-path guards
+can no longer create but legacy data may still contain:
+
+- pipelines/secrets with an empty `team_id` (pre-team rows);
+- pipelines/secrets/hosts whose `team_id` does not name an existing team;
+- `pipeline_secrets` bindings whose pipeline and secret sit in two different
+  teams (the runtime's same-team join silently ignores them).
+
+```bash
+buz-manager check-data
+```
+
+The Manager logs the same report as a single warning at startup when it is
+not clean. Nothing is modified; fix a row by moving the resource to an
+existing team, deleting it, or unbinding it.
 
 ## seed-sample
 

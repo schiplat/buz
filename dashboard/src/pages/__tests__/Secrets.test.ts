@@ -54,7 +54,7 @@ const secret = (kind: SecretKind, overrides: Partial<Secret> = {}): Secret => ({
   value: 'redacted***',
   owner_group: 'Default',
   team_id: 'team-default',
-  team_shared: true,
+  share_with_team: true,
   kind,
   updated_at: '2026-10-17T00:00:00Z',
   ...overrides,
@@ -143,7 +143,7 @@ beforeEach(() => {
   ])
   vi.mocked(secretsApi.create).mockResolvedValue({
     id: 'created', name: 'REGISTRY_PASSWORD', team_id: 'team-default', owner_group: 'Default',
-    team_shared: false, kind: 'generic',
+    share_with_team: false, kind: 'generic',
   })
   vi.mocked(secretsApi.update).mockResolvedValue({ id: 'updated', updated: true })
 })
@@ -215,7 +215,7 @@ describe('Secrets plugin-first guidance', () => {
     await flush()
     expect(secretsApi.create).toHaveBeenCalledWith({
       name: 'REGISTRY_PASSWORD', value: 'actual-password', team_id: 'team-other',
-      team_shared: true, kind: 'generic',
+      share_with_team: true, kind: 'generic',
     })
     expect(secretsApi.list).toHaveBeenCalledTimes(2)
     expect(document.body.querySelector('h3')).toBeNull()
@@ -244,7 +244,7 @@ describe('Secrets plugin-first guidance', () => {
       button('Update', editor()).click()
       await flush()
       expect(secretsApi.update).toHaveBeenCalledWith(row.id, {
-        value: '', team_id: row.team_id, team_shared: true, kind,
+        value: '', team_id: row.team_id, share_with_team: true, kind,
       })
       expect(secretsApi.create).not.toHaveBeenCalled()
     },
@@ -270,7 +270,7 @@ describe('Secrets plugin-first guidance', () => {
       button('Update', editor()).click()
       await flush()
       expect(secretsApi.update).toHaveBeenCalledWith(row.id, {
-        value: 'replacement-legacy-value', team_id: row.team_id, team_shared: true, kind,
+        value: 'replacement-legacy-value', team_id: row.team_id, share_with_team: true, kind,
       })
     },
   )
@@ -288,7 +288,7 @@ describe('Secrets plugin-first guidance', () => {
       button('Update', editor()).click()
       await flush()
       expect(secretsApi.update).toHaveBeenCalledWith(row.id, {
-        value: 'single-credential', team_id: row.team_id, team_shared: true, kind: 'generic',
+        value: 'single-credential', team_id: row.team_id, share_with_team: true, kind: 'generic',
       })
     },
   )

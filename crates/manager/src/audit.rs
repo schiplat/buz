@@ -638,7 +638,7 @@ pub fn secret_snapshot(
     name: &str,
     owner_group: &str,
     team_id: &str,
-    team_shared: bool,
+    share_with_team: bool,
     kind: &str,
 ) -> Value {
     serde_json::json!({
@@ -646,7 +646,7 @@ pub fn secret_snapshot(
         "name": name,
         "owner_group": owner_group,
         "team_id": team_id,
-        "team_shared": team_shared,
+        "share_with_team": share_with_team,
         "kind": kind,
         "value": "***",
     })

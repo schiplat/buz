@@ -1,6 +1,6 @@
 # Push-only demo. For full build → push → verify, see acr-personal-build-push.yml.
 # Create plain secrets (Secrets & Variables → Secrets) REGISTRY_USERNAME /
-# REGISTRY_PASSWORD with Team share OFF; allowlist via secrets:.
+# REGISTRY_PASSWORD with Share with team OFF; allowlist via secrets:.
 
 name: acr-personal-push
 environments: [default]

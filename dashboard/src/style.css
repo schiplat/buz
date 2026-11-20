@@ -98,15 +98,81 @@
 }
 
 @utility surface-card {
-  @apply rounded-2xl bg-card;
-}
-
-@utility surface-muted {
-  @apply rounded-2xl bg-muted;
+  @apply rounded-2xl bg-card ring-1 ring-border/60;
+  box-shadow:
+    0 1px 2px hsl(220 20% 20% / 0.04),
+    0 2px 8px hsl(220 20% 20% / 0.03);
 }
 
 @utility surface-inset {
-  @apply rounded-xl bg-muted;
+  @apply rounded-xl bg-muted/40;
+}
+
+@utility surface-overlay {
+  @apply rounded-xl bg-card ring-1 ring-border/60 shadow-lg;
+}
+
+@utility surface-modal {
+  @apply rounded-2xl bg-card ring-1 ring-border/60;
+  box-shadow:
+    0 1px 2px hsl(220 20% 20% / 0.04),
+    0 2px 8px hsl(220 20% 20% / 0.03);
+}
+
+@utility field-input {
+  @apply w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden transition-colors placeholder:text-muted-foreground focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-50;
+}
+
+@utility field-select {
+  @apply h-9 appearance-none rounded-xl border border-border bg-background pl-3 pr-9 text-sm outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 1rem;
+}
+
+@utility field-select-sm {
+  @apply h-8 appearance-none rounded-xl border border-border bg-background pl-3 pr-8 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 0.9rem;
+}
+
+@utility notice-info {
+  @apply rounded-xl bg-info/10 px-3 py-2 text-info;
+}
+
+@utility notice-success {
+  @apply rounded-xl bg-success/10 px-3 py-2 text-success;
+}
+
+@utility notice-warning {
+  @apply rounded-xl bg-warning/10 px-3 py-2 text-warning;
+}
+
+@utility notice-danger {
+  @apply rounded-xl bg-destructive/10 px-3 py-2 text-destructive;
+}
+
+@utility chip-info {
+  @apply inline-flex items-center rounded-lg bg-info/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-info;
+}
+
+@utility chip-success {
+  @apply inline-flex items-center rounded-lg bg-success/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-success;
+}
+
+@utility chip-warning {
+  @apply inline-flex items-center rounded-lg bg-warning/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-warning;
+}
+
+@utility chip-danger {
+  @apply inline-flex items-center rounded-lg bg-destructive/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-destructive;
+}
+
+@utility chip-neutral {
+  @apply inline-flex items-center rounded-lg bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground;
 }
 
 @utility page-stack {
@@ -161,7 +227,7 @@
   }
 
   & tbody tr.clickable {
-    @apply cursor-pointer hover:bg-muted/80;
+    @apply cursor-pointer hover:bg-muted/40;
   }
 
   & tbody tr.clickable td:first-child {
@@ -174,7 +240,7 @@
 
 @utility clickable {
   .data-table tbody &tr {
-    @apply cursor-pointer hover:bg-muted/80;
+    @apply cursor-pointer hover:bg-muted/40;
   }
 
   .data-table tbody &tr td:first-child {
@@ -185,13 +251,8 @@
   }
 }
 
-@utility soft-panel {
-  @apply rounded-2xl bg-card p-1;
-  box-shadow: 0 12px 40px rgba(28, 25, 23, 0.08);
-}
-
 @utility mono-chip {
-  @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs leading-tight tracking-tight text-foreground/75;
+  @apply inline-flex max-w-full items-center truncate rounded-lg bg-muted/40 px-1.5 py-0.5 font-mono text-xs leading-tight tracking-tight text-foreground/75;
 }
 
 @layer utilities {

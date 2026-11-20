@@ -32,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::ScanDeprecated) => {
             return services::deprecated_scan::run(&cli.config).await;
         }
+        Some(Command::CheckData) => {
+            return services::consistency_scan::run(&cli.config).await;
+        }
         Some(Command::SeedSample) => {
             let config = config::load(Some(&cli.config))?;
             let db = db::init(&config).await?;
@@ -182,6 +185,14 @@ async fn main() -> anyhow::Result<()> {
     // schema-only baseline, so seed them here for both backends (idempotent).
     db::seed_default_rows(&db).await?;
     rbac::bootstrap(&db).await?;
+    if let Ok(report) = manager::store::consistency::check(&db).await {
+        if !report.is_clean() {
+            tracing::warn!(
+                ?report,
+                "team-binding consistency issues found — run `buz-manager check-data` for details"
+            );
+        }
+    }
     // Fresh installs get one editable sample pipeline. Existing installs are
     // marked as skipped; a failure must not block startup.
     match services::sample_pipeline::seed_if_fresh(&db, &config).await {

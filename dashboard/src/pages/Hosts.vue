@@ -267,16 +267,16 @@ onMounted(async () => {
 
     <!-- Table -->
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div v-else class="surface-card overflow-hidden">
       <!-- Filter bar -->
-      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+      <div class="px-5 py-3 border-b border-border/40 flex items-center gap-3 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search hosts…"
-          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-44 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
         />
-        <select v-model="filterCredentialType" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
+        <select v-model="filterCredentialType" class="field-select-sm">
           <option value="">All auth types</option>
           <option value="key_path">SSH Key</option>
           <option value="password">Password</option>
@@ -289,7 +289,7 @@ onMounted(async () => {
       <div v-if="filteredHosts.length > 0" class="overflow-x-auto">
         <table class="w-full text-[13px]">
           <thead>
-            <tr class="border-b border-border/30 bg-muted/10">
+            <tr class="border-b border-border/40 bg-muted/40">
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                   Name
@@ -331,7 +331,7 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody class="divide-y divide-border/20">
-            <tr v-for="h in pageItems" :key="h.id" class="hover:bg-muted/5 transition-colors">
+            <tr v-for="h in pageItems" :key="h.id" class="hover:bg-muted/40 transition-colors">
               <td class="px-5 py-3">
                 <span
                   class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -343,11 +343,11 @@ onMounted(async () => {
                   <span class="font-mono text-xs text-muted-foreground" :title="h.host">{{ h.host }}</span>
                   <button
                     type="button"
-                    class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-muted hover:text-foreground transition-colors"
+                    class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-lg text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground transition-colors"
                     title="Copy address"
                     @click="copyHostAddress(h, $event)"
                   >
-                    <Check v-if="copiedHostId === h.id" class="h-3 w-3 text-emerald-500" />
+                    <Check v-if="copiedHostId === h.id" class="h-3 w-3 text-success" />
                     <Copy v-else class="h-3 w-3" />
                   </button>
                 </div>
@@ -355,12 +355,12 @@ onMounted(async () => {
               <td class="px-5 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">{{ h.port }}</td>
               <td class="px-5 py-3 whitespace-nowrap">{{ h.username }}</td>
               <td class="px-5 py-3 whitespace-nowrap">
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-slate-500/10 text-slate-500">{{ h.credential_type }}</span>
+                <span class="inline-flex items-center rounded-lg px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-muted/40 text-muted-foreground">{{ h.credential_type }}</span>
               </td>
               <td class="px-5 py-3 whitespace-nowrap">
                 <span
-                  class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium tracking-wide"
-                  :class="h.team_id ? 'bg-primary/10 text-primary' : 'bg-muted/60 text-muted-foreground'"
+                  class="inline-flex items-center rounded-lg px-2 py-0.5 text-[10px] font-medium tracking-wide"
+                  :class="h.team_id ? 'bg-primary/10 text-primary' : 'bg-muted/40 text-muted-foreground'"
                 >{{ teamLabel(h.team_id) }}</span>
               </td>
               <td class="px-5 py-3">
@@ -372,7 +372,7 @@ onMounted(async () => {
               <td class="px-5 py-3 text-right whitespace-nowrap">
                 <div class="flex items-center justify-end gap-1">
                   <UiButton v-if="auth.hasTeamRole(h.team_id, 'maintainer')" variant="ghost" size="sm" @click="openEdit(h)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                  <UiButton v-if="auth.hasTeamRole(h.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(h)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                  <UiButton v-if="auth.hasTeamRole(h.team_id, 'maintainer')" variant="ghost" size="sm" @click="handleDelete(h)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-destructive" /></UiButton>
                 </div>
               </td>
             </tr>
@@ -394,44 +394,39 @@ onMounted(async () => {
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
         <div class="fixed inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
-        <div class="relative z-10 w-full max-w-lg mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+        <div class="relative z-10 w-full max-w-lg mx-4 my-auto surface-modal flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
           <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Edit Host' : 'New Host' }}</h3>
           <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-400">*</span></label>
-              <input v-model="form.name" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="e.g. prod-server-01" />
+              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-destructive">*</span></label>
+              <input v-model="form.name" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30" placeholder="e.g. prod-server-01" />
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-[12px] font-medium text-foreground mb-1">Address <span class="text-red-400">*</span></label>
-                <input v-model="form.host" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="10.0.0.1" />
+                <label class="block text-[12px] font-medium text-foreground mb-1">Address <span class="text-destructive">*</span></label>
+                <input v-model="form.host" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30" placeholder="10.0.0.1" />
               </div>
               <div>
                 <label class="block text-[12px] font-medium text-foreground mb-1">Port</label>
-                <input v-model.number="form.port" type="number" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="22" />
+                <input v-model.number="form.port" type="number" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30" placeholder="22" />
               </div>
             </div>
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Username <span class="text-red-400">*</span></label>
-              <input v-model="form.username" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="root" />
+              <label class="block text-[12px] font-medium text-foreground mb-1">Username <span class="text-destructive">*</span></label>
+              <input v-model="form.username" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30" placeholder="root" />
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Auth Type</label>
-              <div class="relative">
-                <select v-model="form.credential_type" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
-                  <option value="key_path">SSH Key</option>
-                  <option value="vault">Password</option>
-                  <option value="agent">SSH Agent</option>
-                </select>
-                <svg class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </div>
+              <select v-model="form.credential_type" class="field-select w-full">
+                <option value="key_path">SSH Key</option>
+                <option value="vault">Password</option>
+                <option value="agent">SSH Agent</option>
+              </select>
             </div>
             <!-- SSH Agent: no credential stored in Manager -->
             <div
               v-if="form.credential_type === 'agent'"
-              class="rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2.5 text-[12px] text-sky-700 dark:text-sky-300 leading-relaxed"
+              class="rounded-xl bg-info/10 px-3 py-2.5 text-[12px] leading-relaxed text-info"
             >
               Uses the <span class="font-medium">runner's</span> SSH agent (<code class="font-mono text-[11px]">SSH_AUTH_SOCK</code>).
               No key or password is stored in the Manager. On the runner host, load keys with
@@ -440,7 +435,7 @@ onMounted(async () => {
             <!-- Edit mode: credential exists warning -->
             <div
               v-else-if="editing?.credential_stored"
-              class="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-[12px] text-amber-600 dark:text-amber-400 leading-relaxed"
+              class="notice-warning px-3 py-2.5 text-[12px] text-warning dark:text-warning leading-relaxed"
             >
               <span class="font-medium">{{ editing.credential_type === 'key_path' ? 'Private key' : 'Password' }} already stored.</span>
               Leave the field below empty to keep the existing credential, or paste a new value to replace it.
@@ -448,14 +443,14 @@ onMounted(async () => {
             <div v-if="form.credential_type !== 'agent'">
               <label class="block text-[12px] font-medium text-foreground mb-1">
                 {{ form.credential_type === 'key_path' ? 'Private Key' : 'Password' }}
-                <span v-if="!editing?.credential_stored" class="text-red-500">*</span>
+                <span v-if="!editing?.credential_stored" class="text-destructive">*</span>
                 <span class="text-muted-foreground/60 font-normal">
                   (paste directly — stored encrypted in DB)
                 </span>
               </label>
               <textarea
                 v-model="form.credential_data"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 font-mono text-xs outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
                 rows="6"
                 :placeholder="editing?.credential_stored ? 'Leave blank to keep existing credential' : (form.credential_type === 'key_path' ? '-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----' : 'Enter password')"
               ></textarea>
@@ -471,37 +466,32 @@ onMounted(async () => {
               <input
                 v-model="form.credential_passphrase"
                 type="password"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
                 :placeholder="editing?.credential_stored ? 'Leave blank to keep existing' : 'Key passphrase (if any)'"
               />
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Team</label>
-              <div class="relative">
-                <select v-model="form.team_id" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
-                  <option v-if="auth.isPlatformAdmin" value="">Shared (admin)</option>
-                  <option v-for="t in manageableTeams" :key="t.id" :value="t.id">
-                    {{ t.name }} ({{ t.slug }})
-                  </option>
-                </select>
-                <svg class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </div>
+              <select v-model="form.team_id" class="field-select w-full">
+                <option v-if="auth.isPlatformAdmin" value="">Shared (admin)</option>
+                <option v-for="t in manageableTeams" :key="t.id" :value="t.id">
+                  {{ t.name }} ({{ t.slug }})
+                </option>
+              </select>
               <p class="mt-1 text-[11px] text-muted-foreground">Team-scoped hosts are visible to team members. Shared hosts require admin access.</p>
             </div>
             <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">Labels <span class="text-muted-foreground/60 font-normal">(comma-separated)</span></label>
-              <input v-model="form.labels" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="linux, x64, prod" />
+              <input v-model="form.labels" class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30" placeholder="linux, x64, prod" />
             </div>
           </div>
-          <div class="shrink-0 px-6 py-5 border-t border-border/30 space-y-3">
+          <div class="shrink-0 px-6 py-5 border-t border-border/40 space-y-3">
             <p
               v-if="testResult"
-              class="text-[12px] leading-relaxed whitespace-pre-wrap rounded-lg px-3 py-2"
+              class="text-[12px] leading-relaxed whitespace-pre-wrap rounded-xl px-3 py-2"
               :class="testResult.ok
-                ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20'
-                : 'bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/20'"
+                ? 'bg-success/10 text-success'
+                : 'bg-destructive/10 text-destructive'"
             >{{ testResult.message }}</p>
             <div class="flex items-center justify-between gap-3">
               <UiButton

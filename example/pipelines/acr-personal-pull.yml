@@ -1,7 +1,7 @@
 # Private registry login (ACR Personal Edition) for docker pull / push.
 #
 # 1) Create Secrets & Variables → Secrets (plain values, encrypted at rest):
-#    REGISTRY_USERNAME / REGISTRY_PASSWORD. Leave **Team share OFF** (default)
+#    REGISTRY_USERNAME / REGISTRY_PASSWORD. Leave **Share with team OFF** (default)
 #    so unrelated pipelines never get them as env.
 #
 # 2) Allowlist via secrets:. A shell login step first (job-scoped DOCKER_CONFIG),

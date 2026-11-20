@@ -156,7 +156,7 @@ Built-in top-level keys on `PipelineYaml` (`deny_unknown_fields`):
 | [`name`](#name) | ✓ | Unique pipeline name |
 | `environments` | ✓ | Registered environment slugs allowed for trigger-time selection |
 | [`description`](#description) | | UI description |
-| [`team`](#team) / `owner_group` | | Team slug (default `default`) |
+| [`team`](#team) | | Team slug (default `default`; `owner_group` is a deprecated alias) |
 | [`on`](#on-trigger) | | Triggers: `manual` / `webhook` / `cron` |
 | [`concurrency`](#concurrency) | | Concurrent-run policy |
 | [`runner`](#runner) | | Label match + job timeout |
@@ -359,13 +359,13 @@ Optional string that acts as a **concurrency group key**. When set, only **one j
 
 ### `team`
 
-Team **slug** this pipeline belongs to (Phase 2 RBAC). Alias: `owner_group`.
+Team **slug** this pipeline belongs to (Phase 2 RBAC). `owner_group` is a **deprecated** alias: accepted with a warning, never stored (the slug is derived from `team_id`).
 
 Saving the definition resolves the slug to `teams.id`. If omitted, it falls back to the bootstrapped `default` team; an unknown slug is rejected.
 
 | | |
 |---|---|
-| YAML | `team: backend` (or `owner_group: backend`) |
+| YAML | `team: backend` (preferred; `owner_group: backend` is deprecated) |
 | Form | Advanced → **Team** (required dropdown) |
 | Required | Yes at runtime (`team_id`); YAML may omit and get `default` |
 | See also | [Users, Teams & RBAC](/docs/01-architecture/platform/rbac/) |
@@ -521,7 +521,7 @@ Optional top-level / step `secrets: [NAME]` remains valid as an overview or narr
 
 Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/). Syntax cheat sheet: [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/).
 
-Secrets default to **`team_shared: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+Secrets default to **`share_with_team: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 
 | | |
 |---|---|
@@ -1054,7 +1054,7 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 
 | YAML | DB / runtime | Notes |
 |---|---|---|
-| `name`, `description`, `team` / `owner_group` | `pipelines.*` / `team_id` | Unknown team slug rejected |
+| `name`, `description`, `team` | `pipelines.*` / `team_id` | Unknown team slug rejected; `owner_group:` is a deprecated alias |
 | `on.*` | `trigger_type`, webhook/cron fields, `input_defs` | |
 | `runner.labels` / `timeout` | `runner_labels`, `timeout_seconds` | Duration strings parsed |
 | `concurrency` | concurrency_* columns | Object or legacy string |

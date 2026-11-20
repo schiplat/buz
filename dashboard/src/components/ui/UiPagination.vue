@@ -24,25 +24,25 @@ function go(p: number) {
 </script>
 
 <template>
-  <div v-if="totalPages > 1 || total > pageSize" class="flex items-center justify-between px-4 py-2.5 border-t border-border/20 bg-muted/5">
+  <div v-if="totalPages > 1 || total > pageSize" class="flex items-center justify-between px-4 py-2.5 border-t border-border/40 bg-muted/40">
     <span class="text-[11px] text-muted-foreground">{{ start }}–{{ end }} of {{ total }}</span>
     <div class="flex items-center gap-1">
       <button
-        class="px-2.5 py-1 rounded-sm text-[11px] transition-colors"
-        :class="page === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+        class="rounded-lg px-2.5 py-1 text-[11px] transition-colors"
+        :class="page === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
         :disabled="page === 1"
         @click="go(page - 1)"
       >Prev</button>
       <button
         v-for="p in totalPages"
         :key="p"
-        class="w-7 h-7 rounded-sm text-[11px] tabular-nums transition-colors"
-        :class="p === page ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+        class="h-7 w-7 rounded-lg text-[11px] tabular-nums transition-colors"
+        :class="p === page ? 'bg-muted text-foreground font-semibold' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
         @click="go(p)"
       >{{ p }}</button>
       <button
-        class="px-2.5 py-1 rounded-sm text-[11px] transition-colors"
-        :class="page === totalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+        class="rounded-lg px-2.5 py-1 text-[11px] transition-colors"
+        :class="page === totalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'"
         :disabled="page === totalPages"
         @click="go(page + 1)"
       >Next</button>

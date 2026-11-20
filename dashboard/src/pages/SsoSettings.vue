@@ -226,10 +226,13 @@ async function setPolicy(value: boolean) {
 
 <template>
   <div class="space-y-5">
-    <PageHeader title="Single sign-on (OIDC)" description="Sign in through any OIDC provider.">
+    <PageHeader
+      title="Single sign-on (OIDC)"
+      description="Connect any standard OIDC provider. End-to-end verified with Signet."
+    >
       <template #actions>
         <a
-          class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          class="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
           :href="DOCS_URL"
           target="_blank"
           rel="noopener"
@@ -242,7 +245,7 @@ async function setPolicy(value: boolean) {
 
     <div
       v-if="loading"
-      class="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground shadow-xs"
+      class="surface-card p-6 text-sm text-muted-foreground"
     >
       Loading…
     </div>
@@ -251,10 +254,10 @@ async function setPolicy(value: boolean) {
       <!-- status strip: full-width once configured … -->
       <div
         v-if="!firstTime"
-        class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card p-4 shadow-xs"
+        class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card p-4"
       >
         <span
-          class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+          class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-xs font-medium"
           :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
         >
           <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
@@ -262,19 +265,19 @@ async function setPolicy(value: boolean) {
         </span>
         <label class="inline-flex items-center gap-2 text-sm font-medium">
           <span class="relative inline-flex h-5 w-[34px]">
-            <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-full bg-muted-foreground/30 transition-colors checked:bg-success" />
-            <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all peer-checked:translate-x-[14px]"></span>
+            <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-lg bg-muted-foreground/30 transition-colors checked:bg-success" />
+            <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-all peer-checked:translate-x-[14px]"></span>
           </span>
           Sign-in enabled
         </label>
         <span
           v-if="probe?.ok && lastProbeAt"
-          class="inline-flex items-center gap-1.5 rounded-full border border-success/40 bg-success/10 px-2.5 py-0.5 text-xs font-medium text-success"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-0.5 text-xs font-medium text-success"
         >
           <Check class="h-3 w-3" />
           Connection OK · {{ probeAge }}
         </span>
-        <span class="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+        <span class="inline-flex items-center gap-1.5 rounded-lg bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
           <Database class="h-3 w-3" />
           Source: database
         </span>
@@ -294,10 +297,10 @@ async function setPolicy(value: boolean) {
           <!-- first setup: the strip aligns with the column instead of spanning -->
           <div
             v-if="firstTime"
-            class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card p-4 shadow-xs"
+            class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card p-4"
           >
             <span
-              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+              class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-xs font-medium"
               :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
             >
               <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
@@ -305,21 +308,21 @@ async function setPolicy(value: boolean) {
             </span>
             <label class="inline-flex items-center gap-2 text-sm font-medium">
               <span class="relative inline-flex h-5 w-[34px]">
-                <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-full bg-muted-foreground/30 transition-colors checked:bg-success" />
-                <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all peer-checked:translate-x-[14px]"></span>
+                <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-lg bg-muted-foreground/30 transition-colors checked:bg-success" />
+                <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-all peer-checked:translate-x-[14px]"></span>
               </span>
               Sign-in enabled
             </label>
-            <span class="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+            <span class="inline-flex items-center gap-1.5 rounded-lg bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
               <Database class="h-3 w-3" />
               No configuration yet
             </span>
           </div>
 
           <!-- provider connection -->
-          <div class="rounded-xl border border-border bg-card shadow-xs">
+          <div class="surface-card">
             <div class="flex items-center gap-2.5 px-5 pt-4">
-              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Plug class="h-4 w-4" />
               </span>
               <h2>Provider connection</h2>
@@ -331,7 +334,7 @@ async function setPolicy(value: boolean) {
                   v-model="issuer"
                   type="text"
                   placeholder="https://sso.example.com"
-                  class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                  class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                 />
                 <p class="type-meta">HTTPS, no trailing slash.</p>
               </div>
@@ -342,7 +345,7 @@ async function setPolicy(value: boolean) {
                   <input
                     v-model="clientId"
                     type="text"
-                    class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                    class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                   />
                 </div>
                 <div class="space-y-1.5">
@@ -352,14 +355,14 @@ async function setPolicy(value: boolean) {
                     type="password"
                     value="····························"
                     disabled
-                    class="flex h-9 w-full rounded-lg border border-border bg-muted/30 px-3 text-sm text-muted-foreground"
+                    class="flex h-9 w-full rounded-xl border border-border bg-muted/40 px-3 text-sm text-muted-foreground"
                   />
                   <input
                     v-else
                     v-model="clientSecret"
                     type="password"
                     :placeholder="oidcMeta?.client_secret_configured ? 'New secret' : 'Paste once — stored encrypted'"
-                    class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                    class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                   />
                   <p class="type-meta">
                     <template v-if="oidcMeta?.client_secret_configured && !replacingSecret">
@@ -380,7 +383,7 @@ async function setPolicy(value: boolean) {
                 <input
                   v-model="scopesInput"
                   type="text"
-                  class="flex h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                  class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                 />
                 <p class="type-meta">Must include <span class="font-mono">openid</span>.</p>
               </div>
@@ -405,7 +408,7 @@ async function setPolicy(value: boolean) {
               <div
                 v-if="probe"
                 class="rounded-lg border p-4"
-                :class="probe.ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5'"
+                :class="probe.ok ? 'notice-success' : 'notice-danger'"
               >
                 <template v-if="probe.ok">
                   <p class="flex items-center gap-1.5 text-sm font-medium text-success">
@@ -437,9 +440,9 @@ async function setPolicy(value: boolean) {
           </div>
 
           <!-- registration (configured state: main column, wide rows) -->
-          <div v-if="!firstTime" class="rounded-xl border border-border bg-card shadow-xs">
+          <div v-if="!firstTime" class="surface-card">
             <div class="flex items-center gap-2.5 px-5 pt-4">
-              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Link2 class="h-4 w-4" />
               </span>
               <div>
@@ -451,14 +454,14 @@ async function setPolicy(value: boolean) {
               <div
                 v-for="uri in registrationUris"
                 :key="uri.key"
-                class="-mx-2 flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/30"
+                class="-mx-2 flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/40"
               >
                 <div class="w-40 flex-none">
                   <p class="text-sm font-medium">{{ uri.label }}</p>
                   <p class="text-xs text-muted-foreground">{{ uri.what }}</p>
                 </div>
                 <code
-                  class="min-w-0 flex-1 overflow-hidden overflow-ellipsis whitespace-nowrap rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-xs"
+                  class="min-w-0 flex-1 overflow-hidden overflow-ellipsis whitespace-nowrap surface-inset px-2.5 py-1.5 font-mono text-xs"
                   :title="uri.value"
                 >
                   {{ uri.value || 'available after the issuer is saved' }}
@@ -468,7 +471,7 @@ async function setPolicy(value: boolean) {
                   variant="outline"
                   size="sm"
                   class="w-[30px] px-0"
-                  :class="copiedKey === uri.key ? 'border-success/40 bg-success/10 text-success' : 'text-muted-foreground'"
+                  :class="copiedKey === uri.key ? 'bg-success/10 text-success' : 'text-muted-foreground'"
                   :title="copiedKey === uri.key ? 'Copied' : 'Copy'"
                   @click="copyUri(uri.key, uri.value)"
                 >
@@ -494,9 +497,9 @@ async function setPolicy(value: boolean) {
         <!-- sidebar (320px) -->
         <div class="min-w-0">
           <!-- sign-in policy (configured state only) -->
-          <div v-if="!firstTime" class="rounded-xl border border-border bg-card shadow-xs">
+          <div v-if="!firstTime" class="surface-card">
             <div class="flex items-center gap-2.5 px-4 pt-4">
-              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <ShieldCheck class="h-4 w-4" />
               </span>
               <h2>Sign-in policy</h2>
@@ -507,8 +510,8 @@ async function setPolicy(value: boolean) {
               </p>
 
               <label
-                class="flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
-                :class="autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
+                class="flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/40"
+                :class="autoProvision ? 'border-foreground bg-muted/40' : 'border-border'"
               >
                 <input
                   type="radio"
@@ -520,7 +523,7 @@ async function setPolicy(value: boolean) {
                 <span>
                   <span class="inline-flex items-center gap-2 text-sm font-medium">
                     Create on first sign-in
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
+                    <span class="rounded-lg bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
                   </span>
                   <span class="mt-0.5 block text-xs text-muted-foreground">
                     They sign in immediately — a plain account, no teams, no admin. Grant roles afterwards.
@@ -528,8 +531,8 @@ async function setPolicy(value: boolean) {
                 </span>
               </label>
               <label
-                class="mt-4 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/20"
-                :class="!autoProvision ? 'border-foreground bg-muted/10' : 'border-border'"
+                class="mt-4 flex cursor-pointer gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/40"
+                :class="!autoProvision ? 'border-foreground bg-muted/40' : 'border-border'"
               >
                 <input
                   type="radio"
@@ -559,7 +562,7 @@ async function setPolicy(value: boolean) {
               <button
                 v-if="!autoProvision && pendingCount > 0"
                 type="button"
-                class="mt-3 inline-flex w-full items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-500 hover:bg-amber-500/15"
+                class="mt-3 inline-flex w-full items-center gap-1.5 notice-warning px-3 py-2 text-xs font-medium hover:bg-muted/40"
                 @click="router.push('/users')"
               >
                 <Clock class="h-3.5 w-3.5" />
@@ -567,16 +570,16 @@ async function setPolicy(value: boolean) {
                 <span class="ml-auto opacity-75">→ Users &amp; teams</span>
               </button>
 
-              <p class="mt-3 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+              <p class="mt-3 border-t border-border/40 pt-3 text-xs text-muted-foreground">
                 SSO accounts have no local password. Your admin login stays as break-glass.
               </p>
             </div>
           </div>
 
           <!-- registration (first-time: narrow sidebar variant) -->
-          <div v-else class="rounded-xl border border-border bg-card shadow-xs">
+          <div v-else class="surface-card">
             <div class="flex items-center gap-2.5 px-4 pt-4">
-              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/50 text-muted-foreground">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Link2 class="h-4 w-4" />
               </span>
               <h2>Register at your provider</h2>
@@ -589,8 +592,8 @@ async function setPolicy(value: boolean) {
                   <button
                     v-if="uri.value"
                     type="button"
-                    class="ml-auto flex h-[26px] w-[26px] items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-                    :class="copiedKey === uri.key ? 'border-success/40 bg-success/10 text-success' : ''"
+                    class="ml-auto flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                    :class="copiedKey === uri.key ? 'bg-success/10 text-success' : ''"
                     :title="copiedKey === uri.key ? 'Copied' : 'Copy'"
                     @click="copyUri(uri.key, uri.value)"
                   >
@@ -599,7 +602,7 @@ async function setPolicy(value: boolean) {
                   </button>
                 </div>
                 <code
-                  class="mt-1.5 block rounded-md border border-border/50 bg-muted/50 px-2.5 py-1.5 font-mono text-xs leading-relaxed"
+                  class="mt-1.5 block surface-inset px-2.5 py-1.5 font-mono text-xs leading-relaxed"
                   :class="uri.value ? 'break-all text-foreground' : 'text-muted-foreground/70'"
                 >
                   {{ uri.value || 'available after the issuer is saved' }}

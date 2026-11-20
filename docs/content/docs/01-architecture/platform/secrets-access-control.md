@@ -1,51 +1,51 @@
 ---
 title: Secrets Access Control
 weight: 20
-description: "How Buz controls which pipelines can access secrets — kind, team_shared opt-in, explicit binding, and three-tier resolution"
+description: "How Buz controls which pipelines can access secrets — kind, share_with_team opt-in, explicit binding, and three-tier resolution"
 aliases:
   - /docs/01-architecture/secrets-access-control/
 ---
 
 ## Overview
 
-Buz controls secret delivery with a **team ownership boundary** plus an **opt-in team share flag**. Every secret and pipeline belongs to a Team (`team_id`). Runtime **allowlist** (not env injection) is granted through:
+Buz controls secret delivery with a **team ownership boundary** plus an **opt-in per-team share flag**. Every secret and pipeline belongs to a Team (`team_id`). Runtime **allowlist** (not env injection) is granted through:
 
-1. **Team auto-allowlist** — only when the secret has `team_shared = true` and shares the pipeline’s `team_id`
+1. **Team auto-allowlist** — only when the secret has `share_with_team = true` and shares the pipeline’s `team_id`
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
 3. **Explicit step references** — step `secrets:` allowlist
 
 **Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/).
 
-**Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
+**Default for new secrets: `share_with_team = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
 
 This is **Scheme B** — chosen over “any pipeline can use any secret” to provide isolation without a full IAM product in early phases. The share flag corrects the earlier over-broad assumption that “same team ⇒ always inject.”
 
 ---
 
-## `team_shared` (opt-in auto-allowlist)
+## `share_with_team` (opt-in auto-allowlist)
 
 | | |
 |---|---|
-| Column | `secrets.team_shared` (`INTEGER` 0/1, API `boolean`) |
+| Column | `secrets.share_with_team` (`INTEGER` 0/1, API `boolean`) |
 | Default (create) | `false` |
 | Migration (existing rows) | `false` (secure default; re-enable share or bind as needed) |
 | Who may toggle | Team role with `SecretManage` (Maintainer+) |
 
 ### Semantics
 
-| `team_shared` | Same-team pipeline behavior |
+| `share_with_team` | Same-team pipeline behavior |
 |---------------|-----------------------------|
 | `false` (default) | **Not** auto-allowlisted. Use Authorized Secrets, YAML `secrets:`, step `secrets:`, or purpose slots. |
 | `true` | Auto-allowlisted for `${secrets.NAME}` on every same-team job — still **not** auto-injected as `$NAME`. |
 
-`team_shared` does **not** mean “public plaintext” or “cross-team readable.” It only means: *allow Tier‑1 expression resolution within the owning team.*
+`share_with_team` does **not** mean “public plaintext” or “cross-team readable.” It only means: *allow Tier‑1 expression resolution within the owning team.*
 
 ### Recommended usage
 
 | Secret type | Suggested setting | How pipelines use it |
 |-------------|-------------------|----------------------|
-| Shared CI token used by many pipelines | `kind: generic`, `team_shared: true` | `env: TOKEN: ${secrets.TOKEN}` (no per-pipeline bind) |
-| Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind + `env: …: ${secrets.NAME}` |
+| Shared CI token used by many pipelines | `kind: generic`, `share_with_team: true` | `env: TOKEN: ${secrets.TOKEN}` (no per-pipeline bind) |
+| Prod DB password, deploy key | `kind: generic`, `share_with_team: false` | Explicit bind + `env: …: ${secrets.NAME}` |
 
 ---
 
@@ -66,14 +66,14 @@ Legacy note: earlier releases backfilled decryptable values that parse as regist
 
 ---
 
-## Team + `owner_group`
+## Team identity
 
 | Field | Role |
 |-------|------|
-| `team_id` | Ownership, list filtering, CRUD RBAC, runtime same-team checks |
-| `owner_group` | Team **slug** string for display / YAML compat (`team:` / `owner_group:`) |
+| `team_id` | **The only stored owner identity** — list filtering, CRUD RBAC, runtime same-team checks |
+| team slug | Derived by joining `teams`; API responses still expose it as `owner_group` for compatibility |
 
-Phase 1 used free-form `owner_group` equality for auto-access. Phase 2 prefers `team_id`; auto-access additionally requires `team_shared`.
+Phase 1 used free-form `owner_group` equality for auto-access. The column was removed in the v8 migration: `team_id` is the single identity, `owner_group` survives only as a deprecated **input alias** (API and YAML `owner_group:`) and as a derived response field. Secret names are unique **per owner team**, not globally.
 
 ---
 
@@ -81,13 +81,13 @@ Phase 1 used free-form `owner_group` equality for auto-access. Phase 2 prefers `
 
 When the runner polls for a job, the manager resolves secrets as follows:
 
-### Tier 1: Team Auto-Access (opt-in)
+### Tier 1: Team allowlist (opt-in)
 
 ```sql
 SELECT s.name, s.value
 FROM secrets s
 JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-WHERE p.id = ? AND s.team_shared = 1
+WHERE p.id = ? AND s.share_with_team = 1
 ```
 
 **Use case:** A team-wide Docker registry password every pipeline needs as `$DOCKER_REGISTRY_PASS` without per-pipeline binding.
@@ -155,7 +155,7 @@ Claim payload (Manager → Runner):
 
 | Resource | Where created | How bound to a pipeline | Runtime injection |
 |----------|---------------|-------------------------|-------------------|
-| **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / purpose slots | Allowlist for `${secrets.NAME}`; process env only via `env: KEY: ${secrets.NAME}` (**masked**) |
+| **Secrets** | Infrastructure → Secrets | (1) `share_with_team` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / purpose slots | Allowlist for `${secrets.NAME}`; process env only via `env: KEY: ${secrets.NAME}` (**masked**) |
 | **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
 | **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `engine: ssh` | SSH params on runner |
 | **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
@@ -196,7 +196,7 @@ Bindings are created when:
 |-------|---------|
 | **Name** | Env var key / reference name |
 | **Team** | Required ownership |
-| **Team share** | Opt-in auto-inject for same-team pipelines (default off) |
+| **Share with team** | Opt-in same-team allowlist for `${secrets.NAME}` (default off; never env injection) |
 | **Value** | AES-256-GCM at rest; list shows partial redaction |
 
 ### Pipeline form (Advanced)
@@ -207,7 +207,7 @@ Bindings are created when:
 | **Authorized Secrets** | Explicit bindings for non-shared (or extra) secrets |
 | **Variables** / **Env** | Non-secret config |
 
-Help text: only secrets with **Team share** enabled are auto-injected; otherwise bind or reference explicitly. Cross-team binding is not available.
+Help text: only secrets with **Share with team** enabled are allowlisted for `${secrets.NAME}` on same-team jobs; env still requires an explicit map. Cross-team binding is not available.
 
 ---
 
@@ -221,7 +221,7 @@ Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets & Variables](
 | `env: KEY: ${secrets.NAME}` | Explicit map → process env |
 | `steps[].secrets: [GIT_SSH_KEY]` | Optional step allowlist narrowing |
 | Secrets UI → Kind | `generic` default; legacy `registry` rows render/edit-only (kernel support removed in the 2.x retirement) |
-| Secrets UI → Team share | Tier‑1 auto-allowlist when enabled |
+| Secrets UI → Share with team | Tier‑1 auto-allowlist when enabled |
 
 ---
 
@@ -233,10 +233,10 @@ Registry auth is no longer a secret/pipeline feature (kernel support removed in 
 
 ## Best Practices
 
-1. **Default deny auto-inject** — leave Team share off unless many pipelines truly need the same `$NAME`
+1. **Default deny** — leave Share with team off unless many same-team pipelines truly need `${secrets.NAME}`
 2. **Use Authorized Secrets / YAML `secrets:`** for pipeline-wide non-shared secrets
 3. **Use step `secrets:`** for keys needed in one step (e.g. checkout)
-4. **Private registry auth** — use the `buz/docker-login` plugin template with plain username/password secrets; do not enable Team share for registry credentials
+4. **Private registry auth** — use the `buz/docker-login` plugin template with plain username/password secrets; do not enable Share with team for registry credentials
 5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
 6. **Create Secrets in Infrastructure first**, then bind or reference by name
 
@@ -345,7 +345,7 @@ Long-lived secrets (SSH keys, passwords, deploy tokens) become plaintext in `job
 | Phase | Capability |
 |-------|-----------|
 | Phase 1 | `owner_group` plain text, three-tier resolution, single admin |
-| Phase 2 (**current**) | Teams + roles; required `team_id`; **`team_shared` opt-in**; **`kind` (generic \| registry)** |
+| Phase 2 (**current**) | Teams + roles; required `team_id` (single stored identity; legacy `owner_group` column removed, alias deprecated); **`share_with_team` opt-in**; per-team unique names |
 | Phase 3 | SSO, API tokens, cross-team grants |
 
 ---

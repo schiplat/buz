@@ -477,9 +477,10 @@ Response:
 - List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
-- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+- `share_with_team` (boolean, default `false` on create): when `true`, same-team pipelines may reference the secret through `${secrets.NAME}` without an explicit binding (allowlist only — it is never injected as an env var); when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+- Secret `name` is unique **per owning team** (`UNIQUE(team_id, name)`), not globally. `owner_group` is accepted as a deprecated team-selector alias; responses keep it as the derived team slug.
 - `kind` (`generic` \| `registry`, default `generic`): `registry` is a legacy value retained on existing rows — no longer creatable or validated (kernel support removed in the 2.x retirement). List/get return `kind`.
-- For private registries, use the `buz/docker-login` plugin template with plain `generic` secrets (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false` for registry credentials.
+- For private registries, use the `buz/docker-login` plugin template with plain `generic` secrets (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `share_with_team: false` for registry credentials.
 
 ## Variables
 

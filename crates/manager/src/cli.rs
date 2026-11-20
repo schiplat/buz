@@ -82,6 +82,12 @@ pub enum Command {
     /// pipeline YAML carrying retired keys is already rejected by the parser.
     ScanDeprecated,
 
+    /// Report team-binding rows that the write-path guards can no longer
+    /// create but legacy data may still contain: empty or unknown `team_id`
+    /// on pipelines/secrets/hosts, and `pipeline_secrets` rows spanning two
+    /// teams (ignored at runtime by the same-team join). Read-only.
+    CheckData,
+
     /// Seed the built-in "Hello Buz" sample pipeline into an existing
     /// installation. Fresh deployments receive it automatically on first
     /// start; this command restores it after deletion. It never duplicates an

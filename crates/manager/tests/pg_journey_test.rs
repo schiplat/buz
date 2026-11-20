@@ -377,7 +377,7 @@ async fn secret_binding_read() {
     seed_team(&pg).await;
     seed_pipeline(&pg, "p1", "team-a", None).await;
     sqlx::query(
-        "INSERT INTO secrets (id, name, value, kind, team_id, team_shared) \
+        "INSERT INTO secrets (id, name, value, kind, team_id, share_with_team) \
          VALUES ('s1', 'API_KEY', 'enc-value', 'kv', 'team-a', 0)",
     )
     .execute(&pg)
@@ -419,7 +419,7 @@ async fn github_bind_lifecycle() {
     };
     seed_team(&pg).await;
     sqlx::query(
-        "INSERT INTO secrets (id, name, value, kind, team_id, team_shared) \
+        "INSERT INTO secrets (id, name, value, kind, team_id, share_with_team) \
                  VALUES ('s1', 'GH_TOKEN', 'enc', 'kv', 'team-a', 0)",
     )
     .execute(&pg)

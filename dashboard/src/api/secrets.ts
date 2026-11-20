@@ -14,10 +14,11 @@ export interface Secret {
   owner_group: string
   team_id: string
   /**
-   * When true, same-team pipelines auto-receive this secret at job claim.
+   * When true, same-team pipelines may reference this secret without an
+   * explicit binding (still only `${secrets.NAME}`, never `$NAME`).
    * Default false — reference explicitly through plugin with, env, or config.render.
    */
-  team_shared: boolean
+  share_with_team: boolean
   /** `generic`, `registry`, or `aliyun_oss_auth`. */
   kind: SecretKind
   updated_at: string
@@ -56,14 +57,14 @@ export const secretsApi = {
     value: string
     team_id: string
     owner_group?: string
-    team_shared?: boolean
+    share_with_team?: boolean
     kind?: SecretKind
   }): Promise<{
     id: string
     name: string
     team_id: string
     owner_group: string
-    team_shared: boolean
+    share_with_team: boolean
     kind: SecretKind
   }> {
     const resp = await apiClient.post('/secrets', data)
@@ -82,7 +83,7 @@ export const secretsApi = {
       value: string
       team_id?: string
       owner_group?: string
-      team_shared?: boolean
+      share_with_team?: boolean
       kind?: SecretKind
     },
   ): Promise<{ id: string; updated: boolean; github_binds_stale?: number }> {

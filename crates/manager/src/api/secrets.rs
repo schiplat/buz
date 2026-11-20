@@ -24,13 +24,13 @@ fn value_fields_for_api(stored: &str, jwt_secret: &str) -> (String, bool) {
     }
 }
 
-fn team_shared_from_row(v: i64) -> bool {
+fn share_with_team_from_row(v: i64) -> bool {
     v != 0
 }
 
 /// env_name no longer exists: the secret `name` IS the injected env key and
 /// the `${secrets.NAME}` template reference, so it must be UPPER_SNAKE_CASE.
-/// `name` is globally UNIQUE (create-time check below).
+/// `name` is unique per owner team (create-time check below).
 pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -59,7 +59,7 @@ pub async fn list(
                 "reencrypt_required": reencrypt_required,
                 "owner_group": s.owner_group,
                 "team_id": s.team_id,
-                "team_shared": team_shared_from_row(s.team_shared),
+                "share_with_team": share_with_team_from_row(s.share_with_team),
                 "kind": normalize_secret_kind(Some(&s.kind)),
                 "updated_at": s.updated_at,
                 "github_binds": github_binds,
@@ -92,12 +92,12 @@ pub async fn create(
     .await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
-    if crate::store::secrets::find_id_by_name(&state.db(), &name)
+    if crate::store::secrets::find_id_by_name(&state.db(), &team_id, &name)
         .await?
         .is_some()
     {
         return Err(AppError::Conflict(format!(
-            "secret '{name}' already exists"
+            "secret '{name}' already exists in this team"
         )));
     }
 
@@ -108,26 +108,25 @@ pub async fn create(
     let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
 
-    let team_shared = req.team_shared.unwrap_or(false);
-    let team_shared_i: i64 = if team_shared { 1 } else { 0 };
+    let share_with_team = req.share_with_team.unwrap_or(false);
+    let share_with_team_i: i64 = if share_with_team { 1 } else { 0 };
 
     crate::store::secrets::insert(
         &state.db(),
         &id,
         &name,
         &encrypted,
-        &slug,
         &team_id,
-        team_shared_i,
+        share_with_team_i,
         kind,
     )
     .await?;
 
     tracing::info!(
-        "Secret created: {name} ({id}) team={slug} kind={kind} team_shared={team_shared}"
+        "Secret created: {name} ({id}) team={slug} kind={kind} share_with_team={share_with_team}"
     );
 
-    let after = secret_snapshot(&id, &name, &slug, &team_id, team_shared, kind);
+    let after = secret_snapshot(&id, &name, &slug, &team_id, share_with_team, kind);
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SecretCreate)
@@ -142,7 +141,7 @@ pub async fn create(
         "name": name,
         "owner_group": slug,
         "team_id": team_id,
-        "team_shared": team_shared,
+        "share_with_team": share_with_team,
         "kind": kind,
     }))))
 }
@@ -168,7 +167,7 @@ pub async fn get_one(
         "reencrypt_required": reencrypt_required,
         "owner_group": s.owner_group,
         "team_id": s.team_id,
-        "team_shared": team_shared_from_row(s.team_shared),
+        "share_with_team": share_with_team_from_row(s.share_with_team),
         "kind": normalize_secret_kind(Some(&s.kind)),
         "updated_at": s.updated_at,
     }))))
@@ -200,8 +199,31 @@ pub async fn update(
     let facts = crate::store::secrets::update_facts(&state.db(), &id).await?;
     let before_name = facts.name;
     let before_slug = facts.owner_group;
-    let before_team = facts.team_id;
-    let current_shared = facts.team_shared;
+    let before_team = facts.team_id.clone();
+
+    // A team move would leave existing `pipeline_secrets` rows pointing at a
+    // secret the runtime deliberately ignores across teams (same-team join) —
+    // the pipeline would silently lose the secret at claim time. Refuse and
+    // name the pipelines so the caller can unbind first.
+    if new_team_id != before_team {
+        let bound = crate::store::secrets::bound_pipeline_names(&state.db(), &id).await?;
+        if !bound.is_empty() {
+            let preview = bound.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+            let suffix = if bound.len() > 5 {
+                format!(" (+{} more)", bound.len() - 5)
+            } else {
+                String::new()
+            };
+            return Err(AppError::Conflict(format!(
+                "secret is bound to {} pipeline(s) [{}{}]; unbind it from those pipelines before moving it to another team",
+                bound.len(),
+                preview,
+                suffix
+            )));
+        }
+    }
+
+    let current_shared = facts.share_with_team;
     let current_kind = facts.kind;
     let current_value = facts.value;
     let before = secret_snapshot(
@@ -213,8 +235,8 @@ pub async fn update(
         normalize_secret_kind(Some(&current_kind)),
     );
 
-    let team_shared_i = req
-        .team_shared
+    let share_with_team_i = req
+        .share_with_team
         .map(|v| if v { 1 } else { 0 })
         .unwrap_or(current_shared);
     let kind = req
@@ -227,9 +249,8 @@ pub async fn update(
         crate::store::secrets::update_metadata(
             &state.db(),
             &id,
-            &slug,
             &new_team_id,
-            team_shared_i,
+            share_with_team_i,
             &kind,
         )
         .await?;
@@ -240,9 +261,8 @@ pub async fn update(
             &state.db(),
             &id,
             &encrypted,
-            &slug,
             &new_team_id,
-            team_shared_i,
+            share_with_team_i,
             &kind,
         )
         .await?;
@@ -280,7 +300,7 @@ pub async fn update(
         &before_name,
         &slug,
         &new_team_id,
-        team_shared_i != 0,
+        share_with_team_i != 0,
         &kind,
     );
     audit::record(
@@ -297,7 +317,7 @@ pub async fn update(
         "id": id,
         "updated": true,
         "team_id": new_team_id,
-        "team_shared": team_shared_i != 0,
+        "share_with_team": share_with_team_i != 0,
         "kind": kind,
         "github_binds_stale": github_binds_stale,
     }))))
@@ -315,7 +335,7 @@ pub async fn delete(
     let name = facts.name;
     let slug = facts.owner_group;
     let tid = facts.team_id;
-    let shared = facts.team_shared;
+    let shared = facts.share_with_team;
     let kind = facts.kind;
     let before = secret_snapshot(
         &id,
