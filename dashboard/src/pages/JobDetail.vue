@@ -727,7 +727,10 @@ const rerunning = ref(false)
 
 const canRerunJob = computed(() => {
   const s = job.value?.status
-  return s === 'success' || s === 'failed' || s === 'cancelled' || s === 'timeout'
+  return (
+    (s === 'success' || s === 'failed' || s === 'cancelled' || s === 'timeout') &&
+    auth.hasTeamRole(job.value?.team_id, 'developer')
+  )
 })
 
 async function handleRerun() {
@@ -780,7 +783,10 @@ const canApprove = computed(() => {
 
 const canCancelJob = computed(() => {
   const s = job.value?.status
-  return s === 'running' || s === 'pending' || s === 'waiting_approval' || s === 'queued'
+  return (
+    (s === 'running' || s === 'pending' || s === 'waiting_approval' || s === 'queued') &&
+    auth.hasTeamRole(job.value?.team_id, 'developer')
+  )
 })
 
 const approvalsReceived = computed(() => job.value?.snapshot?.approval?.received ?? 0)
@@ -1138,7 +1144,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
           <UiButton v-if="canCancelJob" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
             <XCircle class="h-3.5 w-3.5" /> Cancel
           </UiButton>
-          <UiButton variant="outline" size="sm" class="border-red-500/20 text-red-500 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleDelete">
+          <UiButton v-if="auth.hasTeamRole(job?.team_id, 'developer')" variant="outline" size="sm" class="border-red-500/20 text-red-500 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleDelete">
             <Trash2 class="h-3.5 w-3.5" /> Delete
           </UiButton>
           <UiButton variant="outline" size="sm" class="text-xs px-3 py-1.5" @click="loadJob" :disabled="loading">

@@ -173,10 +173,14 @@ SPA login page "Continue with SSO"
 2. Unbound and `auto_provision = true` (default) → create a plain user
    (`auth_source='oidc'`, no teams, no admin flags; username derived from the
    `name`/`email` local-part, deconflicted with numeric suffixes), bind, audit.
+   Until a team + role is granted, the SPA keeps the account on a **waiting
+   page** (no shell or menu); the page re-checks `/me`, so access appears
+   without signing in again. Platform admins may sign in without a team.
 3. Unbound and `auto_provision = false` → refuse with a message directing the
    user to an administrator, and **record the refused identity in the
    approval queue** (`pending_identities`, refreshed on every refused
-   attempt). A platform admin resolves it from the Users page: bind the
+   attempt). A platform admin resolves it from the **Users & teams**
+   page (`/users`, pending-approval queue at the top): bind the
    identity to an existing account, create a plain SSO user for it, or
    dismiss it (a later attempt re-records it). Binding to an existing
    account keeps its local password unless the admin explicitly disables it

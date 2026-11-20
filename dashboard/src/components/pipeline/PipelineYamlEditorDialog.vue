@@ -853,7 +853,8 @@ env:
   APP_NAME: myapp
   LOG_LEVEL: info
 
-# ── Platform Variables (declare names that already exist in Manager) ──
+# ── Platform Variables (declare names that already exist in Manager;
+#    binding them requires a platform admin) ──
 variables:
   - BUILD_CACHE_DIR
   - NOTIFY_EMAIL

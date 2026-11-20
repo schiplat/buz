@@ -297,6 +297,19 @@ pub async fn environment_detail(
     } else {
         Vec::new()
     };
+    // Secret-override metadata carries the owning team's secret NAMES and the
+    // host allowlist carries host names/labels. Environments are global but
+    // that metadata is not: non-admins get the environment shell only.
+    let secret_overrides = if include_var_overrides {
+        list_secret_overrides_json(pool, id).await?
+    } else {
+        Vec::new()
+    };
+    let host_allowlist = if include_var_overrides {
+        list_host_allowlist_json(pool, id).await?
+    } else {
+        Vec::new()
+    };
     let mut obj = serde_json::json!({
         "id": row.text(0),
         "name": row.text(1),
@@ -304,9 +317,9 @@ pub async fn environment_detail(
         "description": row.text(3),
         "updated_at": row.opt_text(4),
         "overrides": overrides,
-        "secret_overrides": list_secret_overrides_json(pool, id).await?,
+        "secret_overrides": secret_overrides,
         "deployment_concurrency": row.text(11),
-        "host_allowlist": list_host_allowlist_json(pool, id).await?,
+        "host_allowlist": host_allowlist,
     });
     if let Some(map) = obj.as_object_mut() {
         map.extend(protection.to_api_fields());

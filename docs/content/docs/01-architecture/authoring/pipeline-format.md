@@ -446,7 +446,7 @@ variables:
 | **Level** | Pipeline — visible to all steps |
 | **Scope** | Every step |
 | **Sensitive** | No — values appear in step logs |
-| YAML | `variables: [NAME1, NAME2]` — names must match existing platform variables |
+| YAML | `variables: [NAME1, NAME2]` — names must match existing platform variables; binding requires a platform admin |
 
 > **Validate / Save:** unknown platform variable names are **rejected** (no silent skip). See [YAML-First Authoring](./yaml-first-authoring.md).
 

@@ -11,6 +11,7 @@ describe('not-found catch-all route', () => {
     expect((await router.resolve('/dashboard')).name).toBe('dashboard')
     expect((await router.resolve('/jobs')).name).toBe('jobs')
     expect((await router.resolve('/login')).name).toBe('login')
+    expect((await router.resolve('/waiting-for-access')).name).toBe('waiting-for-access')
   })
 
   it('does not shadow-sm known prefixes', async () => {

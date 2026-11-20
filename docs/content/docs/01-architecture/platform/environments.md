@@ -156,18 +156,21 @@ append-only row in `job_approvals` (exposed on `GET /jobs/{id}` as `approvals`).
 | GET | `/api/v1/environments` | Auth (Trigger dropdown) |
 | POST | `/api/v1/environments` | PlatformAdmin (optional protection fields) |
 | GET/PUT/DELETE | `/api/v1/environments/{id}` | GET Auth; mutate PlatformAdmin |
-| GET | `/api/v1/environments/{id}/host-allowlist` | Auth |
+| GET | `/api/v1/environments/{id}/host-allowlist` | PlatformAdmin |
 | POST | `/api/v1/environments/{id}/host-allowlist` | PlatformAdmin `{kind: name|label, value}` |
 | DELETE | `/api/v1/environments/{id}/host-allowlist/{kind}/{value}` | PlatformAdmin |
 | PUT | `/api/v1/environments/{id}/overrides` | PlatformAdmin `{var_id, value}` |
 | DELETE | `/api/v1/environments/{id}/overrides/{var_id}` | PlatformAdmin |
-| GET | `/api/v1/environments/{id}/secret-overrides` | Auth (`has_override` only) |
+| GET | `/api/v1/environments/{id}/secret-overrides` | PlatformAdmin (`has_override` only) |
 | PUT | `/api/v1/environments/{id}/secret-overrides` | PlatformAdmin `{secret_id, value}` |
 | DELETE | `/api/v1/environments/{id}/secret-overrides/{secret_id}` | PlatformAdmin |
 | POST | `/api/v1/jobs/{id}/approve` | Auth ≥ `min_approve_role` (`{ comment? }`) |
 | POST | `/api/v1/jobs/{id}/reject` | Auth ≥ `min_approve_role` (`{ comment? }`) |
 
 Secret override list / upsert responses never include plaintext (`has_override: true` only).
+Non-admins still receive the environment shell (name/slug/protection) for the trigger
+dropdown, but `secret_overrides` and `host_allowlist` are returned empty because that
+metadata names other teams' secrets and hosts.
 See also [Environment Approval Gates](../environment-approvals/) and [API Reference](../api-reference/).
 
 ## Out of scope

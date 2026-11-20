@@ -106,7 +106,7 @@ pub async fn get_one(
 
 /// GET /environments/{id}/host-allowlist
 pub async fn list_host_allowlist(
-    _auth: AuthUser,
+    _auth: PlatformAdmin,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
@@ -463,7 +463,7 @@ pub async fn delete_override(
 
 /// GET /environments/{id}/secret-overrides — metadata only (never plaintext).
 pub async fn list_secret_overrides(
-    _auth: AuthUser,
+    _auth: PlatformAdmin,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
