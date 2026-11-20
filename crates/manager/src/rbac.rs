@@ -29,6 +29,10 @@ pub struct AuthUser {
     /// rather than a user JWT. Bounds where the credential may go — see
     /// [`AuthUser::assert_api_token_allowed`].
     pub api_token_scope: Option<shared::api_token::ApiTokenScope>,
+    /// Unix second of the last IdP-initiated account-wide revocation
+    /// (back-channel logout); `0` = never. A user JWT whose `iat` is at or
+    /// before this instant is refused by [`authenticate_user_token`].
+    pub sessions_revoked_epoch: i64,
 }
 
 impl AuthUser {
@@ -178,6 +182,7 @@ pub async fn load_auth_user(pool: &DbPool, user_id: &str) -> Result<AuthUser, Ap
         is_ops: row.is_platform_admin || row.is_ops,
         memberships,
         api_token_scope: None,
+        sessions_revoked_epoch: row.sessions_revoked_epoch,
     })
 }
 
@@ -195,7 +200,15 @@ pub async fn authenticate_user_token(
         if !matches!(claims.role, Role::Admin | Role::Ops | Role::User) {
             return Err(AppError::AuthFailed("user role required".into()));
         }
-        return load_auth_user(pool, &claims.sub).await;
+        let user = load_auth_user(pool, &claims.sub).await?;
+        // An IdP-initiated account-wide revocation (back-channel logout) kills
+        // every user JWT minted at or before it. `<=` fails closed: a token
+        // issued in the same second as the event is refused too (the holder
+        // re-authenticates on the next second). API tokens never reach here.
+        if user.sessions_revoked_epoch > 0 && (claims.iat as i64) <= user.sessions_revoked_epoch {
+            return Err(AppError::AuthFailed("session revoked".into()));
+        }
+        return Ok(user);
     }
 
     // API token authentication: SHA-256 lookup, then load the owning user.

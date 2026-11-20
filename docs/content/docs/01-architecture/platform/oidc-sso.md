@@ -7,10 +7,13 @@ description: "Design — sign in through any OIDC provider; Buz keeps teams and 
 ## Status
 
 **Implemented**: Phase 1 (OIDC sign-in with JIT provisioning, account-level
-authentication origins, ticket handoff) and **web-based configuration**
-(the Settings → SSO page below — no manager.toml edit or restart required).
-Local login is unchanged; group→workspace mapping and SCIM remain future
-phases. This page is both the design record and the operator reference.
+authentication origins, ticket handoff), **web-based configuration**
+(the Settings → SSO page below — no manager.toml edit or restart required),
+and **provider-initiated session revocation** (back-channel logout: disabling
+or logging out a subject at the IdP kills that user's Buz JWTs within
+seconds). Local login is unchanged; account conversion and group→workspace
+mapping remain future phases. This page is both the design record and the
+operator reference.
 
 ## Goals
 
@@ -36,8 +39,12 @@ phases. This page is both the design record and the operator reference.
   account-takeover vector).
 - No two account systems. There is one `users` table; OIDC users are ordinary
   rows that authenticate differently (see the account model below).
-- No SCIM provisioning in the first phase (tracked as a follow-up, see
-  [Phasing](#phasing)).
+- **Buz never implements a SCIM server.** Provisioning is the identity
+  provider's job (the companion IdP implements SCIM 2.0 inbound); an RP that
+  accepts pushed accounts would gain a second provisioning path beside OIDC,
+  duplicating account state and bypassing the sign-in record. The signal Buz
+  needs from the IdP — "this subject is gone" — is standard OIDC back-channel
+  logout, not SCIM.
 
 ## Account model
 
@@ -46,6 +53,8 @@ One authorization subject, two mutually exclusive authentication origins:
 ```
 users.auth_source            TEXT    'local' (default) | 'oidc'
 users.password_login_disabled BIGINT  0 (default) | 1
+users.sessions_revoked_epoch BIGINT   0 (default) | Unix second of the last
+                                      IdP-initiated account-wide revocation
 ```
 
 - **`local` accounts** authenticate with username/password exactly as today and
@@ -68,8 +77,9 @@ the same `users.id`.
 
 ## Data model
 
-Three tables (SQLite migration 4, Postgres migration 3) plus the two user
-columns above:
+Three tables (SQLite migration 4, Postgres migration 3) plus the user
+columns above (`sessions_revoked_epoch` is SQLite migration 6 / Postgres
+migration 5):
 
 ```sql
 -- One external identity per (provider, subject); binds to exactly one user.
@@ -153,6 +163,43 @@ SPA login page "Continue with SSO"
    disabled. Team memberships, audit history, and resource ownership are
    preserved because `users.id` does not change.
 
+## Session revocation (back-channel logout)
+
+Buz JWTs are stateless, and `is_active` is re-checked on every request — so a
+disable **in Buz** takes effect immediately. A disable or logout **at the
+IdP** is different: the provider knows, Buz does not. The standard answer is
+[OpenID Connect Back-Channel Logout 1.0](https://openid.net/specs/openid-connect-backchannel-1_0.html),
+and the companion IdP already sends it.
+
+```
+IdP: admin disables the user / user logs out / password reset / MFA reset /
+     email change / SCIM disable
+  → POST {public_base_url}/api/v1/auth/oidc/backchannel-logout
+       logout_token=<signed JWT>            (form-encoded)
+  → Buz verifies RS256 against the provider JWKS, iss, aud, exp (when
+    present), the logout event member, iat freshness (<= 300 s), and that no
+    nonce is carried
+  → maps `sub` -> external_identities -> users
+  → users.sessions_revoked_epoch = max(current, now)
+  → every later request carrying a JWT whose iat <= that instant is refused
+```
+
+- **Covers** every account-wide revocation the provider reports — IdP-side
+  disable, logout, password/MFA reset, email change, SCIM-driven
+  deactivation.
+- **Does not cover API tokens** (`buz_…`): those are Buz-owned credentials with
+  their own lifecycle, revoked from Buz rather than by the IdP. Disabling the
+  user (`is_active = 0`) still blocks them.
+- The endpoint is public: the signed logout token is the credential. Unknown
+  subjects and `sid`-only tokens answer `200` (no account enumeration);
+  malformed or forged tokens answer `400`. Revocation is idempotent and
+  audited (`auth.oidc_backchannel_logout`, system actor).
+- The 300 s freshness window bounds replay; a replayed token inside the window
+  re-stamps the same instant and changes nothing.
+
+Register the URL at the provider — the Settings → SSO page shows the exact
+value derived from `server.public_base_url`, next to the callback URL.
+
 ## Configuration
 
 **Recommended: the web UI.** Settings → **SSO** (platform admin) edits every
@@ -199,6 +246,7 @@ the login page can render the button conditionally.
 | Replay | `state` single-use + hashed at rest; `nonce` echoed in id_token and verified |
 | Clock | ±60 s skew on `exp`/`iat`; JWKS cached with `kid` rotation support |
 | Session handoff | 60 s single-use ticket in an `HttpOnly` cookie; `Cache-Control: no-store` on exchange |
+| Revocation | IdP back-channel logout refuses every user JWT minted at or before the event; API tokens are Buz-owned and unaffected; invalid tokens fail closed |
 | Account takeover | No silent linking; conversion requires proving local possession; disabled users refused |
 | Failure mode | IdP down / misconfigured → SSO fail closed, local login unaffected; JWKS fetch failures refuse sign-in, never degrade local auth |
 | Least privilege | JIT users get no teams, no owner role, no platform-admin flags — ever |
@@ -209,24 +257,28 @@ the login page can render the button conditionally.
 - Revocation of team membership through IdP groups is **not** in scope: Buz
   does not read IdP groups for permissions (see
   [Non-goals](#non-goals) and [Phasing](#phasing)).
-- Buz JWTs are stateless: disabling a user blocks every subsequent request
-  (`is_active` is checked per request), but an already-issued JWT stays valid
-  until expiry. The standard TTL applies; RP-initiated logout is Phase 1.5.
+- Buz JWTs are stateless: disabling a user **in Buz** blocks every subsequent
+  request (`is_active` is checked per request). A disable **at the IdP** is
+  delivered by back-channel logout (above) and takes effect within seconds.
+  RP-initiated logout (ending the IdP session from Buz) is still Phase 1.5.
 - Group claims are stored but inert in Phase 1.
 
 ## Phasing
 
-- **Phase 1 (this design)** — OIDC sign-in, JIT provisioning, account
+- **Phase 1 (delivered)** — OIDC sign-in, JIT provisioning, account
   resolution rules, break-glass local login, audit events
   (`auth.oidc_login`, `auth.oidc_provision`), configuration, docs, tests
   (mock IdP; SQLite and Postgres fixtures).
-- **Phase 1.5** — local→OIDC account conversion; group → workspace role links
-  synced at login (explicit admin-configured links, `source`-separated
-  memberships, additive by default, owner/platform-admin never auto-granted);
-  RP-initiated logout; admin identity management views.
-- **Phase 2** — SCIM 2.0 server (Users/Groups) for real-time provisioning and
-  deprovisioning by IdP/IGA systems; multiple simultaneous providers;
-  session revocation (`session_epoch`).
+- **Phase 1.5 (delivered)** — web configuration (DB > file seed, hot swap);
+  provider-initiated session revocation via back-channel logout.
+- **Phase 1.5 (remaining, signal-driven)** — admin identity views (auth
+  origin, bound identity, IdP groups) plus a pending-identity approval/bind
+  path, which is what makes `auto_provision = false` usable; local→OIDC
+  account conversion (only when an install with many local users needs to
+  keep `users.id`); RP-initiated logout.
+- **Phase 2** — multiple simultaneous providers; scoped administration;
+  access reviews / SIEM export. **A Buz-side SCIM server is a permanent
+  non-goal** (see [Non-goals](#non-goals)).
 
 ## Alternatives considered
 

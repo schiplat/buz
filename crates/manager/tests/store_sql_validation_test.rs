@@ -316,6 +316,8 @@ async fn postgres_statements_are_declared() {
         "SELECT id FROM jobs WHERE id = $1 FOR UPDATE",
         "SELECT id FROM runners WHERE id = $1 FOR UPDATE",
         "SELECT pg_advisory_xact_lock($1)", // first-admin setup
+        // session revocation: monotonic stamp (SQLite MAX vs PG GREATEST)
+        "UPDATE users SET sessions_revoked_epoch = GREATEST(sessions_revoked_epoch, $1) WHERE id = $2",
     ];
     // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
     // dynamic fragment — the extraction routes it here by the `$1` marker.

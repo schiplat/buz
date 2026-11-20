@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Query, State},
-    http::{HeaderMap, HeaderValue},
+    extract::{Form, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Redirect},
     Json,
 };
@@ -455,7 +455,7 @@ pub async fn oidc_callback(
                 tracing::warn!("oidc sign-in refused: instance is not initialized");
                 return Ok(sso_redirect_error("not-initialized"));
             }
-            let user = match provision_oidc_user(&state, &identity).await {
+            let user = match provision_oidc_user(&state, &runtime.issuer, &identity).await {
                 Ok(user) => user,
                 Err(error) => {
                     tracing::warn!(error = %error, "oidc provisioning failed");
@@ -518,6 +518,7 @@ pub async fn oidc_callback(
 /// numeric suffixes against the UNIQUE users.username column.
 async fn provision_oidc_user(
     state: &AppState,
+    issuer: &str,
     identity: &crate::services::oidc::OidcIdentity,
 ) -> Result<AuthUser, AppError> {
     let raw_source = identity
@@ -563,7 +564,7 @@ async fn provision_oidc_user(
         &state.pool,
         &Uuid::new_v4().to_string(),
         "oidc",
-        &state.config.auth.oidc.issuer,
+        issuer,
         &identity.subject,
         &user_id,
         identity.email.as_deref().unwrap_or(""),
@@ -622,6 +623,104 @@ pub async fn oidc_exchange(
             .append(axum::http::header::SET_COOKIE, value);
     }
     Ok(response)
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct BackchannelLogoutForm {
+    #[serde(default)]
+    pub logout_token: Option<String>,
+}
+
+/// `POST /auth/oidc/backchannel-logout` — the provider revokes one subject's
+/// sessions (`OpenID Connect Back-Channel Logout 1.0`). Public by design: the
+/// signed logout token is the credential.
+///
+/// Answers `200` for every verified token, including subjects Buz does not
+/// know (no account enumeration) and `sid`-only tokens (nothing to map);
+/// `400` for anything that does not verify. Revocation is idempotent —
+/// repeated deliveries simply re-stamp the same instant.
+pub async fn oidc_backchannel_logout(
+    State(state): State<AppState>,
+    Form(form): Form<BackchannelLogoutForm>,
+) -> StatusCode {
+    let Some(signed) = form
+        .logout_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    else {
+        tracing::warn!("back-channel logout: missing logout_token");
+        return StatusCode::BAD_REQUEST;
+    };
+    let Some(runtime) = state.oidc_runtime().await else {
+        tracing::warn!("back-channel logout: SSO is not configured");
+        return StatusCode::BAD_REQUEST;
+    };
+    let subject = match runtime.validate_backchannel_logout_token(signed).await {
+        Ok(subject) => subject,
+        Err(error) => {
+            tracing::warn!(error = %error, "back-channel logout: token rejected");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    let Some(subject) = subject else {
+        // A valid token we cannot act on (sid-only): acknowledged, not an
+        // error — the provider did its job.
+        return StatusCode::OK;
+    };
+
+    let binding =
+        match crate::store::external_identities::find_by_subject(&state.pool, "oidc", &subject)
+            .await
+        {
+            Ok(binding) => binding,
+            Err(error) => {
+                tracing::error!(error = %error, "back-channel logout: identity lookup failed");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+    let Some(binding) = binding else {
+        tracing::info!(
+            subject = %subject,
+            "back-channel logout: no bound identity — ignored"
+        );
+        return StatusCode::OK;
+    };
+
+    match crate::store::users::revoke_sessions(&state.pool, &binding.user_id).await {
+        Ok(revoked) => {
+            if revoked > 0 {
+                let name = if binding.display_name.is_empty() {
+                    binding.email.as_str()
+                } else {
+                    binding.display_name.as_str()
+                };
+                audit::record(
+                    &state.pool,
+                    AuditEvent::system(Action::AuthOidcBackchannelLogout)
+                        .on(Resource::User {
+                            id: &binding.user_id,
+                            name,
+                        })
+                        .after(Some(serde_json::json!({
+                            "subject": subject,
+                            "reason": "provider back-channel logout",
+                        }))),
+                )
+                .await;
+                tracing::info!(
+                    subject = %subject,
+                    user_id = %binding.user_id,
+                    "back-channel logout: user sessions revoked"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "back-channel logout: revocation failed");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+    StatusCode::OK
 }
 
 fn role_for(is_platform_admin: bool, is_ops: bool) -> Role {

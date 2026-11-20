@@ -29,6 +29,14 @@ const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 /// Allowed clock skew between Buz and the provider on `exp`/`iat`.
 const CLOCK_SKEW_SECONDS: u64 = 60;
 
+/// How old a back-channel logout token may be (OpenID Connect Back-Channel
+/// Logout 1.0 §2.6 recommends a short window; replay within it is harmless
+/// because revocation is idempotent).
+const BACKCHANNEL_MAX_AGE_SECONDS: i64 = 300;
+
+/// The event member a back-channel logout token must carry.
+const BACKCHANNEL_LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
+
 /// The identity claims Buz consumes. `iss`/`aud`/`exp`/`iat` are validated by
 /// the JWT layer and intentionally not modeled here.
 #[derive(Debug, Deserialize)]
@@ -55,6 +63,22 @@ pub struct OidcIdentity {
     pub groups: Vec<String>,
 }
 
+/// A back-channel logout token (`OpenID Connect Back-Channel Logout 1.0`).
+/// `iss`/`aud`/`exp` are validated by the JWT layer; `exp` is optional on
+/// logout tokens, so only `iat` freshness is enforced here.
+#[derive(Debug, Deserialize)]
+pub struct LogoutTokenClaims {
+    #[serde(default)]
+    pub sub: Option<String>,
+    pub iat: i64,
+    #[serde(default)]
+    pub sid: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<String>,
+    #[serde(default)]
+    pub events: Option<serde_json::Value>,
+}
+
 /// The fully-resolved sign-in configuration: precedence **database row >
 /// `[auth.oidc]` file > defaults**, with `redirect_uri` derived from
 /// `server.public_base_url` when no explicit override is set.
@@ -70,6 +94,26 @@ pub struct EffectiveOidc {
     /// Where each saved value came from: `database` once an administrator
     /// has saved settings, otherwise `file`.
     pub source: &'static str,
+}
+
+/// The deployment's public base URL, validated for provider URL derivation
+/// (callback, back-channel logout): absolute http(s), no trailing slash.
+fn derived_base(public_base_url: &str) -> Result<String, String> {
+    let base = public_base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(
+            "provider URLs cannot be derived: set server.public_base_url first \
+             (or fill an explicit redirect_uri)"
+                .into(),
+        );
+    }
+    if !base.starts_with("https://")
+        && !base.starts_with("http://127.0.0.1")
+        && !base.starts_with("http://localhost")
+    {
+        return Err("server.public_base_url must be an absolute http(s) URL".into());
+    }
+    Ok(base.to_string())
 }
 
 impl From<&OidcConfig> for EffectiveOidc {
@@ -91,20 +135,19 @@ impl EffectiveOidc {
     /// The callback URL a provider must have registered, derived from the
     /// deployment's public base URL when no override is configured.
     pub fn derived_redirect_uri(public_base_url: &str) -> Result<String, String> {
-        let base = public_base_url.trim().trim_end_matches('/');
-        if base.is_empty() {
-            return Err(
-                "redirect_uri cannot be derived: set server.public_base_url first                  (or fill an explicit redirect_uri)"
-                    .into(),
-            );
-        }
-        if !base.starts_with("https://")
-            && !base.starts_with("http://127.0.0.1")
-            && !base.starts_with("http://localhost")
-        {
-            return Err("server.public_base_url must be an absolute http(s) URL".into());
-        }
-        Ok(format!("{base}/api/v1/auth/oidc/callback"))
+        Ok(format!(
+            "{}/api/v1/auth/oidc/callback",
+            derived_base(public_base_url)?
+        ))
+    }
+
+    /// The back-channel logout URL a provider must have registered (the
+    /// settings page shows it next to the callback).
+    pub fn derived_backchannel_logout_uri(public_base_url: &str) -> Result<String, String> {
+        Ok(format!(
+            "{}/api/v1/auth/oidc/backchannel-logout",
+            derived_base(public_base_url)?
+        ))
     }
 
     /// The `OidcConfig::validate` rules applied to the resolved shape.
@@ -484,13 +527,88 @@ impl OidcRuntime {
     }
 
     async fn decode_id_token(&self, id_token: &str) -> Result<IdTokenClaims, AppError> {
-        let header = decode_header(id_token)
-            .map_err(|e| AppError::AuthFailed(format!("oidc id_token malformed: {e}")))?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.client_id]);
+        validation.leeway = CLOCK_SKEW_SECONDS;
+        self.decode_with_jwks(id_token, &validation).await
+    }
+
+    /// Validate a back-channel logout token (`OpenID Connect Back-Channel
+    /// Logout 1.0`): RS256 against the provider JWKS, `iss`/`aud` (and `exp`
+    /// when the provider includes one), no `nonce`, the logout event member,
+    /// and a fresh `iat`.
+    ///
+    /// Returns the subject to revoke, or `None` for a valid `sid`-only token
+    /// (this deployment tracks users, not provider session ids).
+    pub async fn validate_backchannel_logout_token(
+        &self,
+        logout_token: &str,
+    ) -> Result<Option<String>, AppError> {
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.client_id]);
+        validation.leeway = CLOCK_SKEW_SECONDS;
+        // `exp` is optional on logout tokens: validate it when present, do
+        // not require it (the JWT layer only requires what the set names).
+        validation.required_spec_claims.clear();
+        let claims: LogoutTokenClaims = self.decode_with_jwks(logout_token, &validation).await?;
+
+        if claims.nonce.is_some() {
+            return Err(AppError::AuthFailed(
+                "oidc logout token must not carry a nonce".into(),
+            ));
+        }
+        let has_event = claims
+            .events
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .is_some_and(|events| events.contains_key(BACKCHANNEL_LOGOUT_EVENT));
+        if !has_event {
+            return Err(AppError::AuthFailed(
+                "oidc logout token lacks the back-channel logout event".into(),
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if claims.iat > now + CLOCK_SKEW_SECONDS as i64 {
+            return Err(AppError::AuthFailed(
+                "oidc logout token iat is in the future".into(),
+            ));
+        }
+        if now.saturating_sub(claims.iat) > BACKCHANNEL_MAX_AGE_SECONDS {
+            return Err(AppError::AuthFailed("oidc logout token is stale".into()));
+        }
+
+        match claims.sub {
+            Some(sub) if !sub.trim().is_empty() => Ok(Some(sub)),
+            _ => {
+                tracing::warn!(
+                    sid = %claims.sid.as_deref().unwrap_or(""),
+                    "oidc logout token carries no subject — ignored (sid-only)"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Decode + verify a provider-signed JWT against the cached JWKS,
+    /// refreshing once when the token's `kid` is unknown (provider key
+    /// rotation). `validation` carries the caller's claim rules.
+    async fn decode_with_jwks<T: serde::de::DeserializeOwned>(
+        &self,
+        token: &str,
+        validation: &Validation,
+    ) -> Result<T, AppError> {
+        let header = decode_header(token)
+            .map_err(|e| AppError::AuthFailed(format!("oidc token malformed: {e}")))?;
         if header.alg != Algorithm::RS256 {
-            return Err(AppError::AuthFailed("oidc id_token must be RS256".into()));
+            return Err(AppError::AuthFailed("oidc token must be RS256".into()));
         }
         let Some(kid) = header.kid else {
-            return Err(AppError::AuthFailed("oidc id_token has no kid".into()));
+            return Err(AppError::AuthFailed("oidc token has no kid".into()));
         };
         let mut last_error = None;
         for force in [false, true] {
@@ -501,21 +619,17 @@ impl OidcRuntime {
             };
             let key = DecodingKey::from_jwk(jwk)
                 .map_err(|e| AppError::AuthFailed(format!("oidc jwk unusable: {e}")))?;
-            let mut validation = Validation::new(Algorithm::RS256);
-            validation.set_issuer(&[&self.issuer]);
-            validation.set_audience(&[&self.client_id]);
-            validation.leeway = CLOCK_SKEW_SECONDS;
-            match decode::<IdTokenClaims>(id_token, &key, &validation) {
+            match decode::<T>(token, &key, validation) {
                 Ok(data) => return Ok(data.claims),
                 Err(e) => {
                     last_error = Some(AppError::AuthFailed(format!(
-                        "oidc id_token validation failed: {e}"
+                        "oidc token validation failed: {e}"
                     )));
                 }
             }
         }
         Err(last_error
-            .unwrap_or_else(|| AppError::AuthFailed("oidc id_token validation failed".into())))
+            .unwrap_or_else(|| AppError::AuthFailed("oidc token validation failed".into())))
     }
 }
 

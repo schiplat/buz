@@ -113,6 +113,12 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/start", get(auth::oidc_start))
         .route("/auth/oidc/callback", get(auth::oidc_callback))
         .route("/auth/oidc/exchange", post(auth::oidc_exchange))
+        // Provider-initiated session revocation (signed logout token = the
+        // credential; no session, no CSRF token)
+        .route(
+            "/auth/oidc/backchannel-logout",
+            post(auth::oidc_backchannel_logout),
+        )
         // SSO configuration (platform admin; DB override > file seed)
         .route(
             "/auth/oidc/settings",

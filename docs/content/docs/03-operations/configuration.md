@@ -47,6 +47,10 @@ runner_register_token_ttl_hours = 24
 # redirect_uri = "https://buz.example.com/api/v1/auth/oidc/callback"
 # scopes = ["openid", "profile", "email"]
 # auto_provision = true                    # first SSO sign-in creates a plain user
+# Register both at the provider: the redirect_uri above, and the back-channel
+# logout URL — {server.public_base_url}/api/v1/auth/oidc/backchannel-logout
+# (shown on the Settings → SSO page). It is what makes an IdP-side disable
+# revoke live Buz sessions immediately instead of waiting for the JWT TTL.
 
 [runner]
 heartbeat_timeout_seconds = 90

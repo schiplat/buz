@@ -16,6 +16,7 @@ fn member_with_default_team() -> AuthUser {
         is_super_admin: false,
         is_ops: false,
         api_token_scope: None,
+        sessions_revoked_epoch: 0,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),
@@ -238,6 +239,7 @@ async fn viewer_without_team_access_gets_generic_error_no_secret_oracle() {
         is_super_admin: false,
         is_ops: false,
         api_token_scope: None,
+        sessions_revoked_epoch: 0,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),
@@ -290,6 +292,7 @@ async fn viewer_with_team_access_sees_secret_errors() {
         is_super_admin: false,
         is_ops: false,
         api_token_scope: None,
+        sessions_revoked_epoch: 0,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),

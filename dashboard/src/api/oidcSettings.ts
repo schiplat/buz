@@ -11,6 +11,8 @@ export interface OidcSettings {
   redirect_uri_override: string | null
   public_base_url: string
   derived_redirect_uri: string | null
+  /** Register at the provider so disable/logout events reach Buz immediately. */
+  backchannel_logout_uri: string | null
   scopes: string[]
   auto_provision: boolean
   updated_by: string
