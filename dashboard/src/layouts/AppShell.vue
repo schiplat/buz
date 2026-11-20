@@ -22,7 +22,9 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-  void auth.fetchMe()
+  // The router already loaded `/me` to decide whether this shell may mount;
+  // ensureProfile is a no-op when that succeeded.
+  void auth.ensureProfile()
 })
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>

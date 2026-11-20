@@ -564,7 +564,7 @@ async function setPolicy(value: boolean) {
               >
                 <Clock class="h-3.5 w-3.5" />
                 {{ pendingCount }} awaiting approval
-                <span class="ml-auto opacity-75">→ Users</span>
+                <span class="ml-auto opacity-75">→ Users &amp; teams</span>
               </button>
 
               <p class="mt-3 border-t border-border/50 pt-3 text-xs text-muted-foreground">

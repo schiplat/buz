@@ -14,6 +14,9 @@ export const useAuthStore = defineStore('auth', () => {
   /** Platform-ops user: sandbox host administration (admin implies ops). */
   const isOps = ref(localStorage.getItem('buz_is_ops') === '1')
   const teams = ref<TeamMembership[]>([])
+  /** True once `/me` succeeded — the router gates zero-team accounts on it. */
+  const profileLoaded = ref(false)
+  let profileRequest: Promise<void> | null = null
 
   /** Empty string = All my teams. Persisted across reloads. */
   const activeTeamId = ref<string>(localStorage.getItem(ACTIVE_TEAM_KEY) ?? '')
@@ -57,6 +60,33 @@ export const useAuthStore = defineStore('auth', () => {
     const ok = teams.value.some((t) => t.id === activeTeamId.value)
     if (!ok) setActiveTeamId('')
   }
+
+  const ROLE_RANK: Record<string, number> = {
+    viewer: 1,
+    developer: 2,
+    maintainer: 3,
+    owner: 4,
+  }
+
+  /** The caller's role in one team (null when not a member). */
+  function roleInTeam(teamId: string | null | undefined): string | null {
+    if (!teamId) return null
+    return teams.value.find((t) => t.id === teamId)?.role ?? null
+  }
+
+  /** `role >= minRole` for one team; platform admins bypass every team check. */
+  function hasTeamRole(teamId: string | null | undefined, minRole: string): boolean {
+    if (isPlatformAdmin.value) return true
+    const role = roleInTeam(teamId)
+    return !!role && (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[minRole] ?? 99)
+  }
+
+  /** True when the caller holds at least `minRole` in any team. */
+  function hasAnyTeamRole(minRole: string): boolean {
+    if (isPlatformAdmin.value) return true
+    return teams.value.some((t) => hasTeamRole(t.id, minRole))
+  }
+
   function matchesActiveTeam(
     resourceTeamId: string | null | undefined,
     opts?: { includeShared?: boolean },
@@ -114,9 +144,22 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem('buz_is_admin', me.is_platform_admin ? '1' : '0')
       localStorage.setItem('buz_is_super_admin', me.is_super_admin ? '1' : '0')
       sanitizeActiveTeam()
+      profileLoaded.value = true
     } catch {
       // ignore — 401 interceptor handles logout
     }
+  }
+
+  /** Load `/me` once per session (idempotent, de-duplicated). The router calls
+   *  this before deciding whether a zero-team account may enter the shell. */
+  async function ensureProfile() {
+    if (!token.value || profileLoaded.value) return
+    if (!profileRequest) {
+      profileRequest = fetchMe().finally(() => {
+        profileRequest = null
+      })
+    }
+    await profileRequest
   }
 
   function logout() {
@@ -128,6 +171,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('buz_is_ops')
     isSuperAdmin.value = false
     teams.value = []
+    profileLoaded.value = false
     localStorage.removeItem('buz_token')
     localStorage.removeItem('buz_username')
     localStorage.removeItem('buz_user_id')
@@ -146,18 +190,23 @@ export const useAuthStore = defineStore('auth', () => {
     isOps,
     isSuperAdmin,
     teams,
+    profileLoaded,
     activeTeamId,
     isAuthenticated,
     showTeamPicker,
     showTeamSwitcher,
     soleTeamId,
     preferredTeamId,
+    roleInTeam,
+    hasTeamRole,
+    hasAnyTeamRole,
     setActiveTeamId,
     matchesActiveTeam,
     login,
     oidcExchange,
     completeSetup,
     fetchMe,
+    ensureProfile,
     logout,
   }
 })

@@ -37,6 +37,15 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, title: 'Signed out' },
   },
   {
+    // Zero-team accounts land here: they are authenticated but hold no
+    // authorization yet, so the app shell (and its menu) stays closed until a
+    // platform admin grants a team + role.
+    path: '/waiting-for-access',
+    name: 'waiting-for-access',
+    component: () => import('@/pages/WaitingForAccess.vue'),
+    meta: { title: 'Waiting for access' },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AppShell.vue'),
     children: [
@@ -100,8 +109,17 @@ const routes: RouteRecordRaw[] = [
       // Backwards-compatible aliases for the pre-merge routes.
       { path: 'secrets', redirect: '/secrets-variables/secrets' },
       { path: 'variables', redirect: '/secrets-variables/variables' },
-      { path: 'teams', name: 'teams', component: () => import('@/pages/Teams.vue'), meta: { title: 'Teams' } },
-      { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
+      {
+        // One page for accounts and teams (it replaced the old admin-only
+        // Users page and the Teams page).
+        path: 'users',
+        name: 'users',
+        component: () => import('@/pages/People.vue'),
+        meta: { title: 'Users & teams' },
+      },
+      { path: 'teams', redirect: '/users' },
+      // Alias from the merged-page draft; kept so in-flight bookmarks resolve.
+      { path: 'people', redirect: '/users' },
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
       { path: 'settings/sso', name: 'sso-settings', component: () => import('@/pages/SsoSettings.vue'), meta: { title: 'SSO', adminOnly: true } },
@@ -175,6 +193,28 @@ router.beforeEach(async (to, from) => {
   if (!auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
+
+  // Zero-team accounts are authenticated but hold no authorization: keep them
+  // out of the shell (no menu) until an admin grants a team. Load `/me` first
+  // so a hard refresh does not mistake "not fetched yet" for "no teams".
+  await auth.ensureProfile()
+  if (!auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (
+    auth.profileLoaded &&
+    to.name !== 'waiting-for-access' &&
+    !auth.isPlatformAdmin &&
+    !auth.isSuperAdmin &&
+    !auth.isOps &&
+    auth.teams.length === 0
+  ) {
+    return {
+      name: 'waiting-for-access',
+      query: to.fullPath === '/dashboard' ? undefined : { redirect: to.fullPath },
+    }
+  }
+
   if (to.meta.adminOnly && !auth.isPlatformAdmin) {
     return { name: 'dashboard' }
   }

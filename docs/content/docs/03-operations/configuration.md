@@ -46,7 +46,7 @@ runner_register_token_ttl_hours = 24
 # redirect_uri = "https://buz.example.com/api/v1/auth/oidc/callback"
 # scopes = ["openid", "profile", "email"]
 # auto_provision = true                    # false = refused sign-ins are queued
-#                                          # for admin approval (Users page)
+#                                          # for admin approval (Users & teams page)
 # Register all three at the provider (the Settings → SSO page shows each):
 # 1. the redirect_uri above,
 # 2. the back-channel logout URL —

@@ -238,7 +238,8 @@ Error codes: keep `1002` auth, `1003` forbidden (insufficient permissions).
 - **Team switcher** (top bar): platform admins and multi-team members see **All my teams** | `<team>` filter. Selection persists in `localStorage` (`buz_active_team`)
 - Filtered list pages: Pipelines, Secrets, Jobs, Hosts (Hosts also keep **shared** / unscoped hosts when a team is selected)
 - Create forms prefer the active switcher team (`preferredTeamId`), then sole membership
-- Hide Runners + Users admin from non–platform-admin
+- Hide Runners admin from non–platform-admin
+- **Users & teams** (`/users`, one page replacing the old Users and Teams pages): left tree — All accounts / teams / Ungrouped for platform admins, My teams for everyone else — with the account table or the selected team's members on the right. Account administration, the SSO approval queue and the Ungrouped bucket are platform-admin only; the bucket shows an action banner and supports inline team + role assignment for accounts that can sign in but hold no team. `/teams` (and the draft `/people` URL) redirect here
 - Pipeline / Secret forms: required Team select only when `showTeamPicker` (admin or multi-team); single-team users auto-bind
 - Host form: Team optional (“Shared (admin)”)
 

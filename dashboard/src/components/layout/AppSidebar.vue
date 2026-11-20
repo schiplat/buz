@@ -10,7 +10,6 @@ import {
   Shield,
   Server,
   Users,
-  UserRound,
   LayoutDashboard as OverviewIcon,
   Package,
 } from '@lucide/vue'
@@ -55,8 +54,7 @@ const allEntries: NavEntry[] = [
   { kind: 'section', label: 'Automation' },
   { kind: 'link', name: 'pipelines', label: 'Pipelines', icon: Box, to: '/pipelines' },
   { kind: 'section', label: 'Access' },
-  { kind: 'link', name: 'teams', label: 'Teams', icon: Users, to: '/teams' },
-  { kind: 'link', name: 'users', label: 'Users', icon: UserRound, to: '/users', adminOnly: true },
+  { kind: 'link', name: 'users', label: 'Users & teams', icon: Users, to: '/users' },
   { kind: 'link', name: 'api-tokens', label: 'API tokens', icon: KeyRound, to: '/api-tokens', adminOnly: true },
   { kind: 'link', name: 'audit-logs', label: 'Audit logs', icon: ScrollText, to: '/audit-logs', adminOnly: true },
   { kind: 'link', name: 'sso-settings', label: 'SSO', icon: Shield, to: '/settings/sso', adminOnly: true },
