@@ -389,7 +389,18 @@ impl OidcRuntime {
         });
         // Fail fast on a plainly wrong issuer: an unreachable or lying
         // discovery document disables SSO at startup, not at first sign-in.
-        if let Err(error) = runtime.endpoints(false).await {
+        // A *transient* fetch failure must not silently disable SSO either,
+        // so the first fetch is retried before giving up (attempts two and
+        // three force-refresh the empty cache).
+        let mut discovered = Err(AppError::AuthFailed("discovery never attempted".into()));
+        for attempt in 0..3 {
+            discovered = runtime.endpoints(attempt > 0).await;
+            if discovered.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Err(error) = discovered {
             tracing::error!("oidc disabled — discovery failed at startup: {error}");
             return None;
         }
