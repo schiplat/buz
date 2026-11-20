@@ -14,7 +14,6 @@ const password = ref('')
 const showPassword = ref(false)
 const error = ref('')
 const loading = ref(false)
-const appVersion = __APP_VERSION__
 
 // SSO is opt-in per deployment: the capability probe decides whether the
 // button renders. Clicking it leaves the SPA — the Manager 302s to the IdP
@@ -120,8 +119,6 @@ async function handleLogin() {
           {{ ssoStarting ? 'Redirecting…' : 'Continue with SSO' }}
         </UiButton>
       </form>
-
-      <p class="text-center font-mono text-[11px] text-muted-foreground/60">v{{ appVersion }}</p>
     </div>
   </div>
 </template>
