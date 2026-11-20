@@ -54,6 +54,10 @@ cargo test -p shared --test pipeline_yaml_test
 
 ## Quick Reference
 
+> Fresh installations (2.1.15+) include a working **Hello Buz** sample — the
+> smallest valid pipeline (manual trigger, one input, one shell step). Use it
+> as a starting template or inspect it in the UI before writing your own.
+
 ```yaml
 name: Deploy Production               # required
 environments: [staging, production]  # required registered slug allowlist; every run selects one

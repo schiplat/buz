@@ -38,6 +38,24 @@ is a backup/restore concern — run exactly one Manager per storage.
 Production binaries and Docker images need **no** separate `dashboard/`
 directory.
 
+## First start and the sample pipeline
+
+Starting with **v2.1.15**, a fresh database seeds one editable **Hello Buz**
+pipeline after bootstrap: the `default` team, a manual trigger with a `name`
+parameter (default `Buz`), one shell step, and no runner-label restriction
+(any online Runner can claim it).
+
+- The seed is one-shot (`manager_meta.sample_pipeline_v1`): deleting the
+  sample does not recreate it on the next start.
+- Existing installations are **not** retrofitted on upgrade — the first start
+  records `skipped-existing` instead.
+- To add the sample to an existing deployment, stop the Manager and run
+  `buz-manager seed-sample`
+  ([CLI Reference](../cli-reference/#seed-sample)). It never duplicates an
+  existing sample.
+
+The sample is ordinary data: edit it or delete it like any other pipeline.
+
 ## Container deployment
 
 ### Images
