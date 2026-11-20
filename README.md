@@ -117,9 +117,11 @@ Then in the browser:
 2. The image ships with `[standalone] auto_approve = ["standalone-runner"]`:
    the bundled Runner registers over loopback automatically and shows
    **online** under *Runners* — no manual registration.
-3. Create a pipeline in the UI (one `echo` shell step), pick the
-   `standalone-runner` label, trigger it, and watch it get claimed,
-   executed, and succeed — with full log output in the Job view.
+3. Open **Pipelines** — fresh installs (2.1.15+) already list a **Hello Buz**
+   sample: a manual trigger with a `name` parameter and one shell step.
+   Trigger it with the default value and watch it get claimed, executed, and
+   succeed — with full log output in the Job view. Edit or delete it freely.
+   On older images, create a one-step `echo` pipeline instead.
 4. Optional: import
    [`example/pipelines/oss-config-demo.yml`](example/pipelines/oss-config-demo.yml)
    from this repo to see the plugin flow end to end

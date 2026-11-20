@@ -35,6 +35,18 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::CheckData) => {
             return services::consistency_scan::run(&cli.config).await;
         }
+        Some(Command::SeedSample) => {
+            let config = config::load(Some(&cli.config))?;
+            let db = db::init(&config).await?;
+            if let Some(sqlite) = db.as_sqlite() {
+                db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+            }
+            db::seed_default_rows(&db).await?;
+            rbac::bootstrap(&db).await?;
+            let outcome = services::sample_pipeline::seed_forced(&db, &config).await?;
+            println!("sample pipeline: {}", outcome.as_str());
+            return Ok(());
+        }
         Some(Command::RotateJwtKey {
             db_path,
             apply,
@@ -169,6 +181,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(sqlite) = db.as_sqlite() {
         db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
     }
+    // The SQLite migration chain carries these defaults; Postgres applies a
+    // schema-only baseline, so seed them here for both backends (idempotent).
+    db::seed_default_rows(&db).await?;
     rbac::bootstrap(&db).await?;
     if let Ok(report) = manager::store::consistency::check(&db).await {
         if !report.is_clean() {
@@ -177,6 +192,12 @@ async fn main() -> anyhow::Result<()> {
                 "team-binding consistency issues found — run `buz-manager check-data` for details"
             );
         }
+    }
+    // Fresh installs get one editable sample pipeline. Existing installs are
+    // marked as skipped; a failure must not block startup.
+    match services::sample_pipeline::seed_if_fresh(&db, &config).await {
+        Ok(outcome) => tracing::info!(outcome = outcome.as_str(), "sample pipeline"),
+        Err(error) => tracing::warn!(error = %error, "sample pipeline seeding failed"),
     }
     api::runners::ensure_standalone_auto_approve(&db, &config).await?;
     api::version::mark_started();

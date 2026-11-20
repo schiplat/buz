@@ -39,6 +39,24 @@ The Manager logs the same report as a single warning at startup when it is
 not clean. Nothing is modified; fix a row by moving the resource to an
 existing team, deleting it, or unbinding it.
 
+## seed-sample
+
+*Available from v2.1.15.*
+
+Adds the built-in **Hello Buz** sample pipeline to an existing installation.
+Fresh deployments receive it automatically on first start (and are marked so
+it is never recreated after deletion); this command is the explicit restore
+path.
+
+```bash
+buz-manager seed-sample
+```
+
+Stop the Manager service first. The command never duplicates the sample: it
+skips when `hello-buz.yml` or a pipeline named `Hello Buz` already exists.
+The sample is a normal pipeline owned by the `default` team and may be edited
+or deleted afterwards.
+
 ## rotate-jwt-key
 
 Rotates the JWT secret and re-encrypts every stored value in place. See

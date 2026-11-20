@@ -88,6 +88,12 @@ pub enum Command {
     /// teams (ignored at runtime by the same-team join). Read-only.
     CheckData,
 
+    /// Seed the built-in "Hello Buz" sample pipeline into an existing
+    /// installation. Fresh deployments receive it automatically on first
+    /// start; this command restores it after deletion. It never duplicates an
+    /// existing sample. STOP the Manager service first.
+    SeedSample,
+
     /// Rotate the JWT secret and re-encrypt every stored value in place.
     ///
     /// The current secret is resolved from the same config chain the Manager
