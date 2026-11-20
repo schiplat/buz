@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import ReviewGateBanner from '@/components/ReviewGateBanner.vue'
 import { Check, Copy, RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import {
@@ -33,7 +34,7 @@ interface SettingMeta {
 
 const settingsMeta: Record<string, SettingMeta> = {
   plugin_review_required: {
-    label: 'Step review gate',
+    label: 'Plugin review gate',
     help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Turning this on checks that the manifest file exists — the toggle fails with instructions if it does not. Recommended for production.',
   },
   plugin_index_local_dir: {
@@ -466,6 +467,7 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
+    <ReviewGateBanner />
     <!-- Usage hint (no PageHeader — the tab bar above is the page header) -->
     <p class="type-meta max-w-3xl">
       Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab. A source may also publish reviews.json beside its index — the review ledger (which content hashes were human-reviewed) — distinct from the index itself (what exists and where).

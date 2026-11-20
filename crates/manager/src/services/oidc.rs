@@ -21,8 +21,6 @@ use tokio::sync::RwLock;
 
 use shared::error::AppError;
 
-use crate::config::OidcConfig;
-
 /// How long discovery + JWKS are trusted before a refresh.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 
@@ -116,21 +114,6 @@ fn derived_base(public_base_url: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-impl From<&OidcConfig> for EffectiveOidc {
-    fn from(config: &OidcConfig) -> Self {
-        Self {
-            enabled: config.enabled,
-            issuer: config.issuer.trim().trim_end_matches('/').to_string(),
-            client_id: config.client_id.trim().to_string(),
-            client_secret: config.client_secret.trim().to_string(),
-            redirect_uri: config.redirect_uri.trim().to_string(),
-            scopes: config.scopes.clone(),
-            auto_provision: config.auto_provision,
-            source: "file",
-        }
-    }
-}
-
 impl EffectiveOidc {
     /// The callback URL a provider must have registered, derived from the
     /// deployment's public base URL when no override is configured.
@@ -146,6 +129,15 @@ impl EffectiveOidc {
     pub fn derived_backchannel_logout_uri(public_base_url: &str) -> Result<String, String> {
         Ok(format!(
             "{}/api/v1/auth/oidc/backchannel-logout",
+            derived_base(public_base_url)?
+        ))
+    }
+
+    /// The post-logout landing a provider returns the browser to after
+    /// RP-initiated logout (register this alongside the callback).
+    pub fn derived_post_logout_redirect_uri(public_base_url: &str) -> Result<String, String> {
+        Ok(format!(
+            "{}/auth/sso/logged-out",
             derived_base(public_base_url)?
         ))
     }
@@ -189,30 +181,36 @@ impl EffectiveOidc {
     }
 }
 
-/// Resolve the effective configuration: the database row wins once saved;
-/// otherwise the file `[auth.oidc]` seed applies. `jwt_secret` decrypts the
+/// Resolve the effective configuration **from the database row only** —
+/// `[auth.oidc]` in manager.toml no longer feeds the runtime (it is imported
+/// into the row once at startup; see `import_file_seed` in
+/// `api/oidc_settings.rs`). An absent row simply means SSO is off until an
+/// administrator saves settings from the web. `jwt_secret` decrypts the
 /// stored client secret. Validation is the caller's job (`validate`).
 pub fn resolve_effective(
-    config: &OidcConfig,
     row: Option<&crate::store::oidc_settings::OidcSettingsRow>,
     public_base_url: &str,
     jwt_secret: &str,
 ) -> Result<EffectiveOidc, String> {
     let Some(row) = row else {
-        let mut effective = EffectiveOidc::from(config);
-        // File deployments may leave redirect_uri empty and derive it too.
-        if effective.redirect_uri.is_empty() && effective.enabled {
-            effective.redirect_uri = EffectiveOidc::derived_redirect_uri(public_base_url)?;
-        }
-        return Ok(effective);
+        return Ok(EffectiveOidc {
+            enabled: false,
+            issuer: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            redirect_uri: String::new(),
+            scopes: vec!["openid".into(), "profile".into(), "email".into()],
+            auto_provision: true,
+            source: "database",
+        });
     };
 
     let scopes: Vec<String> = serde_json::from_str(&row.scopes_json)
         .unwrap_or_else(|_| vec!["openid".into(), "profile".into(), "email".into()]);
     let client_secret = if row.client_secret_ciphertext.is_empty() {
-        // Fall back to the file/env secret when the row carries none —
-        // the save form keeps an existing secret without re-entering it.
-        config.resolved_client_secret().unwrap_or_default()
+        // The save form keeps an existing secret without re-entering it; a
+        // row without one is an invalid configuration (validate refuses).
+        String::new()
     } else {
         crate::crypto::decrypt(&row.client_secret_ciphertext, jwt_secret)
             .map_err(|e| format!("cannot decrypt the stored OIDC client secret: {e}"))?
@@ -244,6 +242,10 @@ pub struct DiscoveryProbe {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
+    /// The provider advertises an end-session endpoint (RP logout works).
+    pub end_session_available: bool,
+    /// The negotiated token-endpoint client authentication.
+    pub client_auth: &'static str,
 }
 
 /// Fetch and validate `{issuer}/.well-known/openid-configuration` with a
@@ -275,6 +277,16 @@ pub async fn probe_discovery(issuer: &str) -> Result<DiscoveryProbe, String> {
         authorization_endpoint: discovery.authorization_endpoint,
         token_endpoint: discovery.token_endpoint,
         jwks_uri: discovery.jwks_uri,
+        end_session_available: discovery
+            .end_session_endpoint
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty()),
+        client_auth: match TokenAuth::from_discovery(
+            discovery.token_endpoint_auth_methods_supported.as_deref(),
+        ) {
+            TokenAuth::ClientSecretPost => "client_secret_post",
+            TokenAuth::ClientSecretBasic => "client_secret_basic",
+        },
     })
 }
 
@@ -284,6 +296,38 @@ struct DiscoveryDocument {
     authorization_endpoint: String,
     token_endpoint: String,
     jwks_uri: String,
+    /// Present when the provider supports RP-initiated logout
+    /// (`OpenID Connect Session Management` / its `end_session` successor).
+    #[serde(default)]
+    end_session_endpoint: Option<String>,
+    /// How the provider accepts client authentication at the token endpoint.
+    /// Absent/empty → the RFC 6749 default for confidential clients
+    /// (`client_secret_basic`); a declared list narrows the choice. Buz sends
+    /// form credentials when `client_secret_post` is declared, Basic auth
+    /// otherwise — providers that support both accept either.
+    #[serde(default)]
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
+}
+
+/// The negotiated token-endpoint client authentication (see
+/// [`DiscoveryDocument::token_endpoint_auth_methods_supported`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenAuth {
+    /// `client_id`/`client_secret` in the form body.
+    ClientSecretPost,
+    /// `client_id`/`client_secret` in an `Authorization: Basic` header.
+    ClientSecretBasic,
+}
+
+impl TokenAuth {
+    fn from_discovery(methods: Option<&[String]>) -> Self {
+        let declared = methods.map(|m| !m.is_empty()).unwrap_or(false);
+        if declared && !methods.unwrap().iter().any(|m| m == "client_secret_post") {
+            TokenAuth::ClientSecretBasic
+        } else {
+            TokenAuth::ClientSecretPost
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +337,8 @@ struct CachedEndpoints {
     #[allow(dead_code)] // kept alongside discovery for JWKS-refresh debugging
     jwks_uri: String,
     jwks: JwkSet,
+    end_session_endpoint: Option<String>,
+    token_auth: TokenAuth,
 }
 
 pub struct OidcRuntime {
@@ -309,12 +355,6 @@ pub struct OidcRuntime {
 }
 
 impl OidcRuntime {
-    /// Build the runtime from the file `[auth.oidc]` seed only (no database
-    /// override). Kept for tests and as the resolve-free path.
-    pub async fn build(config: &OidcConfig) -> Option<Arc<Self>> {
-        Self::build_effective(&EffectiveOidc::from(config)).await
-    }
-
     /// Build the runtime from the resolved configuration. `None` when SSO is
     /// disabled or the configuration is invalid — callers keep serving local
     /// login either way (SSO misconfiguration never prevents the server from
@@ -349,7 +389,18 @@ impl OidcRuntime {
         });
         // Fail fast on a plainly wrong issuer: an unreachable or lying
         // discovery document disables SSO at startup, not at first sign-in.
-        if let Err(error) = runtime.endpoints(false).await {
+        // A *transient* fetch failure must not silently disable SSO either,
+        // so the first fetch is retried before giving up (attempts two and
+        // three force-refresh the empty cache).
+        let mut discovered = Err(AppError::AuthFailed("discovery never attempted".into()));
+        for attempt in 0..3 {
+            discovered = runtime.endpoints(attempt > 0).await;
+            if discovered.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Err(error) = discovered {
             tracing::error!("oidc disabled — discovery failed at startup: {error}");
             return None;
         }
@@ -402,6 +453,12 @@ impl OidcRuntime {
             token_endpoint: discovery.token_endpoint,
             jwks_uri: discovery.jwks_uri,
             jwks,
+            end_session_endpoint: discovery
+                .end_session_endpoint
+                .filter(|url| !url.trim().is_empty()),
+            token_auth: TokenAuth::from_discovery(
+                discovery.token_endpoint_auth_methods_supported.as_deref(),
+            ),
         };
         *self.cached.write().await = Some((Instant::now(), endpoints.clone()));
         Ok(endpoints)
@@ -412,6 +469,12 @@ impl OidcRuntime {
     /// redirect to the SPA error page — rather than at callback time.
     pub async fn authorization_endpoint(&self) -> Result<String, AppError> {
         Ok(self.endpoints(false).await?.authorization_endpoint)
+    }
+
+    /// The provider's end-session endpoint, when it advertises one
+    /// (RP-initiated logout). `None` → sign-out is purely local.
+    pub async fn end_session_endpoint(&self) -> Result<Option<String>, AppError> {
+        Ok(self.endpoints(false).await?.end_session_endpoint.clone())
     }
 
     /// The authorize redirect target for one flow. `state`/`nonce` are
@@ -442,10 +505,12 @@ impl OidcRuntime {
     }
 
     /// Exchange `code` for an id_token (confidential client, PKCE S256,
-    /// `client_secret_post`). Returns the raw id_token JWT.
+    /// client authentication per discovery — see [`TokenAuth`]). Returns the
+    /// raw id_token JWT.
     async fn exchange_code(
         &self,
         token_endpoint: &str,
+        token_auth: TokenAuth,
         code: &str,
         code_verifier: &str,
     ) -> Result<String, AppError> {
@@ -458,17 +523,22 @@ impl OidcRuntime {
             #[serde(default)]
             error_description: Option<String>,
         }
-        let params = [
+        // Basic auth keeps the secret out of the body; post auth keeps it in
+        // the form — per what the provider declared it accepts.
+        let mut params = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", self.redirect_uri.as_str()),
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
             ("code_verifier", code_verifier),
         ];
-        let response: TokenResponse = self
-            .http
-            .post(token_endpoint)
+        let mut request = self.http.post(token_endpoint);
+        if token_auth == TokenAuth::ClientSecretBasic {
+            request = request.basic_auth(&self.client_id, Some(&self.client_secret));
+        } else {
+            params.push(("client_id", self.client_id.as_str()));
+            params.push(("client_secret", self.client_secret.as_str()));
+        }
+        let response: TokenResponse = request
             .form(&params)
             .send()
             .await
@@ -513,17 +583,27 @@ impl OidcRuntime {
 
     /// Complete sign-in round trip: consume the provider's token endpoint and
     /// validate the returned id_token against the flow's nonce.
+    /// Complete sign-in round trip: consume the provider's token endpoint and
+    /// validate the returned id_token against the flow's nonce. Returns the
+    /// identity plus the **raw id_token** — retained only as the RP-logout
+    /// hint (see `api/auth.rs`), never logged or used for anything else.
     pub async fn redeem(
         &self,
         code: &str,
         code_verifier: &str,
         expected_nonce: &str,
-    ) -> Result<OidcIdentity, AppError> {
+    ) -> Result<(OidcIdentity, String), AppError> {
         let endpoints = self.endpoints(false).await?;
         let id_token = self
-            .exchange_code(&endpoints.token_endpoint, code, code_verifier)
+            .exchange_code(
+                &endpoints.token_endpoint,
+                endpoints.token_auth,
+                code,
+                code_verifier,
+            )
             .await?;
-        self.validate_id_token(&id_token, expected_nonce).await
+        let identity = self.validate_id_token(&id_token, expected_nonce).await?;
+        Ok((identity, id_token))
     }
 
     async fn decode_id_token(&self, id_token: &str) -> Result<IdTokenClaims, AppError> {

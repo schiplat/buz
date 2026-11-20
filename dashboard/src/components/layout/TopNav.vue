@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronDown, KeyRound, LogOut, PanelLeft, User } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import TeamSwitcher from '@/components/layout/TeamSwitcher.vue'
 import NotificationBell from '@/components/layout/NotificationBell.vue'
@@ -12,7 +12,6 @@ import { useUiStore } from '@/stores/ui'
 const ui = useUiStore()
 const auth = useAuthStore()
 const route = useRoute()
-const router = useRouter()
 
 const pageTitle = computed(() => {
   const matched = route.matched[route.matched.length - 1]
@@ -34,7 +33,10 @@ const passwordSaving = ref(false)
 function handleLogout() {
   menuOpen.value = false
   auth.logout()
-  router.push({ name: 'login' })
+  // Let the backend decide the way out: SSO deployments end the provider
+  // session too (RP-initiated logout), plain deployments land on the login
+  // page. A full navigation — the SPA session is over either way.
+  window.location.assign('/api/v1/auth/oidc/logout')
 }
 
 function openChangePassword() {

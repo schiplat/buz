@@ -226,39 +226,78 @@ IdP: admin disables the user / user logs out / password reset / MFA reset /
 Register the URL at the provider — the Settings → SSO page shows the exact
 value derived from `server.public_base_url`, next to the callback URL.
 
-## Configuration
+## Sign-out (RP-initiated logout)
 
-**Recommended: the web UI.** Settings → **SSO** (platform admin) edits every
-field — issuer, client id/secret, redirect, scopes, auto-provision, enable —
-with a built-in "Test connection" discovery probe. Saved settings live in the
-database (`oidc_settings`), **override the file**, and apply immediately; the
-client secret is stored encrypted at rest and never echoed back. Deleting the
-override (Revert to manager.toml) falls back to the file seed.
+Destroying the Buz JWT is client-side (stateless tokens); the question is
+what happens to the **provider session**. Buz follows the standard
+RP-initiated logout shape — a **top-level GET** with the `id_token_hint`:
 
-`[auth.oidc]` in `manager.toml` remains the deployment-time seed (and the
-IaC path); once an administrator saves from the web, the database is
-authoritative:
-
-```toml
-[auth.oidc]
-enabled = false
-issuer = ""                       # https origin, no trailing slash
-client_id = ""
-client_secret = ""                # or client_secret_file / BUZ_OIDC_CLIENT_SECRET
-redirect_uri = ""                 # absolute, must equal the IdP registration
-scopes = ["openid", "profile", "email"]   # groups added when mapping lands
-auto_provision = true
+```
+Dashboard "Sign out"
+  → clears the local JWT, navigates to
+     GET /api/v1/auth/oidc/logout        (no-store)
+       ├ SSO off            → 303 to the SPA login page
+       ├ hint cookie present (unexpired id_token from the last sign-in)
+       │    → 303 to {end_session_endpoint}?id_token_hint=…&client_id=…
+       │      &post_logout_redirect_uri=…
+       │      (a top-level GET, so the provider's SameSite=Lax session
+       │      cookie rides along; a cross-site form POST would not)
+       │    → the provider ends its session, fires its back-channel logout
+       │      (revoking the Buz JWTs of other devices too), and returns the
+       │      browser to the SPA landing /auth/sso/logged-out
+       └ no hint / expired hint / no advertised endpoint
+                            → 303 straight to the landing page
 ```
 
-The callback URL derives from `server.public_base_url`
-(`{public_base_url}/api/v1/auth/oidc/callback`); both the file seed and the
-web form accept an explicit override for unusual proxy layouts.
+- The **hint cookie** (`buz_oidc_hint`) is set at sign-in: HttpOnly,
+  `SameSite=Lax`, scoped to `/api/v1/auth/oidc`, expiring with the id_token
+  itself. It holds the raw `id_token` and is used for nothing else — losing
+  it only degrades sign-out to local-only, never weakens sign-in. Sign-out
+  always clears it.
+- Register the landing page
+  (`{public_base_url}/auth/sso/logged-out`, shown on the Settings → SSO
+  page) as the client's `post_logout_redirect_uri`; without it the provider
+  typically still ends the session but keeps the browser on its own page.
+- Logout-CSRF is the provider's concern (worst case: someone ends your IdP
+  session); Buz adds `Cache-Control: no-store` and nothing else. The hint
+  expiry check is Buz's own fallback UX — the provider re-validates the
+  hint for real, and an expired hint degrades to a local sign-out instead
+  of stranding the user on a provider error page.
 
-Startup validation (when `enabled = true`): https issuer (plain http allowed
-for localhost development), no trailing slash, absolute `redirect_uri`,
-`openid` in scopes, non-empty credentials. A **misconfigured SSO disables only
-the SSO endpoints** (reported through `/auth/providers` and the log) — it never
-prevents Buz from starting, because local login remains fully functional.
+Token-endpoint client authentication is negotiated from discovery:
+`client_secret_post` when the provider declares it (the common case),
+`Authorization: Basic` otherwise — providers that accept both work with
+either. `client_secret_post` stays the fallback when discovery is silent.
+
+## Configuration
+
+**The database is the only source.** Settings → **SSO** (platform admin) edits
+every field — issuer, client id/secret, redirect, scopes, sign-in policy,
+enable — with a built-in "Test connection" discovery probe. Saved settings
+apply immediately (no restart); the client secret is stored encrypted at rest
+and never echoed back. Clearing the configuration (a ghost button in the
+status area) turns SSO off until an administrator saves again — local login
+keeps working throughout.
+
+**Legacy file seed — imported once, then ignored.** A deployment configured
+through `[auth.oidc]` in `manager.toml` keeps working on upgrade: at startup,
+a valid file section with no database row is **imported into the row** (the
+secret re-encrypted at rest, the row stamped `file-import`, the log announces
+"`[auth.oidc]` imported into the database — the section is now ignored").
+Afterwards the file section is dead text and should be removed from
+`manager.toml`. The section is no longer a supported configuration path; new
+deployments configure SSO in the web UI.
+
+The callback URL derives from `server.public_base_url`
+(`{public_base_url}/api/v1/auth/oidc/callback`); the web form accepts an
+explicit override for unusual proxy layouts.
+
+Startup validation (when the row enables SSO): https issuer (plain http
+allowed for localhost development), no trailing slash, absolute
+`redirect_uri`, `openid` in scopes, non-empty credentials. A
+**misconfigured SSO disables only the SSO endpoints** (reported through
+`/auth/providers` and the log) — it never prevents Buz from starting, because
+local login remains fully functional.
 
 `GET /api/v1/auth/oidc/providers` (public) reports whether SSO is enabled so
 the login page can render the button conditionally.
@@ -276,7 +315,7 @@ the login page can render the button conditionally.
 | Account takeover | No silent linking; conversion requires proving local possession; disabled users refused |
 | Failure mode | IdP down / misconfigured → SSO fail closed, local login unaffected; JWKS fetch failures refuse sign-in, never degrade local auth |
 | Least privilege | JIT users get no teams, no owner role, no platform-admin flags — ever |
-| Hygiene | No secrets or tokens in logs/argv; flows/tickets hashed, single-use, TTL'd, swept |
+| Hygiene | No secrets or tokens in logs/argv; flows/tickets hashed, single-use, TTL'd, swept; the id_token is retained only as the logout hint (HttpOnly cookie, OIDC-path scoped, expires with the token) |
 
 ## Known limitations (documented, accepted)
 
@@ -286,7 +325,9 @@ the login page can render the button conditionally.
 - Buz JWTs are stateless: disabling a user **in Buz** blocks every subsequent
   request (`is_active` is checked per request). A disable **at the IdP** is
   delivered by back-channel logout (above) and takes effect within seconds.
-  RP-initiated logout (ending the IdP session from Buz) is still Phase 1.5.
+  Sign-out ends the provider session too (RP-initiated logout, above); when
+  the provider does not advertise an end-session endpoint, only the Buz
+  session ends.
 - Group claims are stored but inert in Phase 1.
 
 ## Phasing
@@ -298,10 +339,11 @@ the login page can render the button conditionally.
 - **Phase 1.5 (delivered)** — web configuration (DB > file seed, hot swap);
   provider-initiated session revocation via back-channel logout; the admin
   identity views and the pending-identity approval/bind queue (which is what
-  makes `auto_provision = false` usable).
+  makes `auto_provision = false` usable); RP-initiated logout; discovery-
+  negotiated token-endpoint authentication.
 - **Phase 1.5 (remaining, signal-driven)** — local→OIDC account conversion by
   the user (only when an install with many local users needs to keep
-  `users.id`); RP-initiated logout.
+  `users.id`).
 - **Phase 2** — multiple simultaneous providers; scoped administration;
   access reviews / SIEM export. **A Buz-side SCIM server is a permanent
   non-goal** (see [Non-goals](#non-goals)).

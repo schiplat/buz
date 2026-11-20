@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
-use axum::extract::{Form, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -36,7 +36,7 @@ use tower::ServiceExt;
 
 use common::test_config;
 use manager::api;
-use manager::config::{Config, OidcConfig};
+use manager::config::Config;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::services::oidc::OidcRuntime;
 use manager::state::AppState;
@@ -89,27 +89,67 @@ fn mock_keys() -> &'static MockKeys {
 #[derive(Clone)]
 struct MockIdp {
     codes: Arc<IdpCodes>,
+    /// The served app, kept for journeys that drive the IdP in-process.
+    app: Router,
+}
+
+impl MockIdp {
+    /// Drive the served IdP in-process (readiness probes and end-session
+    /// redirects without a real browser).
+    fn router(&self) -> Router {
+        self.app.clone()
+    }
 }
 
 struct IdpCodes {
     issuer: String,
     codes: Mutex<HashMap<String, Value>>,
     counter: AtomicU64,
+    /// Declared `token_endpoint_auth_methods_supported` (empty = permissive).
+    auth_methods: Vec<String>,
+}
+
+/// Decode an `Authorization: Basic` header into `(user, password)`.
+fn basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
+    use base64::engine::general_purpose::STANDARD;
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let encoded = raw.strip_prefix("Basic ")?.trim();
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    text.split_once(':')
+        .map(|(u, p)| (u.to_string(), p.to_string()))
 }
 
 async fn token_endpoint(
     State(idp): State<Arc<IdpCodes>>,
+    headers: HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> (StatusCode, Json<Value>) {
     let fail = |error: &str| (StatusCode::BAD_REQUEST, Json(json!({ "error": error })));
     if form.get("grant_type").map(String::as_str) != Some("authorization_code") {
         return fail("unsupported_grant_type");
     }
-    if form.get("client_id").map(String::as_str) != Some(CLIENT_ID) {
-        return fail("invalid_client");
-    }
-    if form.get("client_secret").map(String::as_str) != Some(CLIENT_SECRET) {
-        return fail("invalid_client");
+    // Client authentication per what this mock declares: basic-only suites
+    // require the Basic header and reject body credentials; everything else
+    // accepts the form shape (a provider declaring both accepts either).
+    let basic_only = idp.auth_methods.iter().any(|m| m == "client_secret_basic")
+        && !idp.auth_methods.iter().any(|m| m == "client_secret_post");
+    if basic_only {
+        let credentials_ok =
+            basic_credentials(&headers).is_some_and(|(u, p)| u == CLIENT_ID && p == CLIENT_SECRET);
+        if !credentials_ok {
+            return fail("invalid_client");
+        }
+        if form.contains_key("client_id") || form.contains_key("client_secret") {
+            return fail("invalid_client");
+        }
+    } else {
+        if form.get("client_id").map(String::as_str) != Some(CLIENT_ID) {
+            return fail("invalid_client");
+        }
+        if form.get("client_secret").map(String::as_str) != Some(CLIENT_SECRET) {
+            return fail("invalid_client");
+        }
     }
     if form.get("redirect_uri").map(String::as_str) != Some(REDIRECT_URI) {
         return fail("invalid_grant");
@@ -131,6 +171,25 @@ async fn token_endpoint(
             "id_token": id_token,
         })),
     )
+}
+
+/// POST end-session: acknowledged (the RP's browser would only use this in
+/// the legacy auto-submit form; the journeys drive the GET variant).
+async fn end_session_endpoint(State(_idp): State<Arc<IdpCodes>>) -> StatusCode {
+    StatusCode::OK
+}
+
+/// GET end-session, Signet-shaped: a valid hint plus a registered landing
+/// redirect the browser out; anything less answers 400 like Signet's GET.
+async fn end_session_get(
+    Query(q): Query<HashMap<String, String>>,
+) -> impl axum::response::IntoResponse {
+    match (q.get("id_token_hint"), q.get("post_logout_redirect_uri")) {
+        (Some(hint), Some(uri)) if !hint.is_empty() && !uri.is_empty() => {
+            (StatusCode::SEE_OTHER, [(header::LOCATION, uri.clone())])
+        }
+        _ => (StatusCode::BAD_REQUEST, [(header::LOCATION, String::new())]),
+    }
 }
 
 /// Minimal one-shot HTTP GET over a raw tokio TcpStream — the readiness
@@ -160,31 +219,48 @@ async fn raw_http_get(base: &str, path: &str, timeout: tokio::time::Duration) ->
 }
 
 impl MockIdp {
-    /// Bind an ephemeral loopback port, serve discovery/JWKS/token, and
-    /// report the issuer URL the Buz config must carry. `OidcRuntime::build`
-    /// performs discovery against this immediately after.
+    /// The default mock: `client_secret_post` (Buz's legacy behavior),
+    /// end-session advertised.
     async fn start() -> (Self, String) {
+        Self::start_with(vec![], true).await
+    }
+
+    /// A mock declaring `auth_methods` in discovery; `end_session = false`
+    /// omits the endpoint entirely (the purely-local-logout case).
+    async fn start_with(auth_methods: Vec<&str>, end_session: bool) -> (Self, String) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let codes = Arc::new(IdpCodes {
             issuer: issuer.clone(),
             codes: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
+            auth_methods: auth_methods.iter().map(|s| s.to_string()).collect(),
         });
 
         let issuer_for_routes = issuer.clone();
+        let advertised_methods = codes.auth_methods.clone();
         let app = Router::new()
             .route(
                 "/.well-known/openid-configuration",
                 get(move || {
                     let issuer = issuer_for_routes;
+                    let advertised_methods = advertised_methods.clone();
                     async move {
-                        Json(json!({
+                        let mut doc = json!({
                             "issuer": issuer,
                             "authorization_endpoint": format!("{issuer}/oauth/authorize"),
                             "token_endpoint": format!("{issuer}/oauth/token"),
                             "jwks_uri": format!("{issuer}/oauth/jwks"),
-                        }))
+                        });
+                        if end_session {
+                            doc["end_session_endpoint"] =
+                                json!(format!("{issuer}/oauth/end_session"));
+                        }
+                        if !advertised_methods.is_empty() {
+                            doc["token_endpoint_auth_methods_supported"] =
+                                json!(advertised_methods);
+                        }
+                        Json(doc)
                     }
                 }),
             )
@@ -193,10 +269,17 @@ impl MockIdp {
                 get(|| async move { Json(mock_keys().jwks.clone()) }),
             )
             .route("/oauth/token", post(token_endpoint))
+            .route(
+                "/oauth/end_session",
+                get(end_session_get).post(end_session_endpoint),
+            )
             .with_state(codes.clone());
 
+        let serve_app = app.clone();
         tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("mock idp serve");
+            axum::serve(listener, serve_app)
+                .await
+                .expect("mock idp serve");
         });
 
         // Readiness probe: `OidcRuntime::build` fires discovery immediately
@@ -222,7 +305,7 @@ impl MockIdp {
             }
         }
 
-        (Self { codes }, issuer)
+        (Self { codes, app }, issuer)
     }
 
     /// Plant an authorization code carrying these claims + the flow's nonce.
@@ -254,39 +337,27 @@ impl MockIdp {
 
 // ───────────────────────────── fixture plumbing ─────────────────────────────
 
-fn oidc_config(issuer: &str, auto_provision: bool) -> OidcConfig {
-    OidcConfig {
+/// The runtime input under the DB-only configuration model: the same facts
+/// `oidc_config` used to carry, expressed as a resolved database row would be.
+fn services_effective(
+    issuer: &str,
+    auto_provision: bool,
+) -> manager::services::oidc::EffectiveOidc {
+    manager::services::oidc::EffectiveOidc {
         enabled: true,
         issuer: issuer.to_string(),
         client_id: CLIENT_ID.into(),
         client_secret: CLIENT_SECRET.into(),
-        client_secret_file: None,
         redirect_uri: REDIRECT_URI.into(),
         scopes: vec!["openid".into(), "profile".into(), "email".into()],
         auto_provision,
+        source: "database",
     }
-}
-
-/// `OidcRuntime::build` with retries. Under nextest's loaded runners the
-/// one-shot discovery fetch can starve past its 10s timeout even with
-/// multi_thread runtimes — the readiness probe just proved the mock
-/// answers, so a short retry is safe and kills the CI-only flake for good
-/// (run 44532688240).
-async fn build_mock_runtime(config: &OidcConfig) -> Option<Arc<OidcRuntime>> {
-    for _ in 0..3 {
-        if let Some(runtime) = OidcRuntime::build(config).await {
-            return Some(runtime);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    None
 }
 
 async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
     let mut config: Config = test_config();
-    if let Some(runtime) = &oidc {
-        config.auth.oidc = oidc_config(&runtime.issuer, true);
-    }
+    config.server.public_base_url = "http://127.0.0.1:8080".into();
     let state = AppState {
         pool: pool.clone(),
         config,
@@ -296,10 +367,27 @@ async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
     Router::new().nest("/api/v1", api::router(state))
 }
 
+/// `OidcRuntime::build_effective` with retries. Under nextest's loaded
+/// runners the one-shot discovery fetch can starve past its 10s timeout even
+/// with multi_thread runtimes — the readiness probe just proved the mock
+/// answers, so a short retry is safe and kills the CI-only flake for good
+/// (see PR #48, run 44532688240).
+async fn build_mock_runtime(
+    effective: &manager::services::oidc::EffectiveOidc,
+) -> Option<Arc<OidcRuntime>> {
+    for _ in 0..3 {
+        if let Some(runtime) = OidcRuntime::build_effective(effective).await {
+            return Some(runtime);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    None
+}
+
 /// Same app but honoring `auto_provision = false` — the approval-queue mode.
 async fn sso_app_jit_off(oidc: Arc<OidcRuntime>, pool: DbPool) -> Router {
     let mut config: Config = test_config();
-    config.auth.oidc = oidc_config(&oidc.issuer, false);
+    config.server.public_base_url = "http://127.0.0.1:8080".into();
     let state = AppState {
         pool: pool.clone(),
         config,
@@ -573,7 +661,7 @@ const BACKCHANNEL_PATH: &str = "/api/v1/auth/oidc/backchannel-logout";
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bound_identity_signs_in_and_receives_a_local_equivalent_jwt() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -624,9 +712,9 @@ async fn bound_identity_signs_in_and_receives_a_local_equivalent_jwt() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jit_provisions_a_plain_oidc_user_by_default() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     let router = sso_app(Some(runtime), pool.clone()).await;
@@ -689,9 +777,9 @@ async fn jit_provisions_a_plain_oidc_user_by_default() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unbound_identity_is_refused_when_auto_provision_is_off() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+    let runtime = build_mock_runtime(&services_effective(&issuer, false))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     let router = sso_app(Some(runtime), pool.clone()).await;
@@ -721,9 +809,9 @@ async fn unbound_identity_is_refused_when_auto_provision_is_off() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jit_is_refused_for_an_uninitialized_instance() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await; // fresh: zero users
     let router = sso_app(Some(runtime), pool.clone()).await;
 
@@ -752,9 +840,9 @@ async fn jit_is_refused_for_an_uninitialized_instance() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replayed_state_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     bind_identity(&pool, "sub-replay", "admin-1").await;
@@ -782,9 +870,9 @@ async fn replayed_state_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nonce_mismatch_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     bind_identity(&pool, "sub-nonce", "admin-1").await;
@@ -810,9 +898,9 @@ async fn nonce_mismatch_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expired_flow_is_refused() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     bind_identity(&pool, "sub-exp", "admin-1").await;
@@ -856,9 +944,9 @@ async fn expired_flow_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_is_single_use() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     bind_identity(&pool, "sub-ticket", "admin-1").await;
@@ -896,9 +984,9 @@ async fn ticket_is_single_use() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sso_account_cannot_password_login_and_local_user_gets_a_separate_account() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await; // carol-1 is a plain local user
     let router = sso_app(Some(runtime), pool.clone()).await;
@@ -963,9 +1051,9 @@ async fn sso_account_cannot_password_login_and_local_user_gets_a_separate_accoun
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabled_user_is_refused_at_oidc_signin() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
     bind_identity(&pool, "sub-off", "admin-1").await;
@@ -1006,9 +1094,9 @@ async fn providers_probe_reports_enabled_state() {
 
     let (idp, issuer) = MockIdp::start().await;
     let _ = &idp;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
-        .expect("runtime builds");
+        .expect("runtime builds against the mock");
     let router = sso_app(Some(runtime), pool).await;
     let (status, _, body) = oneshot(router, "GET", "/api/v1/auth/oidc/providers", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -1165,7 +1253,7 @@ async fn settings_put_enables_sso_hot_and_stores_the_secret_encrypted() {
 /// DELETE drops the override: the (disabled) file seed applies again — the
 /// providers probe flips back without a restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn settings_delete_reverts_to_the_file_seed() {
+async fn settings_delete_clears_the_configuration() {
     let (idp, issuer) = MockIdp::start().await;
     let pool = common::test_db(4).await;
     seed_users(&pool).await;
@@ -1200,12 +1288,17 @@ async fn settings_delete_reverts_to_the_file_seed() {
     assert_eq!(status, StatusCode::OK, "delete: {body}");
     assert_eq!(
         body.pointer("/data/source").and_then(Value::as_str),
-        Some("file")
+        Some("database"),
+        "database is the only source — an empty one"
     );
     assert_eq!(
         body.pointer("/data/enabled"),
         Some(&json!(false)),
-        "file seed disabled"
+        "cleared configuration means SSO off"
+    );
+    assert_eq!(
+        body.pointer("/data/client_secret_configured"),
+        Some(&json!(false))
     );
 
     let (_, _, body) = oneshot(router, "GET", "/api/v1/auth/oidc/providers", None).await;
@@ -1214,7 +1307,7 @@ async fn settings_delete_reverts_to_the_file_seed() {
     let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
         .await
         .unwrap();
-    assert_eq!(rows, 0, "override row dropped");
+    assert_eq!(rows, 0, "configuration row dropped");
     let resets: i64 = exec::fetch_scalar_i64(
         &pool,
         "SELECT COUNT(*) FROM audit_logs WHERE action = 'setting.reset' AND resource_type = 'setting' AND resource_id = ?",
@@ -1224,6 +1317,144 @@ async fn settings_delete_reverts_to_the_file_seed() {
     .unwrap();
     assert_eq!(resets, 1, "reset audited");
     let _ = idp;
+}
+
+/// A first save without a secret is refused — the database is the only
+/// source, there is no file/env fallback to lean on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_put_requires_the_secret_on_first_save() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool.clone()).await;
+    let bearer = admin_bearer();
+
+    let (status, body) = put_settings(
+        &router,
+        &bearer,
+        json!({
+            "enabled": true,
+            "issuer": "https://sso.example.com",
+            "client_id": "c",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body.pointer("/message")
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("client secret is required"),
+        "{body}"
+    );
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// The legacy `[auth.oidc]` file seed imports into the database row once at
+/// startup and is then ignored: identical values, enabled stays on, the row
+/// is stamped `file-import`, and a second boot with an existing row is a no-op.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_file_seed_imports_once_into_the_database() {
+    let (idp, issuer) = MockIdp::start().await;
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+
+    // The import runs against the real config shape — build one from the mock.
+    let config = manager::config::OidcConfig {
+        enabled: true,
+        issuer: issuer.clone(),
+        client_id: CLIENT_ID.into(),
+        client_secret: CLIENT_SECRET.into(),
+        client_secret_file: None,
+        redirect_uri: REDIRECT_URI.into(),
+        scopes: vec!["openid".into(), "profile".into(), "email".into()],
+        auto_provision: true,
+    };
+    api::oidc_settings::import_file_seed(
+        &pool,
+        &config,
+        "http://127.0.0.1:8080",
+        common::JWT_SECRET,
+    )
+    .await;
+
+    let row = exec::fetch_optional(
+        &pool,
+        "SELECT issuer, client_id, auto_provision, updated_by FROM oidc_settings WHERE id = 1",
+        &[],
+    )
+    .await
+    .unwrap()
+    .expect("row imported");
+    assert_eq!(row.text_of("issuer"), issuer);
+    assert_eq!(row.text_of("client_id"), CLIENT_ID);
+    assert_eq!(row.i64_of("auto_provision"), 1);
+    assert_eq!(row.text_of("updated_by"), "file-import");
+
+    // The imported row resolves and builds a working runtime: a full
+    // sign-in round trip against the mock.
+    let row = manager::store::oidc_settings::get(&pool)
+        .await
+        .unwrap()
+        .expect("row exists");
+    let effective = manager::services::oidc::resolve_effective(
+        Some(&row),
+        "http://127.0.0.1:8080",
+        common::JWT_SECRET,
+    )
+    .expect("imported row resolves");
+    assert!(effective.enabled);
+    let runtime = build_mock_runtime(&effective)
+        .await
+        .expect("runtime builds from the imported row");
+    let router = sso_app(Some(runtime), pool.clone()).await;
+    let (_, body) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    assert!(body
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .is_some());
+
+    // A second import with an existing row must not touch it.
+    api::oidc_settings::import_file_seed(
+        &pool,
+        &config,
+        "http://127.0.0.1:8080",
+        common::JWT_SECRET,
+    )
+    .await;
+    let count: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "import never duplicates");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_file_seed_with_no_secret_is_not_imported() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let config = manager::config::OidcConfig {
+        enabled: true,
+        issuer: "https://sso.example.com".into(),
+        client_id: "c".into(),
+        client_secret: String::new(),
+        client_secret_file: Some("/nonexistent/secret".into()),
+        redirect_uri: String::new(),
+        scopes: vec!["openid".into()],
+        auto_provision: true,
+    };
+    api::oidc_settings::import_file_seed(
+        &pool,
+        &config,
+        "http://127.0.0.1:8080",
+        common::JWT_SECRET,
+    )
+    .await;
+    let count: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM oidc_settings", &[])
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "an unusable seed imports nothing");
 }
 
 /// Validation runs server-side on PUT: a non-https issuer (outside
@@ -1332,7 +1563,7 @@ async fn settings_test_endpoint_probes_the_provider() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backchannel_logout_revokes_the_users_jwt_and_allows_a_fresh_login() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1399,7 +1630,7 @@ async fn backchannel_logout_revokes_the_users_jwt_and_allows_a_fresh_login() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backchannel_logout_rejects_tokens_that_do_not_verify() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1478,7 +1709,7 @@ async fn backchannel_logout_rejects_tokens_that_do_not_verify() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backchannel_logout_is_unknown_subject_safe_and_leaves_api_tokens_alone() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, true))
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1616,7 +1847,7 @@ async fn one_pending(pool: &DbPool) -> (String, String, i64) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_identity_is_queued_then_approved_by_creating_a_user() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+    let runtime = build_mock_runtime(&services_effective(&issuer, false))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1704,7 +1935,7 @@ async fn refused_identity_is_queued_then_approved_by_creating_a_user() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bind_to_existing_user_honors_the_password_choice() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+    let runtime = build_mock_runtime(&services_effective(&issuer, false))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1813,7 +2044,7 @@ async fn bind_to_existing_user_honors_the_password_choice() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bind_refuses_conflicts_without_side_effects() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+    let runtime = build_mock_runtime(&services_effective(&issuer, false))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1861,7 +2092,7 @@ async fn bind_refuses_conflicts_without_side_effects() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn last_local_admin_password_cannot_be_disabled_via_bind() {
     let (idp, issuer) = MockIdp::start().await;
-    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+    let runtime = build_mock_runtime(&services_effective(&issuer, false))
         .await
         .expect("runtime builds against the mock");
     let pool = common::test_db(4).await;
@@ -1888,4 +2119,209 @@ async fn last_local_admin_password_cannot_be_disabled_via_bind() {
     .await
     .unwrap();
     assert_eq!(bound, 0, "the failed bind must roll back");
+}
+
+// ─────────────────── RP-initiated logout + auth-method negotiation ───────────────────
+
+/// Logout after a real sign-in: the callback plants the RP-logout hint
+/// cookie, and `logout` turns it into a top-level 303 to the provider's
+/// end-session endpoint with the id_token hint and the registered landing —
+/// a GET navigation, so the provider's Lax session cookie rides along.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rp_logout_redirects_to_the_provider_end_session() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-bound", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    // Sign in; grab the hint cookie the callback plants.
+    let (router, state, nonce) = start_flow(&router).await;
+    let code = idp.register_code("sub-bound", "boss@sso", "Boss", &nonce);
+    let (_, headers, _) = oneshot(
+        router.clone(),
+        "GET",
+        &format!("/api/v1/auth/oidc/callback?code={code}&state={state}"),
+        None,
+    )
+    .await;
+    assert!(
+        cookie_value(&headers, "buz_sso_ticket").is_some(),
+        "ticket set"
+    );
+    let hint = cookie_value(&headers, "buz_oidc_hint")
+        .unwrap_or_else(|| panic!("callback plants the RP-logout hint cookie"));
+
+    // Sign out: 303 to the provider end-session endpoint with the hint.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .header(header::COOKIE, format!("buz_oidc_hint={hint}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+    assert!(
+        location.starts_with(&format!("{issuer}/oauth/end_session?")),
+        "targets the provider: {location}"
+    );
+    assert!(location.contains("id_token_hint="), "carries the hint");
+    assert!(
+        location.contains(&format!("client_id={CLIENT_ID}")),
+        "carries client_id"
+    );
+    let landing = manager::services::oidc::EffectiveOidc::derived_post_logout_redirect_uri(
+        "http://127.0.0.1:8080",
+    )
+    .unwrap();
+    assert!(
+        location.contains(&manager::services::oidc::percent_encode(&landing)),
+        "carries the registered landing: {location}"
+    );
+
+    // The hint cookie is cleared on the way out.
+    let cleared = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|v| v.to_str().unwrap_or("").starts_with("buz_oidc_hint=;"));
+    assert!(cleared, "hint cookie cleared: {location}");
+
+    // The provider's GET end-session (what the browser lands on) honors the
+    // registered landing — Signet-shaped: hint present, redirect out.
+    let request = Request::builder()
+        .method("GET")
+        .uri(&location)
+        .body(Body::empty())
+        .unwrap();
+    let response = idp.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some(landing.as_str())
+    );
+}
+
+/// An expired hint never reaches the provider: sign-out degrades to the
+/// local landing instead of stranding the user on a provider error page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rp_logout_with_an_expired_hint_degrades_to_local() {
+    let (_idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let expired = sign_logout_token(json!({ "iss": issuer, "aud": CLIENT_ID, "sub": "sub-x",
+                "iat": chrono::Utc::now().timestamp() - 7200,
+                "exp": chrono::Utc::now().timestamp() - 3600 }));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .header(header::COOKIE, format!("buz_oidc_hint={expired}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/auth/sso/logged-out")
+    );
+}
+
+/// A provider without an end-session endpoint → purely local sign-out; SSO
+/// off → straight to the login page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rp_logout_falls_back_to_local_without_provider_support() {
+    let (idp, issuer) = MockIdp::start_with(vec![], false).await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    // Sign in so a hint cookie exists, then sign out.
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    assert!(login.pointer("/data/token").is_some());
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .header(header::COOKIE, "buz_oidc_hint=whatever")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/auth/sso/logged-out")
+    );
+
+    // SSO not configured at all.
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(None, pool.clone()).await;
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/oidc/logout")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/login")
+    );
+}
+
+/// Discovery declaring basic-only switches the token request to Basic
+/// credentials (the mock refuses body credentials in that mode).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_auth_method_is_negotiated_from_discovery() {
+    let (idp, issuer) = MockIdp::start_with(vec!["client_secret_basic"], true).await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-basic", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    // A full round trip only succeeds when the mock accepted Basic auth.
+    let (next, body) = complete_flow(&idp, &router, "sub-basic", "boss@sso", "Boss").await;
+    assert_eq!(next, "/auth/sso/callback?next=%2Fpipelines");
+    assert!(body
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .is_some());
 }

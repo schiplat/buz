@@ -114,6 +114,8 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/start", get(auth::oidc_start))
         .route("/auth/oidc/callback", get(auth::oidc_callback))
         .route("/auth/oidc/exchange", post(auth::oidc_exchange))
+        // RP-initiated logout (GET, no actor; the provider owns its session)
+        .route("/auth/oidc/logout", get(auth::oidc_logout))
         // Provider-initiated session revocation (signed logout token = the
         // credential; no session, no CSRF token)
         .route(

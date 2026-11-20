@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
         shared::version::long_version("manager"),
     );
 
-    // Step-index settings for `uses:` resolution (index dir + review gate).
+    // Plugin-index settings for `uses:` resolution (index dir + review gate).
     // Admin-edited overrides in platform_settings take precedence over
     // manager.toml and are re-applied at runtime by the settings API.
     let settings_overrides = services::platform_settings::fetch_overrides(&db).await;
@@ -301,20 +301,20 @@ async fn main() -> anyhow::Result<()> {
     // templates resolve freely (dashboard repeats this as a banner).
     if config.plugin_index.reviewed_manifest.trim().is_empty() {
         tracing::warn!(
-            "step review gate is NOT enabled: [plugin_index] reviewed_manifest is empty — \
+            "plugin review gate is NOT enabled: [plugin_index] reviewed_manifest is empty — \
              every `uses:` template resolves without review checks; production deployments \
              should set reviewed_manifest to a reviews.json and require_reviewed = true"
         );
     } else if !config.plugin_index.require_reviewed {
         tracing::info!(
             manifest = %config.plugin_index.reviewed_manifest,
-            "step review gate is advisory-only (require_reviewed = false): unreviewed \
+            "plugin review gate is advisory-only (require_reviewed = false): unreviewed \
              templates resolve with a log warning instead of being rejected"
         );
     } else {
         tracing::info!(
             manifest = %config.plugin_index.reviewed_manifest,
-            "step review gate is strict (require_reviewed = true): templates absent from \
+            "plugin review gate is strict (require_reviewed = true): templates absent from \
              the reviewed manifest are rejected at resolution time"
         );
     }
@@ -346,20 +346,24 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // OIDC sign-in runtime: resolved from the database override when one was
-    // saved, otherwise the file [auth.oidc] seed. None when disabled or
-    // misconfigured (only SSO is disabled — the server and local login keep
-    // working, see oidc-sso docs).
+    // OIDC sign-in runtime: resolved from the database row only. The legacy
+    // `[auth.oidc]` file section is imported into the row once (and then
+    // ignored). None when disabled or misconfigured (only SSO is disabled —
+    // the server and local login keep working, see oidc-sso docs).
     let oidc = {
+        api::oidc_settings::import_file_seed(
+            &db,
+            &config.auth.oidc,
+            &config.server.public_base_url,
+            &config.auth.jwt_secret,
+        )
+        .await;
         let row = manager::store::oidc_settings::get(&db)
             .await
-            .inspect_err(
-                |e| tracing::warn!(error = %e, "oidc settings unreadable — file seed applies"),
-            )
+            .inspect_err(|e| tracing::warn!(error = %e, "oidc settings unreadable — SSO stays off"))
             .ok()
             .flatten();
         match services::oidc::resolve_effective(
-            &config.auth.oidc,
             row.as_ref(),
             &config.server.public_base_url,
             &config.auth.jwt_secret,

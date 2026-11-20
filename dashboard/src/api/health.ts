@@ -71,7 +71,7 @@ export async function getMarketplaceUrl(): Promise<string> {
 }
 
 /**
- * Step review-gate posture for the "gate not enabled" banner. Null when the
+ * Plugin review-gate posture for the "gate not enabled" banner. Null when the
  * probe fails or the manager predates the field — the banner stays silent.
  */
 export async function getStepReviewGate(): Promise<StepReviewHealth | null> {

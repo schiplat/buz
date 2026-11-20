@@ -13,6 +13,8 @@ export interface OidcSettings {
   derived_redirect_uri: string | null
   /** Register at the provider so disable/logout events reach Buz immediately. */
   backchannel_logout_uri: string | null
+  /** Register so the provider returns the browser after RP-initiated logout. */
+  post_logout_redirect_uri: string | null
   scopes: string[]
   auto_provision: boolean
   updated_by: string
@@ -27,6 +29,10 @@ export interface DiscoveryProbe {
   authorization_endpoint?: string
   token_endpoint?: string
   jwks_uri?: string
+  /** The provider advertises an end-session endpoint (RP logout works). */
+  end_session_available?: boolean
+  /** Negotiated token-endpoint client authentication. */
+  client_auth?: 'client_secret_post' | 'client_secret_basic'
   error?: string
 }
 

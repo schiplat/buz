@@ -1,15 +1,17 @@
-//! Web-editable OIDC SSO configuration (Phase 1.5; design:
-//! `platform/oidc-sso.md`).
+//! Web-editable OIDC SSO configuration (design: `platform/oidc-sso.md`).
 //!
-//! Precedence **database > `[auth.oidc]` file > defaults**. A `PUT` validates,
-//! encrypts the client secret at rest (`buzenc:v1:`), saves the singleton row,
-//! and swaps the live runtime in place — enabled/disabled/changed without a
-//! restart. `DELETE` drops the override so the file seed applies again.
+//! **The database is the only source.** A `PUT` validates, encrypts the
+//! client secret at rest (`buzenc:v1:`), saves the singleton row, and swaps
+//! the live runtime in place — enabled/disabled/changed without a restart.
+//! `DELETE` clears the configuration (SSO off until saved again). The
+//! `[auth.oidc]` section of manager.toml is a legacy seed: it is imported
+//! into the row once at startup (`import_file_seed`) and afterwards ignored.
 //! `POST …/test` probes the provider's discovery document without saving.
 //!
 //! Secret discipline: the plaintext client secret exists only inside the PUT
-//! request; responses carry `client_secret_configured` booleans, never values;
-//! audit records the actor and the issuer, never the secret.
+//! request (and the import); responses carry `client_secret_configured`
+//! booleans, never values; audit records the actor and the issuer, never the
+//! secret.
 
 use axum::{extract::State, Json};
 use serde::Deserialize;
@@ -20,6 +22,111 @@ use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
 use crate::services::oidc::{self, EffectiveOidc, OidcRuntime};
 use crate::state::AppState;
+
+/// One-time migration: import the legacy `[auth.oidc]` file seed into the
+/// database row when the file section is configured and no row exists yet.
+/// Called once at startup, before the runtime is built. The file section is
+/// never consulted again afterwards — the database row is authoritative.
+///
+/// The import keeps `enabled` as-is: a deployment whose file seed had SSO on
+/// keeps it on with identical values. `updated_by = "file-import"` marks the
+/// row's origin. Failures are logged and skipped — the web form remains the
+/// recovery path, and local login is never affected.
+pub async fn import_file_seed(
+    pool: &crate::store::exec::DbPool,
+    config: &crate::config::OidcConfig,
+    public_base_url: &str,
+    jwt_secret: &str,
+) {
+    let file_configures_sso = config.issuer.trim().is_empty() || config.client_id.trim().is_empty();
+    if file_configures_sso {
+        return;
+    }
+    match crate::store::oidc_settings::get(pool).await {
+        Ok(Some(_)) => return, // a saved row already exists — file section ignored
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(error = %error, "oidc settings unreadable — file seed not imported");
+            return;
+        }
+    }
+
+    let client_secret = match config.resolved_client_secret() {
+        Ok(secret) => secret,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "[auth.oidc] has no usable client secret — file seed not imported"
+            );
+            return;
+        }
+    };
+    let effective = EffectiveOidc {
+        enabled: config.enabled,
+        issuer: config.issuer.trim().trim_end_matches('/').to_string(),
+        client_id: config.client_id.trim().to_string(),
+        redirect_uri: String::new(), // derived during validation below
+        scopes: config.scopes.clone(),
+        auto_provision: config.auto_provision,
+        source: "database",
+        client_secret,
+    };
+    let effective = match (|| -> Result<EffectiveOidc, String> {
+        let redirect_uri = match config.redirect_uri.trim() {
+            "" => EffectiveOidc::derived_redirect_uri(public_base_url)?,
+            uri => uri.to_string(),
+        };
+        let effective = EffectiveOidc {
+            redirect_uri,
+            ..effective
+        };
+        effective.validate()?;
+        Ok(effective)
+    })() {
+        Ok(effective) => effective,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "[auth.oidc] configuration invalid — file seed not imported"
+            );
+            return;
+        }
+    };
+
+    let ciphertext = if effective.client_secret.is_empty() {
+        String::new()
+    } else {
+        match crate::crypto::encrypt(&effective.client_secret, jwt_secret) {
+            Ok(ciphertext) => ciphertext,
+            Err(error) => {
+                tracing::warn!(error = %error, "oidc import: secret encryption failed");
+                return;
+            }
+        }
+    };
+    let result = crate::store::oidc_settings::upsert(
+        pool,
+        effective.enabled,
+        &effective.issuer,
+        &effective.client_id,
+        &ciphertext,
+        (!config.redirect_uri.trim().is_empty()).then_some(config.redirect_uri.trim()),
+        &serde_json::to_string(&effective.scopes).unwrap_or_else(|_| "[]".into()),
+        effective.auto_provision,
+        "file-import",
+    )
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(error = %error, "oidc import: saving the row failed");
+        return;
+    }
+    tracing::info!(
+        issuer = %effective.issuer,
+        enabled = effective.enabled,
+        "[auth.oidc] imported into the database — the section is now ignored; \
+         remove it from manager.toml"
+    );
+}
 
 /// `GET /api/v1/auth/oidc/settings` — the effective configuration with the
 /// secret masked, plus where each piece comes from and whether it validates.
@@ -65,7 +172,8 @@ pub async fn update_settings(
     let row_before = crate::store::oidc_settings::get(&state.pool).await?;
 
     // Resolve the secret: keep the stored one unless the request carries a
-    // replacement; fall back to the file/env secret on a first save.
+    // replacement. The database is the only source — a first save requires
+    // the secret.
     let client_secret = match req.client_secret.as_deref().map(str::trim) {
         Some(secret) if !secret.is_empty() => secret.to_string(),
         _ => match row_before.as_ref() {
@@ -77,18 +185,17 @@ pub async fn update_settings(
                         ))
                     })?
             }
-            _ => state
-                .config
-                .auth
-                .oidc
-                .resolved_client_secret()
-                .map_err(AppError::ValidationFailed)?,
+            _ => {
+                return Err(AppError::ValidationFailed(
+                    "client secret is required".into(),
+                ))
+            }
         },
     };
 
     let scopes = req
         .scopes
-        .unwrap_or_else(|| state.config.auth.oidc.scopes.clone());
+        .unwrap_or_else(|| vec!["openid".into(), "profile".into(), "email".into()]);
     let effective = EffectiveOidc {
         enabled: req.enabled,
         issuer: req.issuer.trim().trim_end_matches('/').to_string(),
@@ -157,16 +264,17 @@ pub async fn update_settings(
     )))
 }
 
-/// `DELETE /api/v1/auth/oidc/settings` — drop the override; the file seed
-/// applies again. Refuses to disable an otherwise-valid SSO silently: the
-/// response reports the resulting state.
+/// `DELETE /api/v1/auth/oidc/settings` — clear the stored configuration:
+/// SSO turns off until an administrator saves settings again. Local login
+/// keeps working throughout (break-glass).
 pub async fn reset_settings(
     auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let existed = crate::store::oidc_settings::delete(&state.pool).await?;
 
-    let effective = EffectiveOidc::from(&state.config.auth.oidc);
+    let effective = oidc::resolve_effective(None, &state.config.server.public_base_url, "")
+        .expect("the empty configuration always resolves");
     let runtime = OidcRuntime::build_effective(&effective).await;
     state.set_oidc_runtime(runtime).await;
 
@@ -202,6 +310,8 @@ pub async fn test_settings(
             "authorization_endpoint": probe.authorization_endpoint,
             "token_endpoint": probe.token_endpoint,
             "jwks_uri": probe.jwks_uri,
+            "end_session_available": probe.end_session_available,
+            "client_auth": probe.client_auth,
         })))),
         Err(error) => Ok(Json(ApiResponse::success(serde_json::json!({
             "ok": false,
@@ -210,15 +320,14 @@ pub async fn test_settings(
     }
 }
 
-/// Resolve for the current state: the row, then the file seed; resolution
-/// errors (e.g. undecryptable secret) surface as `validation_error` in the
-/// payload instead of failing the GET — the UI must be able to show them.
+/// Resolve for the current state: the database row only. Resolution errors
+/// (e.g. undecryptable secret) surface as `validation_error` in the payload
+/// instead of failing the GET — the UI must be able to show them.
 fn resolve_for_state(
     state: &AppState,
     row: Option<&crate::store::oidc_settings::OidcSettingsRow>,
 ) -> Result<EffectiveOidc, AppError> {
     oidc::resolve_effective(
-        &state.config.auth.oidc,
         row,
         &state.config.server.public_base_url,
         &state.config.auth.jwt_secret,
@@ -239,7 +348,7 @@ async fn settings_payload(
 ) -> serde_json::Value {
     let secret_configured = match row {
         Some(row) => !row.client_secret_ciphertext.is_empty(),
-        None => state.config.auth.oidc.resolved_client_secret().is_ok(),
+        None => false,
     };
     serde_json::json!({
         "source": effective.source,
@@ -252,6 +361,7 @@ async fn settings_payload(
         "public_base_url": state.config.server.public_base_url,
         "derived_redirect_uri": EffectiveOidc::derived_redirect_uri(&state.config.server.public_base_url).ok(),
         "backchannel_logout_uri": EffectiveOidc::derived_backchannel_logout_uri(&state.config.server.public_base_url).ok(),
+        "post_logout_redirect_uri": EffectiveOidc::derived_post_logout_redirect_uri(&state.config.server.public_base_url).ok(),
         "scopes": effective.scopes,
         "auto_provision": effective.auto_provision,
         "updated_by": row.as_ref().map(|r| r.updated_by.clone()).unwrap_or_default(),
