@@ -563,7 +563,7 @@ defineExpose({ openCreate, openEdit, close })
       @click.self="close"
     >
       <div
-        class="soft-panel w-full max-w-6xl h-[min(92vh,calc(100vh-2rem))] max-h-[min(92vh,calc(100vh-2rem))] p-0! flex flex-col overflow-hidden min-h-0"
+        class="surface-modal w-full max-w-6xl h-[min(92vh,calc(100vh-2rem))] max-h-[min(92vh,calc(100vh-2rem))] p-0! flex flex-col overflow-hidden min-h-0"
         role="dialog"
         aria-modal="true"
       >
@@ -571,7 +571,7 @@ defineExpose({ openCreate, openEdit, close })
           <h2 class="text-base font-semibold tracking-tight">{{ dialogTitle }}</h2>
           <button
             type="button"
-            class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+            class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground"
             @click="close"
           >
             <X class="h-4 w-4" />
@@ -583,14 +583,14 @@ defineExpose({ openCreate, openEdit, close })
           class="relative flex items-center justify-between shrink-0 mx-5 sm:mx-6"
           :class="showRefGuide ? 'z-20 mb-36' : 'mb-3'"
         >
-          <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/70 p-0.5">
+          <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/40 p-0.5">
             <button
               type="button"
               :class="
                 cn(
                   'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
                   dialogTab === 'editor'
-                    ? 'bg-background text-foreground shadow-xs'
+                    ? 'bg-background text-foreground'
                     : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
                 )
               "
@@ -607,9 +607,9 @@ defineExpose({ openCreate, openEdit, close })
                   cn(
                     'relative z-20 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
                     dialogTab === 'reference'
-                      ? 'bg-background text-foreground shadow-xs'
+                      ? 'bg-background text-foreground'
                       : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
-                    showRefGuide && 'ring-2 ring-amber-500/50 ring-offset-2 ring-offset-background shadow-xs bg-background text-foreground',
+                    showRefGuide && 'ring-2 ring-warning/50 ring-offset-2 ring-offset-background bg-background text-foreground',
                   )
                 "
                 @click="selectDialogTab('reference')"
@@ -632,7 +632,7 @@ defineExpose({ openCreate, openEdit, close })
                   class="absolute left-8 bottom-full mb-px ml-px border-x-[5px] border-x-transparent border-b-[6px] border-b-card"
                   aria-hidden="true"
                 />
-                <div class="rounded-xl border border-border bg-card px-3.5 py-3 shadow-lg">
+                <div class="surface-overlay px-3.5 py-3">
                   <p class="text-[13px] font-medium text-foreground leading-snug">
                     Start with Quick YAML Reference
                   </p>
@@ -674,19 +674,19 @@ defineExpose({ openCreate, openEdit, close })
           <div v-show="dialogTab === 'editor'" class="flex flex-col min-h-0">
           <div class="shrink-0 mb-3 space-y-1.5">
             <label class="type-label block">
-              Filename <span class="text-red-500">*</span>
+              Filename <span class="text-destructive">*</span>
             </label>
             <input
               v-model="yamlFilename"
               type="text"
               :readonly="yamlFileLocked"
               placeholder="e.g. hello-world.yml"
-              class="w-full rounded-xl border bg-input px-3 py-2 text-sm font-mono outline-hidden transition-colors disabled:opacity-70"
+              class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-hidden transition-colors disabled:opacity-70"
               :class="
                 yamlFileLocked
                   ? 'opacity-70 cursor-not-allowed border-border'
                   : filenameConflict
-                    ? 'border-destructive/60 focus:border-destructive focus:ring-2 focus:ring-destructive/20'
+                    ? 'ring-2 ring-destructive/30'
                     : 'border-border focus:border-ring/40 focus:ring-2 focus:ring-ring/15'
               "
             />
@@ -718,7 +718,7 @@ defineExpose({ openCreate, openEdit, close })
             </p>
           </div>
 
-          <label class="type-label block mb-1.5 shrink-0">Pipeline YAML <span class="text-red-500">*</span></label>
+          <label class="type-label block mb-1.5 shrink-0">Pipeline YAML <span class="text-destructive">*</span></label>
           <div
             ref="editorShellRef"
             class="relative w-full h-[min(50vh,28rem)] min-h-64 shrink-0 rounded-xl border border-border bg-input overflow-hidden transition-colors focus-within:border-ring/40 focus-within:ring-2 focus-within:ring-ring/15 mb-3"
@@ -741,10 +741,10 @@ defineExpose({ openCreate, openEdit, close })
               type="button"
               :class="
                 cn(
-                  'absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-lg bg-background/95 px-2.5 py-1.5 text-xs font-medium shadow-md backdrop-blur-xs',
+                  'absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-lg bg-background px-2.5 py-1.5 text-xs font-medium backdrop-blur-xs',
                   floatWarningsOnly
-                    ? 'border border-amber-500/35 text-amber-700 dark:text-amber-400 hover:bg-amber-500/5'
-                    : 'border border-destructive/30 text-destructive hover:bg-destructive/5',
+                    ? 'bg-warning/10 text-warning hover:bg-muted/40'
+                    : 'bg-destructive/10 text-destructive hover:bg-muted/40',
                 )
               "
               title="Show orchestration issues"
@@ -766,14 +766,14 @@ defineExpose({ openCreate, openEdit, close })
 
           <div
             v-if="yamlResult?.valid && !floatWarnings.length"
-            class="flex items-center gap-1 shrink-0 mb-1 text-xs text-emerald-600 dark:text-emerald-400"
+            class="flex items-center gap-1 shrink-0 mb-1 text-xs text-success dark:text-success"
           >
             <CheckCircle class="h-3.5 w-3.5" />
             Valid
           </div>
           <div
             v-else-if="yamlResult?.valid && floatWarnings.length"
-            class="flex items-center gap-1 shrink-0 mb-1 text-xs text-amber-600 dark:text-amber-400"
+            class="flex items-center gap-1 shrink-0 mb-1 text-xs text-warning dark:text-warning"
           >
             <AlertTriangle class="h-3.5 w-3.5" />
             Valid with {{ floatWarnings.length }} warning{{ floatWarnings.length === 1 ? '' : 's' }}
@@ -1029,7 +1029,7 @@ steps:
         </div>
 
         <!-- Footer — same alignment as Secrets dialog -->
-        <div class="shrink-0 flex items-center justify-end gap-3 px-5 sm:px-6 py-4 border-t border-border/30">
+        <div class="shrink-0 flex items-center justify-end gap-3 px-5 sm:px-6 py-4 border-t border-border/40">
           <UiButton variant="ghost" size="sm" :disabled="saving" @click="close">Cancel</UiButton>
           <template v-if="dialogTab === 'editor'">
             <UiButton
@@ -1073,8 +1073,8 @@ steps:
           ref="floatPanelRef"
           :class="
             cn(
-              'fixed z-60 flex w-[min(22rem,calc(100vw-1.5rem))] max-h-[min(70vh,24rem)] flex-col overflow-hidden rounded-xl bg-background/95 shadow-xl backdrop-blur-xs',
-              floatWarningsOnly ? 'border border-amber-500/40' : 'border border-destructive/35',
+              'fixed z-60 flex w-[min(22rem,calc(100vw-1.5rem))] max-h-[min(70vh,24rem)] flex-col overflow-hidden rounded-xl bg-background backdrop-blur-xs',
+              floatWarningsOnly ? '' : 'bg-destructive/10',
             )
           "
           role="alert"
@@ -1086,8 +1086,8 @@ steps:
                 'flex items-center gap-1.5 px-2 py-2 shrink-0 select-none border-b',
                 floatDragging ? 'cursor-grabbing' : 'cursor-grab',
                 floatWarningsOnly
-                  ? 'border-amber-500/25 bg-amber-500/5'
-                  : 'border-destructive/20 bg-destructive/5',
+                  ? 'bg-warning/10'
+                  : 'bg-destructive/10',
               )
             "
             title="Drag to move"
@@ -1097,13 +1097,13 @@ steps:
               :class="
                 cn(
                   'h-4 w-4 shrink-0 pointer-events-none',
-                  floatWarningsOnly ? 'text-amber-500/60' : 'text-destructive/50',
+                  floatWarningsOnly ? 'text-warning/60' : 'text-destructive/50',
                 )
               "
             />
             <AlertTriangle
               v-if="floatWarningsOnly"
-              class="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 pointer-events-none"
+              class="h-4 w-4 text-warning dark:text-warning shrink-0 pointer-events-none"
             />
             <AlertCircle
               v-else
@@ -1114,7 +1114,7 @@ steps:
                 cn(
                   'text-sm font-medium flex-1 truncate pointer-events-none',
                   floatWarningsOnly
-                    ? 'text-amber-700 dark:text-amber-400'
+                    ? 'text-warning dark:text-warning'
                     : 'text-destructive',
                 )
               "
@@ -1125,7 +1125,7 @@ steps:
                   cn(
                     'font-mono text-xs font-normal',
                     floatWarningsOnly
-                      ? 'text-amber-700/80 dark:text-amber-400/80'
+                      ? 'text-warning/80 dark:text-warning/80'
                       : 'text-destructive/80',
                   )
                 "
@@ -1144,7 +1144,7 @@ steps:
             <button
               type="button"
               data-float-dismiss
-              class="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/40 hover:text-foreground cursor-pointer"
               title="Dismiss"
               aria-label="Dismiss error panel"
               @click="dismissFloat"
@@ -1187,7 +1187,7 @@ steps:
             <li
               v-for="(w, i) in floatWarnings"
               :key="'fw'+i"
-              class="flex items-start gap-2 text-xs leading-relaxed cursor-pointer rounded-md px-1 -mx-1 py-1 transition-colors hover:bg-amber-500/10"
+              class="flex items-start gap-2 text-xs leading-relaxed cursor-pointer rounded-lg px-1 -mx-1 py-1 transition-colors hover:bg-warning/10"
               title="Click to jump to this line"
               @click="jumpToIssue(splitWarningField(w).field, splitWarningField(w).message)"
             >

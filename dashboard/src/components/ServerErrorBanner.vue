@@ -15,7 +15,7 @@ function describe(f: { status: number; message: string }): string {
   <div
     v-if="failures.current"
     role="alert"
-    class="mb-4 flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm"
+    class="mb-4 flex items-start gap-3 rounded-xl bg-destructive/10 px-4 py-3 text-sm"
   >
     <span aria-hidden="true" class="text-base leading-5">⚠️</span>
     <div class="min-w-0 flex-1">
@@ -32,7 +32,7 @@ function describe(f: { status: number; message: string }): string {
     </div>
     <button
       type="button"
-      class="shrink-0 rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted"
+      class="shrink-0 rounded-xl border border-border px-2 py-1 text-xs hover:bg-muted/40"
       aria-label="Dismiss error notice"
       @click="failures.dismiss()"
     >

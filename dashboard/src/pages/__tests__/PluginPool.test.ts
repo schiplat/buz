@@ -442,6 +442,6 @@ describe('PluginPool', () => {
     copy.click()
     await flush()
     expect(writeText).toHaveBeenCalledWith('alice/oss-upload')
-    expect(copy.querySelector('svg.text-green-600')).toBeTruthy()
+    expect(copy.querySelector('svg.text-success')).toBeTruthy()
   })
 })

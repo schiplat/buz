@@ -8,27 +8,27 @@ const props = defineProps<{
 
 const tone = computed(() => {
   switch (props.status) {
-    case 'online'    : return 'bg-success/12 text-success'
-    case 'running'   : return 'bg-info/12 text-info'
-    case 'offline'   : return 'bg-muted text-muted-foreground'
-    case 'busy'      : return 'bg-warning/12 text-warning'
-    case 'success'   : return 'bg-success/12 text-success'
-    case 'failed'    : return 'bg-destructive/12 text-destructive'
-    case 'cancelled' : return 'bg-muted text-muted-foreground'
-    case 'timeout'   : return 'bg-warning/12 text-warning'
-    case 'pending'   : return 'bg-muted text-muted-foreground'
-    case 'queued'    : return 'bg-info/12 text-info'
-    case 'waiting_approval': return 'bg-warning/12 text-warning'
-    case 'insync'    : return 'bg-success/12 text-success'
-    case 'syncing'   : return 'bg-info/12 text-info'
-    case 'degraded'  : return 'bg-destructive/12 text-destructive'
-    default: return 'bg-muted text-muted-foreground'
+    case 'online'    : return 'chip-success'
+    case 'running'   : return 'chip-info'
+    case 'offline'   : return 'chip-neutral'
+    case 'busy'      : return 'chip-warning'
+    case 'success'   : return 'chip-success'
+    case 'failed'    : return 'chip-danger'
+    case 'cancelled' : return 'chip-neutral'
+    case 'timeout'   : return 'chip-warning'
+    case 'pending'   : return 'chip-neutral'
+    case 'queued'    : return 'chip-info'
+    case 'waiting_approval': return 'chip-warning'
+    case 'insync'    : return 'chip-success'
+    case 'syncing'   : return 'chip-info'
+    case 'degraded'  : return 'chip-danger'
+    default: return 'chip-neutral'
   }
 })
 </script>
 
 <template>
-  <span :class="cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide', tone)">
+  <span :class="cn(tone)">
     {{ status }}
   </span>
 </template>

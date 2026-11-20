@@ -47,7 +47,7 @@ describe('GitHubBindChips', () => {
     unmount()
   })
 
-  it('maps ok/failed/pending to emerald/red/amber accents', async () => {
+  it('maps ok/failed/pending to success/destructive/warning accents', async () => {
     const { el, unmount } = mountChips([
       baseBind({ id: 'a', last_status: 'ok', last_pushed_at: '2026-08-01T00:00:00Z' }),
       baseBind({ id: 'b', last_status: 'failed', last_error: '401 token rejected' }),
@@ -55,9 +55,9 @@ describe('GitHubBindChips', () => {
     ])
     await nextTick()
     const buttons = el.querySelectorAll('button')
-    expect(buttons[0].className).toContain('emerald')
-    expect(buttons[1].className).toContain('red')
-    expect(buttons[2].className).toContain('amber')
+    expect(buttons[0].className).toContain('success')
+    expect(buttons[1].className).toContain('destructive')
+    expect(buttons[2].className).toContain('warning')
     unmount()
   })
 

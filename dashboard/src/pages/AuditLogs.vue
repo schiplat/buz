@@ -161,23 +161,23 @@ onMounted(load)
     </div>
 
     <div v-else class="surface-card overflow-hidden">
-      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-2.5 flex-wrap">
+      <div class="px-5 py-3 border-b border-border/40 flex items-center gap-2.5 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search resource, action, actor…"
-          class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-56 rounded-xl border border-border bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
         />
         <select
           v-model="filterAction"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
+          class="field-select-sm"
         >
           <option value="">All actions</option>
           <option v-for="a in ACTION_OPTIONS.filter(Boolean)" :key="a" :value="a">{{ a }}</option>
         </select>
         <select
           v-model="filterResourceType"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
+          class="field-select-sm"
         >
           <option value="">All resources</option>
           <option v-for="r in RESOURCE_TYPE_OPTIONS.filter(Boolean)" :key="r" :value="r">{{ r }}</option>
@@ -186,18 +186,18 @@ onMounted(load)
           v-model="filterActor"
           type="text"
           placeholder="Actor…"
-          class="w-36 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
+          class="w-36 rounded-xl border border-border bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus-visible:border-foreground/35"
         />
         <input
           v-model="filterFrom"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
+          class="rounded-xl border border-border bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus-visible:border-foreground/35"
           title="From"
         />
         <input
           v-model="filterTo"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
+          class="rounded-xl border border-border bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus-visible:border-foreground/35"
           title="To"
         />
       </div>
@@ -286,7 +286,7 @@ onMounted(load)
           @click="closeDetail"
         />
         <div
-          class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300"
+          class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border overflow-y-auto transition-transform duration-300"
           :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'"
         >
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-6 py-4">
@@ -300,7 +300,7 @@ onMounted(load)
             </div>
             <button
               type="button"
-              class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0"
+              class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors shrink-0"
               @click="closeDetail"
             >
               <X class="h-4 w-4" />
@@ -324,15 +324,15 @@ onMounted(load)
 
             <div>
               <div class="type-label mb-2">Before</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.before) }}</pre>
+              <pre class="surface-inset p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.before) }}</pre>
             </div>
             <div>
               <div class="type-label mb-2">After</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.after) }}</pre>
+              <pre class="surface-inset p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.after) }}</pre>
             </div>
             <div v-if="active.meta != null">
               <div class="type-label mb-2">Meta</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.meta) }}</pre>
+              <pre class="surface-inset p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.meta) }}</pre>
             </div>
           </div>
         </div>

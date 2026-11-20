@@ -160,7 +160,7 @@ describe('SandboxHostList — fleet policy profile grants', () => {
     const revokeButtons = buttonsWithAria(view, 'Revoke')
     expect(revokeButtons, 'one revoke button per granted chip').toHaveLength(2)
     for (const el of revokeButtons) {
-      expect(el.className).toContain('rounded-full')
+      expect(el.className).toContain('rounded-xl')
       expect(el.className).toContain('bg-foreground/15')
       expect(el.querySelector('svg'), 'icon inside the revoke button').toBeTruthy()
     }

@@ -311,7 +311,7 @@ watch(
         :class="{ 'pointer-events-none': pushing }"
         @click="close"
       />
-      <div class="relative z-10 w-full max-w-xl mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+      <div class="relative z-10 w-full max-w-xl mx-4 surface-modal flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
         <div class="shrink-0 px-6 pt-6 pb-4 space-y-2">
           <h3 class="text-[15px] font-semibold flex items-center gap-2">
             <GitPullRequestArrow class="h-4 w-4 text-muted-foreground" />
@@ -335,12 +335,12 @@ watch(
         </div>
 
         <div v-else class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
-          <p v-if="!canManage" class="rounded-lg bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">
+          <p v-if="!canManage" class="surface-inset px-3 py-2 text-[11px] text-muted-foreground">
             Read-only — binding and push require platform admin (variables) or an owner/maintainer
             role in this secret's team.
           </p>
 
-          <div v-if="binds.length === 0" class="rounded-xl border border-dashed border-border/60 px-4 py-6 text-center">
+          <div v-if="binds.length === 0" class="rounded-xl border border-dashed border-border/40 px-4 py-6 text-center">
             <p class="text-xs text-muted-foreground">No GitHub repos bound yet</p>
             <p class="text-[11px] text-muted-foreground/60 mt-1">
               Values are only sent to GitHub when you push a binding.
@@ -351,23 +351,23 @@ watch(
             <div
               v-for="b in binds"
               :key="b.id"
-              class="rounded-xl border bg-muted/20 p-3 transition-colors"
+              class="surface-inset p-3 transition-colors"
               :class="
                 pushProgress?.currentId === b.id && pushProgress.done < pushProgress.total
-                  ? 'border-primary/50 ring-1 ring-primary/20'
-                  : 'border-border/50'
+                  ? 'ring-2 ring-primary/30'
+                  : 'border-border/40'
               "
             >
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="font-mono text-[13px] font-semibold">{{ b.owner }}/{{ b.repo }}</span>
                 <span
-                  class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
+                  class="inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] font-medium"
                   :class="
                     b.last_status === 'ok'
-                      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20'
+                      ? 'bg-success/10 text-success dark:text-success '
                       : b.last_status === 'failed'
-                        ? 'bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20'
-                        : 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20'
+                        ? 'bg-destructive/10 text-destructive dark:text-destructive '
+                        : 'bg-warning/10 text-warning dark:text-warning '
                   "
                 >
                   {{
@@ -416,7 +416,7 @@ watch(
                     v-model="overrideDraft[b.id].text"
                     :type="isSecret ? 'password' : 'text'"
                     autocomplete="off"
-                    class="flex-1 min-w-0 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 font-mono text-[11px] outline-hidden transition-colors focus:border-primary/50 disabled:opacity-60"
+                    class="flex-1 min-w-0 rounded-xl border border-border bg-background px-2.5 py-1.5 font-mono text-[11px] outline-hidden transition-colors focus-visible:border-foreground/35 disabled:opacity-60"
                     :disabled="!canManage || overrideDraft[b.id].mode === 'inherit' || pushing || overrideDraft[b.id].saving"
                     :placeholder="
                       overrideDraft[b.id].mode === 'inherit'
@@ -440,7 +440,7 @@ watch(
                 </div>
               </div>
 
-              <p v-if="b.last_error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400 wrap-break-word">{{ b.last_error }}</p>
+              <p v-if="b.last_error" class="mt-1.5 text-[11px] text-destructive dark:text-destructive wrap-break-word">{{ b.last_error }}</p>
               <p v-else-if="b.last_pushed_at" class="mt-1.5 text-[11px] text-muted-foreground">
                 Last pushed {{ formatLocalDateTime(b.last_pushed_at) }}
               </p>
@@ -449,21 +449,21 @@ watch(
                   <RefreshCw class="h-3 w-3" /> Push
                 </UiButton>
                 <UiButton size="sm" variant="ghost" :disabled="pushing" @click="handleRemove(b)" title="Unbind">
-                  <Trash2 class="h-3 w-3 text-red-500" /> Unbind
+                  <Trash2 class="h-3 w-3 text-destructive" /> Unbind
                 </UiButton>
               </div>
             </div>
           </div>
 
-          <div v-if="canManage" class="rounded-xl border border-border/50 bg-muted/20 p-3">
+          <div v-if="canManage" class="surface-inset p-3">
             <p class="text-[11px] font-medium text-foreground mb-2">Bind repos</p>
             <input
               v-model="repoSearch"
               type="text"
               placeholder="Search repos…"
-              class="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+              class="w-full rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
-            <div class="mt-2 max-h-36 overflow-y-auto rounded-lg border border-border/60 bg-background divide-y divide-border/20">
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-xl border border-border bg-background divide-y divide-border/20">
               <label
                 v-for="r in filteredAvailableRepos"
                 :key="r.id"
@@ -481,7 +481,7 @@ watch(
               <span
                 v-for="id in selectedRepoIds"
                 :key="id"
-                class="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-1.5 py-0.5 font-mono text-[10px]"
+                class="inline-flex items-center gap-1 rounded-lg bg-primary/10 text-primary px-1.5 py-0.5 font-mono text-[10px]"
               >
                 {{ repoLabel(id) }}
                 <button
@@ -503,10 +503,10 @@ watch(
         </div>
 
         <div v-if="error" class="shrink-0 px-6 pb-2">
-          <p class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-700 dark:text-red-400 wrap-break-word">{{ error }}</p>
+          <p class="notice-danger px-3 py-2 text-[11px] text-destructive dark:text-destructive wrap-break-word">{{ error }}</p>
         </div>
 
-        <div class="shrink-0 flex items-center gap-3 px-6 py-5 border-t border-border/30">
+        <div class="shrink-0 flex items-center gap-3 px-6 py-5 border-t border-border/40">
           <UiButton
             v-if="canManage && binds.length > 0"
             size="sm"
@@ -517,7 +517,7 @@ watch(
             <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': pushing }" />
             {{ pushing ? pushLabel : 'Push All' }}
           </UiButton>
-          <span v-if="hasFailed && !pushing" class="text-[10px] text-red-500">
+          <span v-if="hasFailed && !pushing" class="text-[10px] text-destructive">
             Some pushes failed — check the connection / repo and retry.
           </span>
           <UiButton variant="ghost" size="sm" class="ml-auto" :disabled="pushing" @click="close">Close</UiButton>

@@ -194,9 +194,9 @@ function groupCuratorLine(group: PoolGroup): string | null {
  *  this build, red when none does, muted while unchecked. */
 function groupCompatTone(group: PoolGroup): string {
   const states = group.versions.map((v) => v.buz_compatible)
-  if (states.some((s) => s === true)) return 'text-emerald-600 dark:text-emerald-400'
+  if (states.some((s) => s === true)) return 'text-success dark:text-success'
   if (states.length > 0 && states.every((s) => s === false)) {
-    return 'text-red-600 dark:text-red-400'
+    return 'text-destructive dark:text-destructive'
   }
   return 'text-muted-foreground'
 }
@@ -230,13 +230,13 @@ const categoryIcon = (group: PoolGroup) => {
 const categoryIconClass = (group: PoolGroup) => {
   switch (group.meta?.category) {
     case 'build':
-      return 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+      return 'bg-info/10 text-info dark:text-info'
     case 'source':
-      return 'bg-green-500/10 text-green-700 dark:text-green-400'
+      return 'bg-success/10 text-success'
     case 'artifact':
-      return 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+      return 'bg-warning/10 text-warning dark:text-warning'
     case 'notify':
-      return 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+      return 'bg-info/10 text-info dark:text-info'
     default:
       return 'bg-muted text-muted-foreground'
   }
@@ -388,21 +388,21 @@ onMounted(load)
       Plugin templates synced from configured sources, ready to reference in a pipeline. Re-fetch pulls new versions from the source; the copy button gives you the <code class="mono-chip text-[10px]">uses:</code> reference for a step.
     </p>
 
-    <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
+    <section class="surface-card overflow-hidden">
       <!-- ── Toolbar: search + category filter + counts ── -->
-      <div class="flex items-center gap-2.5 flex-wrap px-5 py-3 border-b border-border/50">
+      <div class="flex items-center gap-2.5 flex-wrap px-5 py-3 border-b border-border/40">
         <div class="relative flex-1 min-w-52 max-w-sm">
           <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" aria-hidden="true" />
           <input
             v-model="search"
             type="search"
             placeholder="Search plugins…"
-            class="w-full h-8 rounded-lg border border-border/60 bg-background pl-8 pr-3 text-xs outline-hidden focus:border-primary/50"
+            class="w-full h-8 rounded-xl border border-border bg-background pl-8 pr-3 text-xs outline-hidden focus-visible:border-foreground/35"
           />
         </div>
         <select
           v-model="category"
-          class="h-8 rounded-lg border border-border/60 bg-background px-2 text-xs outline-hidden focus:border-primary/50"
+          class="field-select-sm"
           aria-label="Filter by category"
         >
           <option value="all">All categories</option>
@@ -456,12 +456,12 @@ onMounted(load)
               <code class="font-mono bg-muted px-1.5 py-0.5 rounded-md text-foreground/70">uses: {{ usesRef(group) }}</code>
               <button
                 type="button"
-                class="inline-flex items-center justify-center h-5 w-5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
+                class="inline-flex items-center justify-center h-5 w-5 rounded-lg text-muted-foreground/70 hover:text-foreground hover:bg-muted/40 transition-colors"
                 :aria-label="`Copy ${usesRef(group)}`"
                 title="Copy uses reference"
                 @click="copyUses(group)"
               >
-                <Check v-if="copiedUses === usesRef(group)" class="h-3 w-3 text-green-600" aria-hidden="true" />
+                <Check v-if="copiedUses === usesRef(group)" class="h-3 w-3 text-success" aria-hidden="true" />
                 <Copy v-else class="h-3 w-3" aria-hidden="true" />
               </button>
               <span v-if="isOfficial(group)" class="font-medium text-primary">Official</span>
@@ -494,7 +494,7 @@ onMounted(load)
           <div class="shrink-0 w-full sm:w-44 flex flex-col gap-1.5">
             <select
               v-model="selectedVersions[usesRef(group)]"
-              class="w-full h-8 rounded-lg border border-border/60 bg-background px-2 text-xs font-mono outline-hidden focus:border-primary/50"
+              class="field-select-sm w-full font-mono"
               :aria-label="`Version of ${usesRef(group)}`"
               :title="
                 groupCuratorLine(group)

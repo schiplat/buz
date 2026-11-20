@@ -169,7 +169,7 @@ onMounted(loadVars)
     </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div v-else class="surface-card overflow-hidden">
       <div v-if="variables.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <SlidersHorizontal class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No variables configured yet</p>
@@ -180,14 +180,14 @@ onMounted(loadVars)
       </div>
       <template v-else>
         <!-- Filter bar -->
-        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+        <div class="px-5 py-3 border-b border-border/40 flex items-center gap-3 flex-wrap">
           <input
             v-model="searchQuery"
             type="text"
             placeholder="Search variables…"
-            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-56 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
           />
-          <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+          <select v-model="filterGithub" class="field-select-sm" title="Filter by GitHub sync status">
             <option value="">All GitHub status</option>
             <option value="needs_push">Needs push</option>
           </select>
@@ -198,7 +198,7 @@ onMounted(loadVars)
         <div class="overflow-x-auto">
           <table class="w-full text-[13px]">
             <thead>
-              <tr class="border-b border-border/30 bg-muted/10">
+              <tr class="border-b border-border/40 bg-muted/40">
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
@@ -227,7 +227,7 @@ onMounted(loadVars)
               </tr>
             </thead>
             <tbody class="divide-y divide-border/20">
-              <tr v-for="v in pageItems" :key="v.id" class="hover:bg-muted/5 transition-colors">
+              <tr v-for="v in pageItems" :key="v.id" class="hover:bg-muted/40 transition-colors">
                 <td class="px-5 py-3">
                   <span
                     class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -250,7 +250,7 @@ onMounted(loadVars)
                   <div class="flex items-center justify-end gap-1">
                     <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openGithub(v)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
                     <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openEdit(v)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="handleDelete(v)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="handleDelete(v)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-destructive" /></UiButton>
                   </div>
                 </td>
               </tr>
@@ -265,33 +265,33 @@ onMounted(loadVars)
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
+        <div class="relative z-10 w-full max-w-md mx-4 surface-modal p-6">
           <h3 class="text-[15px] font-semibold mb-5">{{ editing ? 'Edit Variable' : 'New Variable' }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-destructive">*</span></label>
               <input
                 v-model="formName"
                 :disabled="!!editing"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:bg-muted/40 disabled:cursor-not-allowed"
                 placeholder="DOCKER_REGISTRY"
               />
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">
-                Default value <span class="text-red-500">*</span>
+                Default value <span class="text-destructive">*</span>
                 <span v-if="editing" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
               </label>
               <textarea
                 v-model="formValue"
                 rows="6"
                 spellcheck="false"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-30"
+                class="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-mono outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30 resize-y min-h-30"
                 :placeholder="editing ? '(keep current value)' : 'e.g. registry.example.com'"
               />
             </div>
           </div>
-          <div class="flex items-center justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="flex items-center justify-end gap-3 mt-6 pt-5 border-t border-border/40">
             <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving">Cancel</UiButton>
             <UiButton size="sm" @click="handleSave" :disabled="saving">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
           </div>

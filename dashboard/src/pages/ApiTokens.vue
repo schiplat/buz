@@ -100,7 +100,7 @@ onMounted(load)
       Loading…
     </div>
 
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
+    <div v-else class="surface-card overflow-hidden">
       <div v-if="tokens.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <KeyRound class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No API tokens</p>
@@ -110,7 +110,7 @@ onMounted(load)
         <div class="overflow-x-auto">
           <table class="w-full text-[13px]">
             <thead>
-              <tr class="border-b border-border/30 bg-muted/10">
+              <tr class="border-b border-border/40 bg-muted/40">
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Name</th>
                 <th v-if="auth.isSuperAdmin" class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Owner</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Token</th>
@@ -122,7 +122,7 @@ onMounted(load)
               </tr>
             </thead>
             <tbody class="divide-y divide-border/20">
-              <tr v-for="t in tokens" :key="t.id" class="hover:bg-muted/5">
+              <tr v-for="t in tokens" :key="t.id" class="hover:bg-muted/40">
                 <td class="px-5 py-3">
                   <span
                     class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -134,12 +134,12 @@ onMounted(load)
                 <td class="px-5 py-3">
                   <span
                     v-if="t.scope === 'full'"
-                    class="inline-flex w-fit items-center rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                    class="inline-flex w-fit items-center rounded-lg bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning dark:text-warning"
                     title="Legacy creator-equivalent band (pre-scope token). Still full operations-plane access, but identity and governance endpoints are denied; it retires when revoked."
                   >Full (legacy)</span>
                   <span
                     v-else-if="t.scope === 'ops'"
-                    class="inline-flex w-fit items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                    class="inline-flex w-fit items-center rounded-lg bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info dark:text-info"
                     title="Read/write on the operations plane (pipelines, jobs, runners, hosts, secrets, variables, …)"
                   >Ops</span>
                   <span
@@ -151,11 +151,11 @@ onMounted(load)
                 <td class="px-5 py-3 text-xs">{{ t.created_at?.slice(0, 19) || '—' }}</td>
                 <td class="px-5 py-3 text-xs text-muted-foreground">{{ t.last_used_at?.slice(0, 19) || 'never' }}</td>
                 <td class="px-5 py-3 text-xs">
-                  <span :class="t.revoked ? 'text-red-500' : 'text-emerald-500'">{{ t.revoked ? 'revoked' : 'active' }}</span>
+                  <span :class="t.revoked ? 'text-destructive' : 'text-success'">{{ t.revoked ? 'revoked' : 'active' }}</span>
                 </td>
                 <td class="px-5 py-3 text-right">
                   <UiButton v-if="!t.revoked" variant="ghost" size="sm" @click="handleRevoke(t)">
-                    <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                    <Trash2 class="h-3.5 w-3.5 text-destructive" />
                   </UiButton>
                 </td>
               </tr>
@@ -167,17 +167,17 @@ onMounted(load)
 
     <Teleport to="body">
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8" @click.self="closeCreate">
-        <div class="soft-panel w-full max-w-md p-6 space-y-5">
+        <div class="surface-modal w-full max-w-md p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">New API Token</h2>
-            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" @click="closeCreate">
+            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/40 hover:text-foreground" @click="closeCreate">
               <X class="h-4 w-4" />
             </button>
           </div>
 
           <template v-if="!createdToken">
             <div>
-              <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
+              <label class="type-label block mb-1.5">Name <span class="text-destructive">*</span></label>
               <input
                 v-model="newName"
                 type="text"
@@ -191,7 +191,7 @@ onMounted(load)
               <div class="space-y-2">
                 <label
                   class="flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors"
-                  :class="newScope === 'read' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/30'"
+                  :class="newScope === 'read' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/40'"
                 >
                   <input v-model="newScope" type="radio" value="read" name="token-scope" class="mt-0.5 accent-[var(--ring)]" />
                   <span class="text-xs leading-relaxed">
@@ -201,7 +201,7 @@ onMounted(load)
                 </label>
                 <label
                   class="flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors"
-                  :class="newScope === 'ops' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/30'"
+                  :class="newScope === 'ops' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/40'"
                 >
                   <input v-model="newScope" type="radio" value="ops" name="token-scope" class="mt-0.5 accent-[var(--ring)]" />
                   <span class="text-xs leading-relaxed">
@@ -226,7 +226,7 @@ onMounted(load)
               </div>
               <div class="flex justify-end gap-3">
                 <UiButton variant="outline" @click="handleCopy">
-                  <Check v-if="copied" class="h-4 w-4 text-emerald-500" />
+                  <Check v-if="copied" class="h-4 w-4 text-success" />
                   <Copy v-else class="h-4 w-4" />
                   {{ copied ? 'Copied' : 'Copy' }}
                 </UiButton>

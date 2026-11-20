@@ -82,12 +82,12 @@ async function handleCancel(jobId: string) {
                 <div class="flex items-center gap-1.5">
                   <span
                     v-if="j.verbose_logs"
-                    class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600"
+                    class="inline-flex items-center gap-1 rounded-lg bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
                     title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
                   ><Info class="h-3 w-3" />Verbose</span>
                   <span
                     v-if="j.debug_unredact"
-                    class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700"
+                    class="inline-flex items-center gap-1 rounded-lg bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning"
                     title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
                   ><Lock v-if="!auth.isPlatformAdmin" class="h-3 w-3" />Debug</span>
                   <span v-if="!j.verbose_logs && !j.debug_unredact" class="text-xs text-muted-foreground/40">—</span>
@@ -99,7 +99,7 @@ async function handleCancel(jobId: string) {
               <td class="text-right">
                 <div class="flex items-center justify-end gap-1">
                   <UiButton v-if="(j.status === 'running' || j.status === 'pending' || j.status === 'waiting_approval' || j.status === 'queued') && auth.hasTeamRole(j.team_id, 'developer')" variant="ghost" size="sm" @click="handleCancel(j.id)">
-                    <XCircle class="h-3.5 w-3.5 text-red-500" />
+                    <XCircle class="h-3.5 w-3.5 text-destructive" />
                     Cancel
                   </UiButton>
                   <UiButton variant="ghost" size="sm" @click="router.push(`/jobs/${j.id}`)">View</UiButton>
