@@ -21,6 +21,22 @@ buz-manager scan-deprecated
 Run it **before upgrading an old instance** — it tells you exactly what to
 migrate and how. Nothing is modified.
 
+## seed-sample
+
+Adds the built-in **Hello Buz** sample pipeline to an existing installation.
+Fresh deployments receive it automatically on first start (and are marked so
+it is never recreated after deletion); this command is the explicit restore
+path.
+
+```bash
+buz-manager seed-sample
+```
+
+Stop the Manager service first. The command never duplicates the sample: it
+skips when `hello-buz.yml` or a pipeline named `Hello Buz` already exists.
+The sample is a normal pipeline owned by the `default` team and may be edited
+or deleted afterwards.
+
 ## rotate-jwt-key
 
 Rotates the JWT secret and re-encrypts every stored value in place. See

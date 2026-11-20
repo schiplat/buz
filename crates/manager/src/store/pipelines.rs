@@ -656,6 +656,22 @@ pub async fn team_id_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppEr
     .map(|r| r.text(0)))
 }
 
+/// Total pipelines in the installation (fresh-install detection for the
+/// built-in sample seed).
+pub async fn count_all(pool: &DbPool) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(pool, "SELECT COUNT(*) FROM pipelines", &[]).await?)
+}
+
+/// Pipelines carrying `name` (sample duplicate guard; names are not unique).
+pub async fn count_by_name(pool: &DbPool, name: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM pipelines WHERE name = ?",
+        &[name.into()],
+    )
+    .await?)
+}
+
 /// Stored team id of one pipeline (errors when absent).
 pub async fn team_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
     Ok(exec::fetch_optional(

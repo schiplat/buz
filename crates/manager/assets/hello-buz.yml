@@ -1,0 +1,18 @@
+name: Hello Buz
+description: Built-in sample pipeline - run it, then edit or delete it.
+team: default
+environments: [default]
+
+on:
+  manual:
+    inputs:
+      name:
+        description: Who should this run greet?
+        default: Buz
+
+steps:
+  - name: Say hello
+    engine: shell
+    run: |
+      echo "Hello, $INPUT_NAME!"
+      echo "This is the built-in sample. Edit this step or delete the pipeline."
