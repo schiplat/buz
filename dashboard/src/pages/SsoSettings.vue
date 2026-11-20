@@ -226,7 +226,10 @@ async function setPolicy(value: boolean) {
 
 <template>
   <div class="space-y-5">
-    <PageHeader title="Single sign-on (OIDC)" description="Sign in through any OIDC provider.">
+    <PageHeader
+      title="Single sign-on (OIDC)"
+      description="Connect any standard OIDC provider. End-to-end verified with Signet."
+    >
       <template #actions>
         <a
           class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
