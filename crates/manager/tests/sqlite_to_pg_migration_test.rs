@@ -180,9 +180,10 @@ async fn migration_copies_every_table_and_verifies() {
         "source schema guard: {err}"
     );
 
-    // 5. Version guard: a source last booted by an older build has the 38
-    //    tables but lacks columns added since (pipelines.yaml_source). It must
-    //    be refused instead of silently copying defaults.
+    // 5. Version guard: a source last booted by an older build has the
+    //    application tables but lacks columns added since
+    //    (pipelines.yaml_source). It must be refused instead of silently
+    //    copying defaults.
     let stale = seeded_sqlite().await;
     sqlx::query("DELETE FROM schema_migrations WHERE version >= 2")
         .execute(&stale)

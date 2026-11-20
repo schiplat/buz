@@ -9,6 +9,8 @@ export interface User {
   is_active: boolean
   created_at?: string
   updated_at?: string
+  /** `local` (password) or `oidc` (SSO only). */
+  auth_source: 'local' | 'oidc'
 }
 
 export const usersApi = {

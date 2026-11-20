@@ -52,7 +52,7 @@ async fn fresh_database_applies_baseline_and_records_it() {
     .await
     .unwrap();
     assert_eq!(indexed, 1, "definition-name uniqueness must be enforced");
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7]);
 }
 
 /// A recorded version is not replayed: seed the version table on an otherwise
@@ -70,7 +70,7 @@ async fn recorded_version_is_not_replayed() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6)")
+    sqlx::query("INSERT INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7)")
         .execute(&pool)
         .await
         .unwrap();
@@ -81,7 +81,7 @@ async fn recorded_version_is_not_replayed() {
         !table_exists(&pool, "pipelines").await,
         "an applied baseline must not be replayed"
     );
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7]);
 }
 
 /// `seq` replaces implicit `rowid` ordering: inserts get a monotonically
@@ -157,5 +157,5 @@ async fn second_run_changes_nothing() {
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
 
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7]);
 }

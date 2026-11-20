@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -531,6 +531,7 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         4 => apply_v4_oidc(pool).await,
         5 => apply_v5_oidc_settings(pool).await,
         6 => apply_v6_session_revocation(pool).await,
+        7 => apply_v7_pending_identities(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
 }
@@ -546,6 +547,31 @@ async fn apply_v6_session_revocation(pool: &SqlitePool) -> anyhow::Result<()> {
         "sessions_revoked_epoch BIGINT NOT NULL DEFAULT 0",
     )
     .await;
+    Ok(())
+}
+
+/// v7: identities refused at sign-in because `auto_provision` is off
+/// (`platform/oidc-sso.md`). One row per `(provider, subject)`, refreshed on
+/// every refused attempt; an administrator approves it from the Users page
+/// (create a user or bind to an existing one) or dismisses it.
+async fn apply_v7_pending_identities(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pending_identities (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            issuer TEXT NOT NULL DEFAULT '',
+            subject TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            groups_json TEXT NOT NULL DEFAULT '[]',
+            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            attempts BIGINT NOT NULL DEFAULT 1,
+            UNIQUE (provider, subject)
+        )",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

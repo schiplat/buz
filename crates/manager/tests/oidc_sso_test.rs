@@ -296,6 +296,19 @@ async fn sso_app(oidc: Option<Arc<OidcRuntime>>, pool: DbPool) -> Router {
     Router::new().nest("/api/v1", api::router(state))
 }
 
+/// Same app but honoring `auto_provision = false` — the approval-queue mode.
+async fn sso_app_jit_off(oidc: Arc<OidcRuntime>, pool: DbPool) -> Router {
+    let mut config: Config = test_config();
+    config.auth.oidc = oidc_config(&oidc.issuer, false);
+    let state = AppState {
+        pool: pool.clone(),
+        config,
+        log_broadcast: LogBroadcaster::new(),
+        oidc: std::sync::Arc::new(tokio::sync::RwLock::new(Some(oidc))),
+    };
+    Router::new().nest("/api/v1", api::router(state))
+}
+
 /// One seeded cast: `admin-1` (local platform admin), `carol-1` (plain local
 /// user), `team-1` they are not members of.
 async fn seed_users(pool: &DbPool) {
@@ -473,6 +486,45 @@ async fn complete_flow(
     .await;
     assert_eq!(status, StatusCode::OK, "exchange: {body}");
     (next, body)
+}
+
+/// The callback leg only: start → planted code → callback. Returns the SPA
+/// redirect target — the error form (`?error=…`) on refusal, the ticketed
+/// success form otherwise.
+async fn callback_leg(
+    idp: &MockIdp,
+    router: &Router,
+    sub: &str,
+    email: &str,
+    name: &str,
+) -> String {
+    let (router, state, nonce) = start_flow(router).await;
+    let code = idp.register_code(sub, email, name, &nonce);
+    let (_, headers, _) = oneshot(
+        router,
+        "GET",
+        &format!("/api/v1/auth/oidc/callback?code={code}&state={state}"),
+        None,
+    )
+    .await;
+    callback_location(&headers)
+}
+
+/// A sign-in that is refused at the callback: runs the callback leg and
+/// asserts the refusal code, so queue tests can drive repeated attempts.
+async fn refused_flow(
+    idp: &MockIdp,
+    router: &Router,
+    sub: &str,
+    email: &str,
+    name: &str,
+    expected_error: &str,
+) {
+    let next = callback_leg(idp, router, sub, email, name).await;
+    assert!(
+        next.contains(&format!("error={expected_error}")),
+        "expected refusal {expected_error}, got: {next}"
+    );
 }
 
 /// Sign a back-channel logout token with the mock key. `claims` is the full
@@ -1504,4 +1556,336 @@ async fn backchannel_logout_is_unknown_subject_safe_and_leaves_api_tokens_alone(
     let (status, _, _) =
         oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&jwt)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "the JWT is revoked");
+}
+
+// ───────────────────── identity approval queue (auto_provision off) ─────────────────────
+
+/// The queue endpoint payloads.
+async fn pending_list(router: &Router, bearer: &str) -> (StatusCode, Value) {
+    oneshot_json(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/oidc/identities/pending",
+        Some(bearer),
+        Value::Null,
+    )
+    .await
+}
+
+async fn bind_pending(router: &Router, bearer: &str, id: &str, body: Value) -> (StatusCode, Value) {
+    oneshot_json(
+        router.clone(),
+        "POST",
+        &format!("/api/v1/auth/oidc/identities/pending/{id}/bind"),
+        Some(bearer),
+        body,
+    )
+    .await
+}
+
+async fn dismiss_pending(router: &Router, bearer: &str, id: &str) -> (StatusCode, Value) {
+    oneshot_json(
+        router.clone(),
+        "DELETE",
+        &format!("/api/v1/auth/oidc/identities/pending/{id}"),
+        Some(bearer),
+        Value::Null,
+    )
+    .await
+}
+
+async fn one_pending(pool: &DbPool) -> (String, String, i64) {
+    let row = exec::fetch_optional(
+        pool,
+        "SELECT id, subject, attempts FROM pending_identities ORDER BY first_seen_at ASC",
+        &[],
+    )
+    .await
+    .unwrap()
+    .expect("pending row exists");
+    (
+        row.text_of("id"),
+        row.text_of("subject"),
+        row.i64_of("attempts"),
+    )
+}
+
+/// A refused sign-in lands in the queue and every retry refreshes it; the
+/// queue requires a platform admin; approval by creation yields a plain SSO
+/// user who can then actually sign in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_identity_is_queued_then_approved_by_creating_a_user() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app_jit_off(runtime, pool.clone()).await;
+    let bearer = admin_bearer();
+
+    // First refused attempt: recorded once.
+    refused_flow(&idp, &router, "sub-dave", "dave@sso", "Dave", "not-linked").await;
+    let (id, subject, attempts) = one_pending(&pool).await;
+    assert_eq!(subject, "sub-dave");
+    assert_eq!(attempts, 1);
+
+    // Second attempt refreshes the same row.
+    refused_flow(&idp, &router, "sub-dave", "dave@sso", "Dave", "not-linked").await;
+    let (_, _, attempts) = one_pending(&pool).await;
+    assert_eq!(attempts, 2, "retries are counted, not duplicated");
+
+    // The queue is platform-admin only.
+    let (status, _) = pending_list(&router, &member_bearer()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Approve by creating a user (explicit username).
+    let (status, body) = bind_pending(
+        &router,
+        &bearer,
+        &id,
+        json!({ "create_username": "dave", "disable_local_password": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "approve: {body}");
+    let user_id = body
+        .pointer("/data/user_id")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    assert_eq!(body.pointer("/data/created_user"), Some(&json!(true)));
+
+    // Queue is empty; the created account is a plain oidc user; users list
+    // exposes the origin.
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM pending_identities", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "GET",
+        "/api/v1/users",
+        Some(&bearer),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let dave = body
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .find(|u| u["id"].as_str() == Some(user_id.as_str()))
+        .expect("created user listed")
+        .clone();
+    assert_eq!(dave["auth_source"], json!("oidc"));
+
+    // The audit trail carries the approval (admin actor).
+    let audited: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'auth.oidc_identity_approve'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    // The identity can now actually sign in.
+    let (next, login) = complete_flow(&idp, &router, "sub-dave", "dave@sso", "Dave").await;
+    assert_eq!(next, "/auth/sso/callback?next=%2Fpipelines");
+    assert!(login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .is_some());
+}
+
+/// Approval by binding keeps the local password by default; with the
+/// explicit flag the account flips to SSO-only and the password is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bind_to_existing_user_honors_the_password_choice() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    // A second plain local user for the disable-password branch.
+    exec::execute(
+        &pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active, auth_source)
+         VALUES ('erin-1', 'erin', 'hash', 'erin', 0, 0, 0, 1, 'local')",
+        &[],
+    )
+    .await
+    .unwrap();
+    let router = sso_app_jit_off(runtime, pool.clone()).await;
+    let bearer = admin_bearer();
+
+    async fn auth_source_of(pool: &DbPool, user_id: &str) -> String {
+        let row = exec::fetch_optional(
+            pool,
+            "SELECT auth_source FROM users WHERE id = ?",
+            &[user_id.into()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        row.text_of("auth_source")
+    }
+
+    // Bind carol keeping the password (default).
+    refused_flow(
+        &idp,
+        &router,
+        "sub-carol",
+        "carol@sso",
+        "Carol",
+        "not-linked",
+    )
+    .await;
+    let (id, _, _) = one_pending(&pool).await;
+    let (status, body) = bind_pending(&router, &bearer, &id, json!({ "user_id": "carol-1" })).await;
+    assert_eq!(status, StatusCode::OK, "bind: {body}");
+    assert_eq!(
+        body.pointer("/data/password_login_disabled"),
+        Some(&json!(false))
+    );
+    assert_eq!(auth_source_of(&pool, "carol-1").await, "local");
+
+    // A second identity for carol conflicts on UNIQUE (provider, user_id).
+    refused_flow(
+        &idp,
+        &router,
+        "sub-carol2",
+        "carol2@sso",
+        "Carol II",
+        "not-linked",
+    )
+    .await;
+    let (id2, _, _) = one_pending(&pool).await;
+    let (status, _) = bind_pending(&router, &bearer, &id2, json!({ "user_id": "carol-1" })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = dismiss_pending(&router, &bearer, &id2).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Bind erin with the explicit flag: her account flips to SSO-only.
+    refused_flow(&idp, &router, "sub-erin", "erin@sso", "Erin", "not-linked").await;
+    let (id3, _, _) = one_pending(&pool).await;
+    let (status, body) = bind_pending(
+        &router,
+        &bearer,
+        &id3,
+        json!({ "user_id": "erin-1", "disable_local_password": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "bind erin: {body}");
+    assert_eq!(
+        body.pointer("/data/password_login_disabled"),
+        Some(&json!(true))
+    );
+    assert_eq!(auth_source_of(&pool, "erin-1").await, "oidc");
+
+    // Password login is now refused at the origin gate…
+    let (_, body) = oneshot_json(
+        router.clone(),
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        json!({ "username": "erin", "password": "whatever" }),
+    )
+    .await;
+    assert_ne!(
+        body.pointer("/code"),
+        Some(&json!(0)),
+        "login must fail: {body}"
+    );
+    // …and the SSO sign-in works.
+    let (next, login) = complete_flow(&idp, &router, "sub-erin", "erin@sso", "Erin").await;
+    assert_eq!(next, "/auth/sso/callback?next=%2Fpipelines");
+    assert!(login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .is_some());
+}
+
+/// Binding an SSO identity onto an account that already has one, a disabled
+/// account, or an SSO-origin account is refused in-tx with clear errors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bind_refuses_conflicts_without_side_effects() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-existing", "carol-1").await;
+    let router = sso_app_jit_off(runtime, pool.clone()).await;
+    let bearer = admin_bearer();
+
+    // Unknown user.
+    refused_flow(&idp, &router, "sub-x", "x@sso", "X", "not-linked").await;
+    let (id, _, _) = one_pending(&pool).await;
+    let (status, _) = bind_pending(&router, &bearer, &id, json!({ "user_id": "nope" })).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Carol already carries an identity for this provider.
+    let (status, body) = bind_pending(&router, &bearer, &id, json!({ "user_id": "carol-1" })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Still queued — the failed binds consumed nothing.
+    let (same_id, _, _) = one_pending(&pool).await;
+    assert_eq!(same_id, id);
+
+    // Dismiss removes it; a subsequent refused sign-in re-records it.
+    let (status, _) = dismiss_pending(&router, &bearer, &id).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows: i64 = exec::fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM pending_identities", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    let dismissed: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'auth.oidc_identity_reject'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(dismissed, 1);
+    refused_flow(&idp, &router, "sub-x", "x@sso", "X", "not-linked").await;
+    let (_, _, attempts) = one_pending(&pool).await;
+    assert_eq!(attempts, 1, "re-recorded after dismissal");
+}
+
+/// The last active local platform admin cannot lose password login through
+/// the approval flow (break-glass invariant).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn last_local_admin_password_cannot_be_disabled_via_bind() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&oidc_config(&issuer, false))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app_jit_off(runtime, pool.clone()).await;
+    let bearer = admin_bearer();
+
+    refused_flow(&idp, &router, "sub-boss", "boss@sso", "Boss", "not-linked").await;
+    let (id, _, _) = one_pending(&pool).await;
+    let (status, body) = bind_pending(
+        &router,
+        &bearer,
+        &id,
+        json!({ "user_id": "admin-1", "disable_local_password": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    // Nothing was bound.
+    let bound: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM external_identities WHERE subject = 'sub-boss'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(bound, 0, "the failed bind must roll back");
 }

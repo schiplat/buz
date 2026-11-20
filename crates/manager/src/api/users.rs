@@ -31,6 +31,7 @@ pub async fn list(
                 "created_at": u.created_at,
                 "updated_at": u.updated_at,
                 "is_ops": u.is_ops,
+                "auth_source": u.auth_source,
             })
         })
         .collect();

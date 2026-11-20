@@ -110,6 +110,18 @@ pub async fn find_login_by_username(
     }))
 }
 
+/// Whether `username` is already taken (the tx-side deconflict loop for
+/// creating a user during identity approval).
+pub async fn username_taken_tx(tx: &mut exec::DbTx<'_>, username: &str) -> Result<bool, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT id FROM users WHERE username = ?",
+            &[username.into()],
+        )
+        .await?
+        .is_some())
+}
+
 /// Stored password hash of one user (`None` = no such user).
 pub async fn password_hash_of(pool: &DbPool, user_id: &str) -> Result<Option<String>, AppError> {
     Ok(exec::fetch_optional(

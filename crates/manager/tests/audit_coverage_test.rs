@@ -21,6 +21,14 @@ const AUDITED: &[(&str, &str)] = &[
         "POST /api/v1/auth/oidc/backchannel-logout",
         "auth.oidc_backchannel_logout",
     ),
+    (
+        "POST /api/v1/auth/oidc/identities/pending/{id}/bind",
+        "auth.oidc_identity_approve",
+    ),
+    (
+        "DELETE /api/v1/auth/oidc/identities/pending/{id}",
+        "auth.oidc_identity_reject",
+    ),
     ("DELETE /api/v1/admin/settings/{key}", "setting.reset"),
     (
         "DELETE /api/v1/admin/plugin-sources/{id}",

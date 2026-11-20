@@ -39,6 +39,8 @@ pub enum Action {
     AuthOidcLogin,
     AuthOidcProvision,
     AuthOidcBackchannelLogout,
+    AuthOidcIdentityApprove,
+    AuthOidcIdentityReject,
     AuthSetup,
 
     // api_token
@@ -174,6 +176,8 @@ impl Action {
             Action::AuthOidcLogin => "auth.oidc_login",
             Action::AuthOidcProvision => "auth.oidc_provision",
             Action::AuthOidcBackchannelLogout => "auth.oidc_backchannel_logout",
+            Action::AuthOidcIdentityApprove => "auth.oidc_identity_approve",
+            Action::AuthOidcIdentityReject => "auth.oidc_identity_reject",
             Action::AuthSetup => "auth.setup",
             Action::ApiTokenCreate => "api_token.create",
             Action::ApiTokenRevoke => "api_token.revoke",
@@ -307,6 +311,11 @@ pub enum Resource<'a> {
         id: &'a str,
         name: &'a str,
     },
+    /// One unresolved external identity (the pending-approval queue).
+    Identity {
+        id: &'a str,
+        name: &'a str,
+    },
     /// One plugin across all versions — index refresh.
     PluginPoolEntry {
         namespace: &'a str,
@@ -357,6 +366,10 @@ impl<'a> Resource<'a> {
         Resource::User { id, name }
     }
 
+    pub fn identity(id: &'a str, name: &'a str) -> Self {
+        Resource::Identity { id, name }
+    }
+
     pub fn plugin_pool_entry(namespace: &'a str, plugin_id: &'a str) -> Self {
         Resource::PluginPoolEntry {
             namespace,
@@ -374,6 +387,7 @@ impl<'a> Resource<'a> {
             Resource::ResourceGrant { .. } => "resource_grant",
             Resource::Job { .. } => "job",
             Resource::User { .. } => "user",
+            Resource::Identity { .. } => "identity",
             Resource::PluginPoolEntry { .. } => "plugin_pool",
         }
     }
@@ -387,7 +401,8 @@ impl<'a> Resource<'a> {
             | Resource::SandboxHost { id, .. }
             | Resource::ResourceGrant { id, .. }
             | Resource::Job { id, .. }
-            | Resource::User { id, .. } => (*id).to_string(),
+            | Resource::User { id, .. }
+            | Resource::Identity { id, .. } => (*id).to_string(),
             Resource::PluginPool {
                 namespace,
                 plugin_id,
@@ -409,7 +424,8 @@ impl<'a> Resource<'a> {
             | Resource::SandboxHost { name, .. }
             | Resource::ResourceGrant { name, .. }
             | Resource::Job { name, .. }
-            | Resource::User { name, .. } => (*name).to_string(),
+            | Resource::User { name, .. }
+            | Resource::Identity { name, .. } => (*name).to_string(),
             Resource::PluginPool { .. } | Resource::PluginPoolEntry { .. } => self.id(),
             Resource::Setting { key } => (*key).to_string(),
         }

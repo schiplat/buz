@@ -38,6 +38,7 @@ pub const PG_MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("migrations/pg/003_oidc.sql")),
     (4, include_str!("migrations/pg/004_oidc_settings.sql")),
     (5, include_str!("migrations/pg/005_session_revocation.sql")),
+    (6, include_str!("migrations/pg/006_pending_identities.sql")),
 ];
 
 #[cfg(feature = "postgres")]

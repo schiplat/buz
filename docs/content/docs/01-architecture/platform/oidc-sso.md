@@ -77,9 +77,10 @@ the same `users.id`.
 
 ## Data model
 
-Three tables (SQLite migration 4, Postgres migration 3) plus the user
-columns above (`sessions_revoked_epoch` is SQLite migration 6 / Postgres
-migration 5):
+Three sign-in tables (SQLite migration 4, Postgres migration 3), the approval
+queue (`pending_identities`, SQLite migration 7 / Postgres migration 6), and
+the user columns above (`sessions_revoked_epoch` is SQLite migration 6 /
+Postgres migration 5):
 
 ```sql
 -- One external identity per (provider, subject); binds to exactly one user.
@@ -118,10 +119,28 @@ CREATE TABLE sso_tickets (
     consumed_at TEXT,
     created_at  TEXT NOT NULL DEFAULT datetime()
 );
+
+-- Identities refused at sign-in (auto_provision = off), awaiting an admin.
+CREATE TABLE pending_identities (
+    id            TEXT PRIMARY KEY,
+    provider      TEXT NOT NULL,
+    issuer        TEXT NOT NULL DEFAULT '',
+    subject       TEXT NOT NULL,
+    email         TEXT NOT NULL DEFAULT '',
+    display_name  TEXT NOT NULL DEFAULT '',
+    groups_json   TEXT NOT NULL DEFAULT '[]',
+    first_seen_at TEXT NOT NULL DEFAULT datetime(),
+    last_seen_at  TEXT NOT NULL DEFAULT datetime(),
+    attempts      BIGINT NOT NULL DEFAULT 1,
+    UNIQUE (provider, subject)
+);
 ```
 
 Flow and ticket rows are consumed atomically (single use) and cleaned up by a
-retention sweep alongside the existing debug-log cleanup jobs.
+retention sweep alongside the existing debug-log cleanup jobs. Pending
+identity rows are display/queue data: they never influence sign-in
+decisions, and dismissing one is not a blocklist (the next attempt
+re-records it).
 
 ## Sign-in flow
 
@@ -155,13 +174,20 @@ SPA login page "Continue with SSO"
    (`auth_source='oidc'`, no teams, no admin flags; username derived from the
    `name`/`email` local-part, deconflicted with numeric suffixes), bind, audit.
 3. Unbound and `auto_provision = false` → refuse with a message directing the
-   user to an administrator.
+   user to an administrator, and **record the refused identity in the
+   approval queue** (`pending_identities`, refreshed on every refused
+   attempt). A platform admin resolves it from the Users page: bind the
+   identity to an existing account, create a plain SSO user for it, or
+   dismiss it (a later attempt re-records it). Binding to an existing
+   account keeps its local password unless the admin explicitly disables it
+   — and the last active local platform admin can never lose password login
+   through this path. Every approval/dismissal is audited
+   (`auth.oidc_identity_approve` / `auth.oidc_identity_reject`).
 4. Bound to a disabled user → refuse.
-5. Converting an existing local account to OIDC sign-in is a deliberate,
-   separate flow (Phase 1.5): the user proves local possession once, completes
-   one OIDC round trip, then `auth_source` flips and local password login is
-   disabled. Team memberships, audit history, and resource ownership are
-   preserved because `users.id` does not change.
+5. Converting an existing local account to OIDC sign-in by the user (proving
+   local possession, one OIDC round trip) remains a deliberate, signal-driven
+   follow-up; the admin bind above already covers the migration path
+   (`users.id` unchanged either way).
 
 ## Session revocation (back-channel logout)
 
@@ -270,12 +296,12 @@ the login page can render the button conditionally.
   (`auth.oidc_login`, `auth.oidc_provision`), configuration, docs, tests
   (mock IdP; SQLite and Postgres fixtures).
 - **Phase 1.5 (delivered)** — web configuration (DB > file seed, hot swap);
-  provider-initiated session revocation via back-channel logout.
-- **Phase 1.5 (remaining, signal-driven)** — admin identity views (auth
-  origin, bound identity, IdP groups) plus a pending-identity approval/bind
-  path, which is what makes `auto_provision = false` usable; local→OIDC
-  account conversion (only when an install with many local users needs to
-  keep `users.id`); RP-initiated logout.
+  provider-initiated session revocation via back-channel logout; the admin
+  identity views and the pending-identity approval/bind queue (which is what
+  makes `auto_provision = false` usable).
+- **Phase 1.5 (remaining, signal-driven)** — local→OIDC account conversion by
+  the user (only when an install with many local users needs to keep
+  `users.id`); RP-initiated logout.
 - **Phase 2** — multiple simultaneous providers; scoped administration;
   access reviews / SIEM export. **A Buz-side SCIM server is a permanent
   non-goal** (see [Non-goals](#non-goals)).

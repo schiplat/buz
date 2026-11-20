@@ -443,6 +443,24 @@ pub async fn oidc_callback(
         }
         None => {
             if !runtime.auto_provision {
+                // The administrator queue is the documented remedy: record
+                // (or refresh) the refused identity so it can be approved
+                // from the Users page. Best-effort — a queue failure never
+                // changes the refusal.
+                if let Err(error) = crate::store::pending_identities::record_refused(
+                    &state.pool,
+                    &Uuid::new_v4().to_string(),
+                    "oidc",
+                    &runtime.issuer,
+                    &identity.subject,
+                    identity.email.as_deref().unwrap_or(""),
+                    identity.display_name.as_deref().unwrap_or(""),
+                    &serde_json::to_string(&identity.groups).unwrap_or_else(|_| "[]".into()),
+                )
+                .await
+                {
+                    tracing::warn!(error = %error, "pending identity record failed");
+                }
                 tracing::info!(
                     subject = %identity.subject,
                     "oidc sign-in refused: identity is not bound and auto-provision is off"

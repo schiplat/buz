@@ -6,6 +6,7 @@ use axum::{
 use crate::state::AppState;
 
 pub mod auth;
+pub mod oidc_identities;
 pub mod oidc_settings;
 pub mod pipeline_yaml_files;
 pub mod pipelines;
@@ -118,6 +119,20 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/auth/oidc/backchannel-logout",
             post(auth::oidc_backchannel_logout),
+        )
+        // Identity approval queue (platform admin; refused sign-ins when
+        // auto_provision is off)
+        .route(
+            "/auth/oidc/identities/pending",
+            get(oidc_identities::list_pending),
+        )
+        .route(
+            "/auth/oidc/identities/pending/{id}/bind",
+            post(oidc_identities::bind_pending),
+        )
+        .route(
+            "/auth/oidc/identities/pending/{id}",
+            delete(oidc_identities::reject_pending),
         )
         // SSO configuration (platform admin; DB override > file seed)
         .route(
