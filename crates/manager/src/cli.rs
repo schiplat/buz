@@ -82,6 +82,12 @@ pub enum Command {
     /// pipeline YAML carrying retired keys is already rejected by the parser.
     ScanDeprecated,
 
+    /// Report team-binding rows that the write-path guards can no longer
+    /// create but legacy data may still contain: empty or unknown `team_id`
+    /// on pipelines/secrets/hosts, and `pipeline_secrets` rows spanning two
+    /// teams (ignored at runtime by the same-team join). Read-only.
+    CheckData,
+
     /// Rotate the JWT secret and re-encrypt every stored value in place.
     ///
     /// The current secret is resolved from the same config chain the Manager

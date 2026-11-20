@@ -8,7 +8,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::TestApp;
-use manager::store::exec;
+use manager::store::{consistency, exec};
 use serde_json::json;
 
 async fn seed_beta(app: &TestApp) {
@@ -112,4 +112,39 @@ async fn team_delete_is_refused_while_hosts_remain() {
         .unwrap();
     let (status, resp) = app.delete("/api/v1/teams/team-2", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
+}
+
+#[tokio::test]
+async fn consistency_report_flags_legacy_binding_rows() {
+    let app = TestApp::boot().await;
+    let clean = consistency::check(&app.pool).await.expect("clean check");
+    assert!(clean.is_clean(), "fresh fixture must be clean: {clean:?}");
+
+    seed_beta(&app).await;
+    for sql in [
+        "INSERT INTO pipelines (id, name, team_id) VALUES ('p-orphan', 'orphan-pipe', 'gone')",
+        "INSERT INTO pipelines (id, name, team_id) VALUES ('p-empty', 'empty-pipe', '')",
+        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s-orphan', 'ORPHAN', 'x', 'gone', 'gone')",
+        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s-empty', 'EMPTY', 'x', '', '')",
+        "INSERT INTO hosts (id, name, host, username, team_id) VALUES ('h-orphan', 'orphan-host', '10.0.0.9', 'root', 'gone')",
+        "INSERT INTO pipelines (id, name, team_id) VALUES ('p1', 'alpha-pipe', 'team-1')",
+        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES ('s1', 'DEPLOY_KEY', 'x', 'alpha', 'team-1')",
+        "INSERT INTO pipeline_secrets (pipeline_id, secret_id) VALUES ('p1', 's1')",
+        "UPDATE secrets SET team_id = 'team-2' WHERE id = 's1'",
+    ] {
+        exec::execute(&app.pool, sql, &[])
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    let report = consistency::check(&app.pool)
+        .await
+        .expect("consistency check");
+    assert_eq!(report.pipelines_missing_team, 1, "{report:?}");
+    assert_eq!(report.pipelines_unknown_team, 1, "{report:?}");
+    assert_eq!(report.secrets_missing_team, 1, "{report:?}");
+    assert_eq!(report.secrets_unknown_team, 1, "{report:?}");
+    assert_eq!(report.hosts_unknown_team, 1, "{report:?}");
+    assert_eq!(report.cross_team_secret_bindings, 1, "{report:?}");
+    assert!(!report.is_clean());
 }

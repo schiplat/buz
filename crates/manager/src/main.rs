@@ -32,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::ScanDeprecated) => {
             return services::deprecated_scan::run(&cli.config).await;
         }
+        Some(Command::CheckData) => {
+            return services::consistency_scan::run(&cli.config).await;
+        }
         Some(Command::RotateJwtKey {
             db_path,
             apply,
@@ -167,6 +170,14 @@ async fn main() -> anyhow::Result<()> {
         db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
     }
     rbac::bootstrap(&db).await?;
+    if let Ok(report) = manager::store::consistency::check(&db).await {
+        if !report.is_clean() {
+            tracing::warn!(
+                ?report,
+                "team-binding consistency issues found — run `buz-manager check-data` for details"
+            );
+        }
+    }
     api::runners::ensure_standalone_auto_approve(&db, &config).await?;
     api::version::mark_started();
 
