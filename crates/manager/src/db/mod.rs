@@ -711,10 +711,10 @@ async fn rebuild_secrets_v8(
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             value TEXT NOT NULL DEFAULT '',
-            team_id TEXT NOT NULL DEFAULT '',
             share_with_team INTEGER NOT NULL DEFAULT 0,
             kind TEXT NOT NULL DEFAULT 'generic',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            team_id TEXT NOT NULL DEFAULT '',
             UNIQUE(team_id, name)
         )",
     )
@@ -726,8 +726,8 @@ async fn rebuild_secrets_v8(
         "share_with_team"
     };
     let copy = format!(
-        "INSERT INTO secrets_v8 (id, name, value, team_id, share_with_team, kind, updated_at)
-         SELECT id, name, value, team_id, {shared_column}, kind, updated_at FROM secrets"
+        "INSERT INTO secrets_v8 (id, name, value, share_with_team, kind, updated_at, team_id)
+         SELECT id, name, value, {shared_column}, kind, updated_at, team_id FROM secrets"
     );
     sqlx::query(&copy).execute(&mut *conn).await?;
     sqlx::query("DROP TABLE secrets")
