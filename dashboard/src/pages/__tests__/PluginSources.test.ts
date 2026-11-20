@@ -197,7 +197,7 @@ describe('PluginSources', () => {
     const root = await mountPage()
     const keys = [...root.querySelectorAll('h3')].map((h) => h.textContent)
     expect(keys).not.toContain('Marketplace URL')
-    expect(keys).toContain('Step review gate')
+    expect(keys).toContain('Plugin review gate')
     expect(keys).toContain('Local plugin directory')
     expect(keys).toContain('Reviewed manifest')
     // Input values are not part of textContent — assert the element itself.

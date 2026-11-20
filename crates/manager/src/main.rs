@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
         shared::version::long_version("manager"),
     );
 
-    // Step-index settings for `uses:` resolution (index dir + review gate).
+    // Plugin-index settings for `uses:` resolution (index dir + review gate).
     // Admin-edited overrides in platform_settings take precedence over
     // manager.toml and are re-applied at runtime by the settings API.
     let settings_overrides = services::platform_settings::fetch_overrides(&db).await;
@@ -301,20 +301,20 @@ async fn main() -> anyhow::Result<()> {
     // templates resolve freely (dashboard repeats this as a banner).
     if config.plugin_index.reviewed_manifest.trim().is_empty() {
         tracing::warn!(
-            "step review gate is NOT enabled: [plugin_index] reviewed_manifest is empty — \
+            "plugin review gate is NOT enabled: [plugin_index] reviewed_manifest is empty — \
              every `uses:` template resolves without review checks; production deployments \
              should set reviewed_manifest to a reviews.json and require_reviewed = true"
         );
     } else if !config.plugin_index.require_reviewed {
         tracing::info!(
             manifest = %config.plugin_index.reviewed_manifest,
-            "step review gate is advisory-only (require_reviewed = false): unreviewed \
+            "plugin review gate is advisory-only (require_reviewed = false): unreviewed \
              templates resolve with a log warning instead of being rejected"
         );
     } else {
         tracing::info!(
             manifest = %config.plugin_index.reviewed_manifest,
-            "step review gate is strict (require_reviewed = true): templates absent from \
+            "plugin review gate is strict (require_reviewed = true): templates absent from \
              the reviewed manifest are rejected at resolution time"
         );
     }

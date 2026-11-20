@@ -41,7 +41,7 @@ const show = computed(() => posture.value !== null && !dismissed.value)
     <div class="min-w-0 flex-1">
       <template v-if="isError">
         <p class="font-medium text-red-600 dark:text-red-400">
-          Step review gate is misconfigured — every template will be rejected
+          Plugin review gate is misconfigured — every template will be rejected
         </p>
         <p class="mt-0.5 wrap-break-word text-muted-foreground">
           The switch is on, but its review ledger (reviews.json) cannot be found — until the file
@@ -52,7 +52,7 @@ const show = computed(() => posture.value !== null && !dismissed.value)
         </p>
       </template>
       <template v-else>
-        <p class="font-medium text-warning">Step review gate is not enabled</p>
+        <p class="font-medium text-warning">Plugin review gate is not enabled</p>
         <p class="mt-0.5 wrap-break-word text-muted-foreground">
           Templates are used without review checks. To turn checking on, first place the review
           ledger (a buz-plugins clone provides <span class="font-mono text-[13px]">reviews.json</span>),

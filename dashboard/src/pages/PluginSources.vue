@@ -34,7 +34,7 @@ interface SettingMeta {
 
 const settingsMeta: Record<string, SettingMeta> = {
   plugin_review_required: {
-    label: 'Step review gate',
+    label: 'Plugin review gate',
     help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Turning this on checks that the manifest file exists — the toggle fails with instructions if it does not. Recommended for production.',
   },
   plugin_index_local_dir: {
