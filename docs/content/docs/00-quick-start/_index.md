@@ -36,9 +36,16 @@ the co-located Runner registers over loopback automatically and shows
 
 ## 4. Run your first job
 
-Create a pipeline in the UI (one `echo` shell step), pick the
-`standalone-runner` label, trigger it, and watch it get claimed, executed,
-and succeed — with full log output in the Job view.
+On a fresh install (2.1.15+) the **Pipelines** page already lists a
+**Hello Buz** sample: a manual trigger with a `name` parameter (default
+`Buz`) and one shell step. Trigger it with the default value and watch it get
+claimed, executed, and succeed — with full log output in the Job view. It is
+ordinary data: edit it or delete it freely.
+
+Existing installations are not retrofitted. To add the sample to one, stop
+the Manager and run
+[`buz-manager seed-sample`](/docs/03-operations/cli-reference/#seed-sample),
+or create your own pipeline.
 
 ## 5. Optional: the plugin render demo
 

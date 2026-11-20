@@ -23,6 +23,8 @@ migrate and how. Nothing is modified.
 
 ## seed-sample
 
+*Available from v2.1.15.*
+
 Adds the built-in **Hello Buz** sample pipeline to an existing installation.
 Fresh deployments receive it automatically on first start (and are marked so
 it is never recreated after deletion); this command is the explicit restore

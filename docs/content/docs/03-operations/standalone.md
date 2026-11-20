@@ -140,6 +140,8 @@ Healthy signs in logs:
 2. Create the first platform admin
 3. Sign in → **Runners** — `standalone-runner` should appear **online**
    (if still offline, wait a few seconds or `docker compose restart`)
+4. **Pipelines** — on 2.1.15+ a fresh install already lists the **Hello Buz**
+   sample; triggering it is the quickest end-to-end smoke check
 
 You do **not** need Runners → New Runner or a `register_token` for the
 built-in co-located runner.

@@ -38,9 +38,9 @@ resource grants) for a second ops approval. Admin actions are audited.
 
 ## Where to next
 
-- Fresh deployments include a **Hello Buz** sample pipeline (manual trigger,
-  one input, one shell step). It is ordinary data — edit it or delete it
-  freely; deleting it does not bring it back.
+- Fresh deployments (2.1.15+) include a **Hello Buz** sample pipeline (manual
+  trigger, one input, one shell step). It is ordinary data — edit it or delete
+  it freely; deleting it does not bring it back.
 - Author your first pipeline: [Pipeline Format](../01-architecture/authoring/pipeline-format.md)
 - Deploy something: [Deployment](../03-operations/deployment.md)
 - Add sandboxed job tiers: [Sandbox Host Installation](../03-operations/sandbox-host.md)
