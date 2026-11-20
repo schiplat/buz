@@ -21,27 +21,32 @@ const props = defineProps<{ data: StepNodeData }>()
 const statusRing = computed(() => {
   if (props.data.selected) {
     switch (props.data.status) {
-      case 'success': return 'ring-2 ring-success/50 '
-      case 'failed': return 'ring-2 ring-destructive/50 '
-      case 'running': return 'ring-2 ring-warning/50 '
-      case 'cancelled': return 'ring-2 ring-muted-foreground/50 '
-      default: return 'ring-2 ring-primary/40'
+      case 'success': return 'ring-2! ring-success/50!'
+      case 'failed': return 'ring-2! ring-destructive/50!'
+      case 'running': return 'ring-2! ring-warning/50!'
+      case 'cancelled': return 'ring-2! ring-muted-foreground/50!'
+      default: return 'ring-2! ring-primary/40!'
     }
   }
+  return ''
+})
+
+/** Idle border: unrun nodes stay neutral; finished/running nodes carry their state color. */
+const idleRing = computed(() => {
   switch (props.data.status) {
-    case 'success': return 'ring-success/30 '
-    case 'failed': return 'ring-destructive/30 '
-    case 'running': return 'ring-warning/30 '
-    case 'cancelled': return 'ring-muted-foreground/30 '
-    default: return 'ring-muted-foreground/30 '
+    case 'success': return 'ring-success/50!'
+    case 'failed': return 'ring-destructive/50!'
+    case 'running': return 'ring-warning/50!'
+    case 'cancelled': return 'ring-muted-foreground/30!'
+    default: return 'ring-muted-foreground/50!'
   }
 })
 </script>
 
 <template>
   <div
-    class="step-node relative box-border rounded-xl bg-card transition-all overflow-hidden cursor-pointer"
-    :class="[statusRing, data.dimmed && !data.selected ? 'opacity-40' : 'opacity-100']"
+    class="step-node surface-card relative box-border overflow-hidden transition-all cursor-pointer"
+    :class="[data.selected ? statusRing : idleRing, data.dimmed && !data.selected ? 'opacity-40' : 'opacity-100']"
     :style="{ width: `${STEP_NODE_WIDTH}px`, height: `${STEP_NODE_HEIGHT}px` }"
     :title="data.name"
   >
@@ -60,7 +65,7 @@ const statusRing = computed(() => {
       }"
     />
 
-    <div class="px-3 py-2 flex flex-col h-[calc(100%-4px)] min-h-0">
+    <div class="px-3.5 py-2.5 flex flex-col h-[calc(100%-4px)] min-h-0">
       <div class="flex items-start gap-2 min-h-0 flex-1">
         <div class="shrink-0 mt-0.5">
           <CheckCircle2 v-if="data.status === 'success'" class="h-4 w-4 text-success" />
