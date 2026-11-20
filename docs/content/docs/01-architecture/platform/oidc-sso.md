@@ -230,29 +230,39 @@ value derived from `server.public_base_url`, next to the callback URL.
 
 Destroying the Buz JWT is client-side (stateless tokens); the question is
 what happens to the **provider session**. Buz follows the standard
-RP-initiated logout shape:
+RP-initiated logout shape — a **top-level GET** with the `id_token_hint`:
 
 ```
 Dashboard "Sign out"
   → clears the local JWT, navigates to
      GET /api/v1/auth/oidc/logout        (no-store)
        ├ SSO off            → 303 to the SPA login page
-       ├ provider advertises end_session_endpoint
-       │    → an auto-submitting <form method="post"> carrying
-       │      client_id + post_logout_redirect_uri (no id_token_hint —
-       │      Buz never stores provider tokens; the POST form is the
-       │      cross-site-safe variant)
-       │    → the provider ends its session and returns the browser to
-       │      the SPA landing /auth/sso/logged-out
-       └ no advertised endpoint → 303 straight to the landing page
+       ├ hint cookie present (unexpired id_token from the last sign-in)
+       │    → 303 to {end_session_endpoint}?id_token_hint=…&client_id=…
+       │      &post_logout_redirect_uri=…
+       │      (a top-level GET, so the provider's SameSite=Lax session
+       │      cookie rides along; a cross-site form POST would not)
+       │    → the provider ends its session, fires its back-channel logout
+       │      (revoking the Buz JWTs of other devices too), and returns the
+       │      browser to the SPA landing /auth/sso/logged-out
+       └ no hint / expired hint / no advertised endpoint
+                            → 303 straight to the landing page
 ```
 
+- The **hint cookie** (`buz_oidc_hint`) is set at sign-in: HttpOnly,
+  `SameSite=Lax`, scoped to `/api/v1/auth/oidc`, expiring with the id_token
+  itself. It holds the raw `id_token` and is used for nothing else — losing
+  it only degrades sign-out to local-only, never weakens sign-in. Sign-out
+  always clears it.
 - Register the landing page
   (`{public_base_url}/auth/sso/logged-out`, shown on the Settings → SSO
   page) as the client's `post_logout_redirect_uri`; without it the provider
   typically still ends the session but keeps the browser on its own page.
 - Logout-CSRF is the provider's concern (worst case: someone ends your IdP
-  session); Buz adds `Cache-Control: no-store` and nothing else.
+  session); Buz adds `Cache-Control: no-store` and nothing else. The hint
+  expiry check is Buz's own fallback UX — the provider re-validates the
+  hint for real, and an expired hint degrades to a local sign-out instead
+  of stranding the user on a provider error page.
 
 Token-endpoint client authentication is negotiated from discovery:
 `client_secret_post` when the provider declares it (the common case),
@@ -305,7 +315,7 @@ the login page can render the button conditionally.
 | Account takeover | No silent linking; conversion requires proving local possession; disabled users refused |
 | Failure mode | IdP down / misconfigured → SSO fail closed, local login unaffected; JWKS fetch failures refuse sign-in, never degrade local auth |
 | Least privilege | JIT users get no teams, no owner role, no platform-admin flags — ever |
-| Hygiene | No secrets or tokens in logs/argv; flows/tickets hashed, single-use, TTL'd, swept |
+| Hygiene | No secrets or tokens in logs/argv; flows/tickets hashed, single-use, TTL'd, swept; the id_token is retained only as the logout hint (HttpOnly cookie, OIDC-path scoped, expires with the token) |
 
 ## Known limitations (documented, accepted)
 

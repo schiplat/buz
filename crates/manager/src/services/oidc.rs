@@ -572,12 +572,16 @@ impl OidcRuntime {
 
     /// Complete sign-in round trip: consume the provider's token endpoint and
     /// validate the returned id_token against the flow's nonce.
+    /// Complete sign-in round trip: consume the provider's token endpoint and
+    /// validate the returned id_token against the flow's nonce. Returns the
+    /// identity plus the **raw id_token** — retained only as the RP-logout
+    /// hint (see `api/auth.rs`), never logged or used for anything else.
     pub async fn redeem(
         &self,
         code: &str,
         code_verifier: &str,
         expected_nonce: &str,
-    ) -> Result<OidcIdentity, AppError> {
+    ) -> Result<(OidcIdentity, String), AppError> {
         let endpoints = self.endpoints(false).await?;
         let id_token = self
             .exchange_code(
@@ -587,7 +591,8 @@ impl OidcRuntime {
                 code_verifier,
             )
             .await?;
-        self.validate_id_token(&id_token, expected_nonce).await
+        let identity = self.validate_id_token(&id_token, expected_nonce).await?;
+        Ok((identity, id_token))
     }
 
     async fn decode_id_token(&self, id_token: &str) -> Result<IdTokenClaims, AppError> {

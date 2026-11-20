@@ -295,6 +295,13 @@ pub async fn change_password(
 /// `exchange`. Scoped to the OIDC path so it is not broadcast to the app.
 pub const SSO_TICKET_COOKIE: &str = "buz_sso_ticket";
 
+/// Cookie carrying the last sign-in's raw `id_token` as the RP-logout hint
+/// (`OpenID Connect RP-initiated logout` expects the RP to retain it). Same
+/// OIDC-path scope as the ticket; expires with the id_token itself. It is
+/// never used for anything but `logout`, and it is not a session: losing it
+/// only degrades sign-out to "local only".
+pub const SSO_HINT_COOKIE: &str = "buz_oidc_hint";
+
 /// SPA route the callback redirects through.
 pub const SSO_CALLBACK_PAGE: &str = "/auth/sso/callback";
 
@@ -323,65 +330,109 @@ fn sanitize_redirect(raw: Option<&str>) -> String {
 
 /// `GET /auth/oidc/logout` — RP-initiated logout: end the provider session
 /// too, then land back on Buz. Public and unauthenticated by design: the
-/// only thing it can do is end sessions, which is logout-CSRF-safe (the
-/// provider owns its own session and may show its own confirmation).
+/// only thing it can do is end sessions, and the provider's own session
+/// cookie is what authorizes that — a top-level **GET** navigation, so the
+/// provider's `SameSite=Lax` session cookie rides along (a cross-site form
+/// POST would not, by the provider's logout-CSRF design).
 ///
 /// - SSO off → straight to the SPA login page.
-/// - Provider advertises `end_session_endpoint` → an auto-submitting form
-///   POST (no `id_token_hint` — Buz never stores provider tokens) with the
-///   registered `post_logout_redirect_uri`; the provider returns the browser
-///   to the logged-out landing page.
-/// - No advertised endpoint → purely local sign-out, landing page directly.
-pub async fn oidc_logout(State(state): State<AppState>) -> axum::response::Response {
-    const NO_STORE: &str = "no-store";
+/// - Hint cookie present (unexpired `id_token` from the last sign-in) and
+///   the provider advertises `end_session_endpoint` → 303 to
+///   `{end_session}?id_token_hint=…&client_id=…&post_logout_redirect_uri=…`:
+///   the provider destroys its session, fires its back-channel logout (which
+///   revokes the Buz JWTs of *other* devices too), and returns the browser to
+///   the logged-out landing page.
+/// - No hint / expired hint / no advertised endpoint → purely local sign-out,
+///   landing page directly (the hint degrades, never blocks).
+///
+/// Every branch clears the hint cookie — after sign-out it must not linger.
+pub async fn oidc_logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
     let login_page = "/login";
     let landing = "/auth/sso/logged-out";
+    let clear_hint_header = format!(
+        "{SSO_HINT_COOKIE}=; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age=0{}",
+        secure_suffix(&state)
+    );
+    let respond = |location: &str, clear_hint: bool| -> axum::response::Response {
+        let mut response = Redirect::to(location).into_response();
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
+        if clear_hint {
+            if let Ok(value) = HeaderValue::from_str(&clear_hint_header) {
+                response
+                    .headers_mut()
+                    .append(axum::http::header::SET_COOKIE, value);
+            }
+        }
+        response
+    };
+
+    let hint = read_cookie(&headers, SSO_HINT_COOKIE);
+    let hint_fresh = hint
+        .as_deref()
+        .and_then(id_token_expiry)
+        .is_some_and(|exp| exp > chrono::Utc::now().timestamp());
 
     let Some(runtime) = state.oidc_runtime().await else {
-        return Redirect::to(login_page).into_response();
+        return respond(login_page, hint.is_some());
     };
-    let Ok(Some(end_session)) = runtime.end_session_endpoint().await else {
-        return Redirect::to(landing).into_response();
+    let end_session = match runtime.end_session_endpoint().await {
+        Ok(Some(endpoint)) => Some(endpoint),
+        _ => None,
     };
-    let post_logout_redirect =
-        match crate::services::oidc::EffectiveOidc::derived_post_logout_redirect_uri(
+    let post_logout_redirect: Option<String> =
+        crate::services::oidc::EffectiveOidc::derived_post_logout_redirect_uri(
             &state.config.server.public_base_url,
-        ) {
-            Ok(uri) => uri,
-            Err(_) => return Redirect::to(landing).into_response(),
-        };
+        )
+        .ok();
 
-    let html = format!(
-        "<!doctype html><html><body><script>\
-         document.forms[0].submit()\
-         </script><form method=\"post\" action=\"{}\">\
-         <input type=\"hidden\" name=\"client_id\" value=\"{}\">\
-         <input type=\"hidden\" name=\"post_logout_redirect_uri\" value=\"{}\">\
-         </form></body></html>",
-        html_escape(&end_session),
-        html_escape(&runtime.client_id),
-        html_escape(&post_logout_redirect),
-    );
-    let mut response = (
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
-        .into_response();
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        HeaderValue::from_static(NO_STORE),
-    );
-    response
+    // Provider hop only with every piece in place; anything missing degrades
+    // to a local sign-out instead of stranding the user on the provider.
+    if let (Some(hint), true, Some(post_logout_redirect)) =
+        (hint.as_deref(), hint_fresh, post_logout_redirect.as_ref())
+    {
+        if let Some(end_session) = end_session.as_deref() {
+            let target = format!(
+                "{end_session}?client_id={}&id_token_hint={}&post_logout_redirect_uri={}",
+                crate::services::oidc::percent_encode(&runtime.client_id),
+                crate::services::oidc::percent_encode(hint),
+                crate::services::oidc::percent_encode(post_logout_redirect),
+            );
+            return respond(&target, true);
+        }
+    }
+    respond(landing, hint.is_some())
 }
 
-/// Minimal HTML escaping for the fixed interpolation above (provider URL,
-/// client id, derived URL — none are user input, but stay defensive).
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+/// Read one cookie value from the request headers.
+fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .map(|pair| pair.trim())
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k.trim() == name).then(|| v.trim().to_string())
+        })
+}
+
+/// The `exp` of a token payload, decoded **without signature verification** —
+/// it only decides buz's own fallback UX; the provider re-validates the hint
+/// for real.
+fn id_token_expiry(token: &str) -> Option<i64> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("exp")?.as_i64()
 }
 
 /// `GET /auth/oidc/start?redirect=/dashboard` — begin one sign-in flow.
@@ -470,8 +521,8 @@ pub async fn oidc_callback(
     };
 
     // Exchange + validate. Upstream/validation details stay in the log.
-    let identity = match runtime.redeem(code, &flow.code_verifier, &flow.nonce).await {
-        Ok(identity) => identity,
+    let (identity, id_token) = match runtime.redeem(code, &flow.code_verifier, &flow.nonce).await {
+        Ok(pair) => pair,
         Err(error) => {
             tracing::warn!(error = %error, "oidc callback: token validation failed");
             return Ok(sso_redirect_error("invalid-token"));
@@ -591,6 +642,23 @@ pub async fn oidc_callback(
             .headers_mut()
             .append(axum::http::header::SET_COOKIE, value);
     }
+    // Retain the id_token as the RP-logout hint: HttpOnly, same OIDC-path
+    // scope, expiring with the token itself (fallback "expires_in 3600" when
+    // the provider omits exp). Never used beyond `logout`; losing it only
+    // degrades sign-out to local-only.
+    let hint_max_age = id_token_expiry(&id_token)
+        .and_then(|exp| exp.checked_sub(chrono::Utc::now().timestamp()))
+        .filter(|secs| *secs > 0)
+        .unwrap_or(3600);
+    let hint = format!(
+        "{SSO_HINT_COOKIE}={id_token}; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age={hint_max_age}{}",
+        secure_suffix(&state)
+    );
+    if let Ok(value) = HeaderValue::from_str(&hint) {
+        response
+            .headers_mut()
+            .append(axum::http::header::SET_COOKIE, value);
+    }
     Ok(response)
 }
 
@@ -663,16 +731,7 @@ pub async fn oidc_exchange(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    let ticket = headers
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(';'))
-        .map(|pair| pair.trim())
-        .find_map(|pair| {
-            let (name, value) = pair.split_once('=')?;
-            (name.trim() == SSO_TICKET_COOKIE).then(|| value.trim().to_string())
-        })
+    let ticket = read_cookie(&headers, SSO_TICKET_COOKIE)
         .ok_or_else(|| AppError::AuthFailed("invalid or expired ticket".into()))?;
 
     let ticket_hash = crate::services::oidc::sha256_hex(&ticket);
