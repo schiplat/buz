@@ -326,3 +326,23 @@ pub async fn push_facts(pool: &DbPool, id: &str) -> Result<(String, String, Stri
         row.text_of("team_id"),
     ))
 }
+
+/// Pipelines currently bound to this secret (name-ordered) — the team-move
+/// guard. Any binding means the move would silently break those pipelines at
+/// claim time (the runtime join requires the secret and pipeline to share a
+/// team), so the caller must unbind first.
+pub async fn bound_pipeline_names(pool: &DbPool, secret_id: &str) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT p.name
+         FROM pipeline_secrets ps
+         JOIN pipelines p ON p.id = ps.pipeline_id
+         WHERE ps.secret_id = ?
+         ORDER BY p.name ASC",
+        &[secret_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
+}

@@ -186,9 +186,10 @@ pub async fn delete(
     let pipe_count = crate::store::teams::pipeline_count(&state.db(), &id).await?;
     let secret_count = crate::store::teams::secret_count(&state.db(), &id).await?;
     let runner_count = crate::store::teams::runner_count(&state.db(), &id).await?;
-    if pipe_count > 0 || secret_count > 0 || runner_count > 0 {
+    let host_count = crate::store::teams::host_count(&state.db(), &id).await?;
+    if pipe_count > 0 || secret_count > 0 || runner_count > 0 || host_count > 0 {
         return Err(AppError::Conflict(format!(
-            "team still has {pipe_count} pipeline(s), {secret_count} secret(s), and {runner_count} bound runner(s)"
+            "team still has {pipe_count} pipeline(s), {secret_count} secret(s), {host_count} host(s), and {runner_count} bound runner(s)"
         )));
     }
 

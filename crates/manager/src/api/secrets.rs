@@ -200,7 +200,30 @@ pub async fn update(
     let facts = crate::store::secrets::update_facts(&state.db(), &id).await?;
     let before_name = facts.name;
     let before_slug = facts.owner_group;
-    let before_team = facts.team_id;
+    let before_team = facts.team_id.clone();
+
+    // A team move would leave existing `pipeline_secrets` rows pointing at a
+    // secret the runtime deliberately ignores across teams (same-team join) —
+    // the pipeline would silently lose the secret at claim time. Refuse and
+    // name the pipelines so the caller can unbind first.
+    if new_team_id != before_team {
+        let bound = crate::store::secrets::bound_pipeline_names(&state.db(), &id).await?;
+        if !bound.is_empty() {
+            let preview = bound.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+            let suffix = if bound.len() > 5 {
+                format!(" (+{} more)", bound.len() - 5)
+            } else {
+                String::new()
+            };
+            return Err(AppError::Conflict(format!(
+                "secret is bound to {} pipeline(s) [{}{}]; unbind it from those pipelines before moving it to another team",
+                bound.len(),
+                preview,
+                suffix
+            )));
+        }
+    }
+
     let current_shared = facts.team_shared;
     let current_kind = facts.kind;
     let current_value = facts.value;

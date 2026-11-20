@@ -189,6 +189,18 @@ pub async fn runner_count(pool: &DbPool, team_id: &str) -> Result<i64, AppError>
     .await?)
 }
 
+/// Host count bound to a team — part of the delete guard. `hosts.team_id` has
+/// no FK, so without this check deleting a team would leave invisible rows
+/// (and their stored credentials) behind.
+pub async fn host_count(pool: &DbPool, team_id: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM hosts WHERE team_id = ?",
+        &[team_id.into()],
+    )
+    .await?)
+}
+
 /// Delete one team; returns `false` when nothing matched (caller surfaces
 /// `NotFound`).
 pub async fn delete(pool: &DbPool, id: &str) -> Result<bool, AppError> {
