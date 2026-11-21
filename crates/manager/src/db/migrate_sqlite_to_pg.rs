@@ -58,6 +58,7 @@ pub const TABLE_ORDER: &[&str] = &[
     "plugin_pool",
     "platform_settings",
     "oidc_settings",
+    "branding",
     "sso_tickets",
     "sso_flows",
     "scheduler_lease",

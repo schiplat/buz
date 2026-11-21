@@ -47,6 +47,10 @@ pub enum Action {
     ApiTokenCreate,
     ApiTokenRevoke,
 
+    // branding
+    BrandingUpdate,
+    BrandingReset,
+
     // environment
     EnvironmentConcurrencyCancel,
     EnvironmentCreate,
@@ -181,6 +185,8 @@ impl Action {
             Action::AuthSetup => "auth.setup",
             Action::ApiTokenCreate => "api_token.create",
             Action::ApiTokenRevoke => "api_token.revoke",
+            Action::BrandingUpdate => "branding.update",
+            Action::BrandingReset => "branding.reset",
             Action::EnvironmentConcurrencyCancel => "environment.concurrency_cancel",
             Action::EnvironmentCreate => "environment.create",
             Action::EnvironmentDelete => "environment.delete",

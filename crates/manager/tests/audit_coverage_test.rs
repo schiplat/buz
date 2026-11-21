@@ -17,6 +17,9 @@ use std::path::Path;
 const AUDITED: &[(&str, &str)] = &[
     ("DELETE /api/v1/auth/oidc/settings", "setting.reset"),
     ("PUT /api/v1/auth/oidc/settings", "setting.update"),
+    ("PUT /api/v1/auth/session-policy", "setting.update"),
+    ("PUT /api/v1/admin/branding", "branding.update"),
+    ("DELETE /api/v1/admin/branding", "branding.reset"),
     (
         "POST /api/v1/auth/oidc/backchannel-logout",
         "auth.oidc_backchannel_logout",

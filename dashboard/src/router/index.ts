@@ -123,6 +123,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
       { path: 'settings/sso', name: 'sso-settings', component: () => import('@/pages/SsoSettings.vue'), meta: { title: 'SSO', adminOnly: true } },
+      { path: 'settings/branding', name: 'branding-settings', component: () => import('@/pages/BrandingSettings.vue'), meta: { title: 'Branding', adminOnly: true } },
       {
         path: 'plugin-library',
         name: 'plugin-library',

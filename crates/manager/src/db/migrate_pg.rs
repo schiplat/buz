@@ -40,6 +40,11 @@ pub const PG_MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("migrations/pg/005_session_revocation.sql")),
     (6, include_str!("migrations/pg/006_pending_identities.sql")),
     (7, include_str!("migrations/pg/007_normalize_bindings.sql")),
+    (8, include_str!("migrations/pg/008_branding.sql")),
+    (
+        9,
+        include_str!("migrations/pg/009_oidc_settings_claim_auth.sql"),
+    ),
 ];
 
 #[cfg(feature = "postgres")]
@@ -108,9 +113,9 @@ mod tests {
 
     #[test]
     fn migration_chain_is_registered_in_order() {
-        assert_eq!(PG_MIGRATIONS.len(), 7);
+        assert_eq!(PG_MIGRATIONS.len(), 9);
         assert_eq!(PG_MIGRATIONS[0].0, 1);
-        assert_eq!(PG_MIGRATIONS.last().unwrap().0, 7);
+        assert_eq!(PG_MIGRATIONS.last().unwrap().0, 9);
         assert!(PG_MIGRATIONS[0]
             .1
             .trim_start()

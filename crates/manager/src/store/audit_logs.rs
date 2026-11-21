@@ -123,6 +123,38 @@ pub async fn search(
     Ok((items, total))
 }
 
+/// Newest rows whose action is one of `actions`, newest first, plus the total
+/// row count for pagination. No actor scoping — the caller owns the visibility
+/// decision (the SSO settings card deliberately shows platform-wide SSO
+/// events to platform administrators).
+pub async fn recent_actions(
+    pool: &DbPool,
+    actions: &[&str],
+    limit: u32,
+    offset: u32,
+) -> Result<(Vec<serde_json::Value>, i64), AppError> {
+    if actions.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let placeholders = vec!["?"; actions.len()].join(", ");
+    let where_sql = format!("WHERE action IN ({placeholders})");
+    let binds: Vec<SqlValue> = actions.iter().map(|action| (*action).into()).collect();
+    let count_sql = format!("SELECT COUNT(*) FROM audit_logs {where_sql}");
+    let total = exec::fetch_scalar_i64(pool, &count_sql, &binds).await?;
+    let list_sql = format!(
+        "SELECT id, created_at, actor_user_id, actor_username, action,
+                resource_type, resource_id, resource_name, team_id,
+                before_json, after_json, meta_json, ip
+         FROM audit_logs {where_sql}
+         ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    );
+    let mut binds = binds;
+    binds.push(SqlValue::Int(i64::from(limit)));
+    binds.push(SqlValue::Int(i64::from(offset)));
+    let rows = exec::fetch_all(pool, &list_sql, &binds).await?;
+    Ok((rows.into_iter().map(audit_row_json).collect(), total))
+}
+
 fn audit_row_json(r: crate::store::exec::GenericRow) -> serde_json::Value {
     serde_json::json!({
         "id": r.text_of("id"),

@@ -274,16 +274,42 @@ Token-endpoint client authentication is negotiated from discovery:
 `client_secret_post` when the provider declares it (the common case),
 `Authorization: Basic` otherwise — providers that accept both work with
 either. `client_secret_post` stays the fallback when discovery is silent.
+The SSO settings page offers an explicit override (`auto` /
+`client_secret_basic` / `client_secret_post`) for providers whose discovery
+document is wrong or silent; `auto` keeps the negotiation above.
 
 ## Configuration
 
 **The database is the only source.** Settings → **SSO** (platform admin) edits
 every field — issuer, client id/secret, redirect, scopes, sign-in policy,
-enable — with a built-in "Test connection" discovery probe. Saved settings
-apply immediately (no restart); the client secret is stored encrypted at rest
-and never echoed back. Clearing the configuration (a ghost button in the
-status area) turns SSO off until an administrator saves again — local login
-keeps working throughout.
+token-endpoint auth, groups claim, enable — with a built-in "Test connection"
+discovery probe. Saved settings apply immediately (no restart); the client
+secret is stored encrypted at rest and never echoed back. Clearing the
+configuration (a ghost button in the status area) turns SSO off until an
+administrator saves again — local login keeps working throughout.
+
+**Groups claim.** Buz reads one id_token claim (default `groups`) and mirrors
+it into `external_identities.groups_json` for display and audit. The claim
+name is configurable for providers that use a different one, and a provider
+sending a single string instead of an array is accepted. It carries **no
+authorization** — no role rules, no team mapping.
+
+**Access policy.** The same page's sidebar exposes two global settings
+(`platform_settings` overrides, manager.toml defaults):
+
+- **Session lifetime (hours)** — the user-JWT `exp` applied at mint (default
+  24, `[auth] jwt_ttl_hours`). It applies to local and SSO sign-ins alike and
+  affects only tokens issued **after** the change.
+- **Idle timeout (minutes)** — the SPA signs the browser out after that much
+  inactivity (0 = off). This is client-side UX, **not** a revocation: the
+  issued JWT stays valid until its session lifetime ends. Activity is shared
+  across tabs through `localStorage`.
+
+**Recent SSO events.** A read-only card lists the newest SSO audit events
+(`auth.oidc_login`, `auth.oidc_provision`, identity approve/reject,
+back-channel logout), platform-wide for platform administrators. Local
+password logins (`auth.login`) stay behind the stricter `/audit-logs` actor
+scoping and never appear here.
 
 **Legacy file seed — imported once, then ignored.** A deployment configured
 through `[auth.oidc]` in `manager.toml` keeps working on upgrade: at startup,
@@ -334,6 +360,11 @@ the login page can render the button conditionally.
   Sign-out ends the provider session too (RP-initiated logout, above); when
   the provider does not advertise an end-session endpoint, only the Buz
   session ends.
+- There is **no server-side session list** and no per-session revocation: Buz
+  persists no session rows (a `sid` claim / session table was deliberately
+  not added). The idle timeout is client-side only; the revocation primitives
+  are the JWT TTL (~session lifetime) and the account-wide
+  `sessions_revoked_epoch`.
 - Group claims are stored but inert in Phase 1.
 
 ## Phasing

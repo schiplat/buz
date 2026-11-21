@@ -4,6 +4,7 @@ import './style.css'
 import App from './App.vue'
 import { router } from './router'
 import { isNavDebugEnabled } from '@/utils/navigation'
+import { useBrandingStore } from '@/stores/branding'
 
 const app = createApp(App)
 
@@ -43,6 +44,13 @@ if (isNavDebugEnabled()) {
   )
 }
 
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
 app.use(router)
+
+// Branding is cosmetic and public: fetch it once at boot so the sign-in pages
+// (which render before authentication) show a custom logo immediately. A
+// failure silently leaves the built-in mark in place.
+void useBrandingStore(pinia).load()
+
 app.mount('#app')

@@ -8,10 +8,14 @@ import ServerErrorBanner from '@/components/ServerErrorBanner.vue'
 import BackToTop from '@/components/BackToTop.vue'
 import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
+import { useIdleLogout } from '@/composables/useIdleLogout'
 
 const ui = useUiStore()
 const auth = useAuthStore()
 const route = useRoute()
+
+// Opt-in client-side idle sign-out (server-side policy; 0 = disabled).
+useIdleLogout()
 
 function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {

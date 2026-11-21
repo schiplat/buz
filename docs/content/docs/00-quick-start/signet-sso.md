@@ -50,6 +50,19 @@ In Buz open **Settings → SSO → Provider connection** and fill in:
 - **Client ID / Client secret:** from step 2
 - **Scopes:** `openid profile email`
 
+Two optional fields usually stay at their defaults:
+
+- **Token endpoint auth:** `Auto (from discovery)` — override only if the
+  provider's discovery document is wrong or silent.
+- **Groups claim:** `groups` — change it if Signet emits the list under a
+  different claim name. The claim is mirrored for display/audit only; it
+  never grants permissions.
+
+The sidebar's **Access policy** card sets the session lifetime (hours) and the
+client-side idle timeout (minutes, 0 = off). Both are global; the lifetime
+applies to local and SSO sign-ins alike, and the idle timeout signs the
+browser out without revoking the token.
+
 Save, then click **Probe**. A green result means the discovery document,
 JWKS, token endpoint, and end-session endpoint were all reachable from the
 Manager.

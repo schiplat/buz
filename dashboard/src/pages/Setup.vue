@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/auth'
 import UiButton from '@/components/ui/UiButton.vue'
+import BrandMark from '@/components/brand/BrandMark.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -70,9 +71,7 @@ async function handleSetup() {
     <div v-else class="w-full max-w-sm space-y-6">
       <div class="text-center space-y-1">
         <div class="flex justify-center mb-3">
-          <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-semibold tracking-wide text-primary-foreground">
-            Bz
-          </span>
+          <BrandMark size="md" />
         </div>
         <h1 class="text-lg font-semibold tracking-tight">Initialize Buz</h1>
         <p class="type-meta">Create the first platform admin. This runs once.</p>

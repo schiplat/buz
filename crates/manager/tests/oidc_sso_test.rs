@@ -310,27 +310,45 @@ impl MockIdp {
 
     /// Plant an authorization code carrying these claims + the flow's nonce.
     /// iss/aud/exp/iat are stamped here so the token endpoint stays a dumb
-    /// signer.
+    /// signer. `extra` claims are merged in (custom groups claim tests).
     fn register_code(&self, sub: &str, email: &str, name: &str, nonce: &str) -> String {
+        self.register_code_with(sub, email, name, nonce, json!({}))
+    }
+
+    fn register_code_with(
+        &self,
+        sub: &str,
+        email: &str,
+        name: &str,
+        nonce: &str,
+        extra: Value,
+    ) -> String {
         let now = chrono::Utc::now().timestamp() as usize;
         let code = format!(
             "mock-code-{}",
             self.codes.counter.fetch_add(1, Ordering::SeqCst)
         );
-        self.codes.codes.lock().unwrap().insert(
-            code.clone(),
-            json!({
-                "sub": sub,
-                "email": email,
-                "name": name,
-                "preferred_username": email,
-                "nonce": nonce,
-                "iss": self.codes.issuer,
-                "aud": CLIENT_ID,
-                "exp": now + 600,
-                "iat": now,
-            }),
-        );
+        let mut claims = json!({
+            "sub": sub,
+            "email": email,
+            "name": name,
+            "preferred_username": email,
+            "nonce": nonce,
+            "iss": self.codes.issuer,
+            "aud": CLIENT_ID,
+            "exp": now + 600,
+            "iat": now,
+        });
+        if let Value::Object(extra) = extra {
+            for (key, value) in extra {
+                claims[key] = value;
+            }
+        }
+        self.codes
+            .codes
+            .lock()
+            .unwrap()
+            .insert(code.clone(), claims);
         code
     }
 }
@@ -351,6 +369,8 @@ fn services_effective(
         redirect_uri: REDIRECT_URI.into(),
         scopes: vec!["openid".into(), "profile".into(), "email".into()],
         auto_provision,
+        token_auth: manager::services::oidc::TokenAuth::Auto,
+        groups_claim: "groups".into(),
         source: "database",
     }
 }
@@ -1173,6 +1193,8 @@ async fn settings_put_enables_sso_hot_and_stores_the_secret_encrypted() {
             "redirect_uri_override": null,
             "scopes": ["openid", "profile", "email"],
             "auto_provision": true,
+            "token_auth": "client_secret_post",
+            "groups_claim": "roles",
         }),
     )
     .await;
@@ -1185,6 +1207,16 @@ async fn settings_put_enables_sso_hot_and_stores_the_secret_encrypted() {
     assert_eq!(
         body.pointer("/data/client_secret_configured"),
         Some(&json!(true))
+    );
+    assert_eq!(
+        body.pointer("/data/token_auth").and_then(Value::as_str),
+        Some("client_secret_post"),
+        "token endpoint auth override is reported"
+    );
+    assert_eq!(
+        body.pointer("/data/groups_claim").and_then(Value::as_str),
+        Some("roles"),
+        "groups claim name is reported"
     );
     assert_eq!(
         body.pointer("/data/redirect_uri_effective")
@@ -1231,6 +1263,18 @@ async fn settings_put_enables_sso_hot_and_stores_the_secret_encrypted() {
         manager::crypto::decrypt(&cipher, common::JWT_SECRET).unwrap(),
         CLIENT_SECRET
     );
+
+    // The two new knobs land in their columns.
+    let stored = exec::fetch_optional(
+        &pool,
+        "SELECT token_auth, groups_claim FROM oidc_settings WHERE id = 1",
+        &[],
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stored.text_of("token_auth"), "client_secret_post");
+    assert_eq!(stored.text_of("groups_claim"), "roles");
 
     // The hot-swapped runtime completes a real sign-in round trip.
     let (_, body) = complete_flow(&idp, &router, "sub-web", "web@sso", "Web").await;
@@ -1554,6 +1598,325 @@ async fn settings_test_endpoint_probes_the_provider() {
         .unwrap();
     assert_eq!(rows, 0, "probe saves nothing");
     let _ = idp;
+}
+
+// ─────────────────── groups claim name (mirror only) ───────────────────
+
+/// The configured claim name drives what is mirrored into
+/// `external_identities.groups_json`; a provider that sends a single string
+/// instead of an array is tolerated. Nothing here grants permissions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_groups_claim_is_mirrored_and_tolerates_a_single_string() {
+    let (idp, issuer) = MockIdp::start().await;
+    let mut effective = services_effective(&issuer, true);
+    effective.groups_claim = "roles".into();
+    let runtime = build_mock_runtime(&effective)
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    async fn sign_in_with(idp: &MockIdp, router: &Router, sub: &str, extra: Value) -> Value {
+        let (router, state, nonce) = start_flow(router).await;
+        let code = idp.register_code_with(sub, &format!("{sub}@sso"), sub, &nonce, extra);
+        let (_, headers, _) = oneshot(
+            router.clone(),
+            "GET",
+            &format!("/api/v1/auth/oidc/callback?code={code}&state={state}"),
+            None,
+        )
+        .await;
+        let location = callback_location(&headers);
+        let ticket = cookie_value(&headers, "buz_sso_ticket")
+            .unwrap_or_else(|| panic!("ticket cookie; callback location: {location}"));
+        let (status, _, body) = oneshot(
+            router,
+            "POST",
+            "/api/v1/auth/oidc/exchange",
+            Some(&format!("buz_sso_ticket={ticket}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "exchange: {body}");
+        body
+    }
+
+    async fn groups_of(pool: &DbPool, subject: &str) -> Vec<String> {
+        let row = exec::fetch_optional(
+            pool,
+            "SELECT groups_json FROM external_identities WHERE subject = ?",
+            &[subject.into()],
+        )
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("identity {subject} was not recorded"));
+        serde_json::from_str(&row.text_of("groups_json")).unwrap()
+    }
+
+    let _ = sign_in_with(
+        &idp,
+        &router,
+        "sub-array",
+        json!({ "roles": ["dev", "ops"] }),
+    )
+    .await;
+    assert_eq!(groups_of(&pool, "sub-array").await, vec!["dev", "ops"]);
+
+    let _ = sign_in_with(&idp, &router, "sub-string", json!({ "roles": "solo" })).await;
+    assert_eq!(groups_of(&pool, "sub-string").await, vec!["solo"]);
+
+    // The default claim name is NOT what this runtime reads.
+    let _ = sign_in_with(
+        &idp,
+        &router,
+        "sub-default",
+        json!({ "groups": ["ignored"] }),
+    )
+    .await;
+    assert!(groups_of(&pool, "sub-default").await.is_empty());
+}
+
+// ─────────────────── session policy (TTL + client idle) ───────────────────
+
+/// TTL and idle-roundtrip through the web API; the TTL is applied to tokens
+/// minted afterwards, and `PUT null` clears both overrides.
+#[tokio::test]
+async fn session_policy_roundtrip_and_ttl_applies_to_new_tokens() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let hash = manager::password::hash_password("secret-pass").unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin,
+                            is_super_admin, is_ops, is_active, auth_source)
+         VALUES ('ttl-1', 'ttl', ?, 'ttl', 0, 0, 0, 1, 'local')",
+        &[hash.into()],
+    )
+    .await
+    .unwrap();
+    let router = settings_app(pool.clone()).await;
+    let admin = admin_bearer();
+
+    // Defaults: manager.toml TTL, idle off.
+    let (status, _, body) = oneshot_with_headers(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/session-policy",
+        None,
+        Some(&member_bearer()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.pointer("/data/ttl_hours"), Some(&json!(24)));
+    assert_eq!(body.pointer("/data/ttl_overridden"), Some(&json!(false)));
+    assert_eq!(body.pointer("/data/idle_minutes"), Some(&json!(0)));
+
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "PUT",
+        "/api/v1/auth/session-policy",
+        Some(&admin),
+        json!({ "ttl_hours": 8, "idle_minutes": 15 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "put: {body}");
+    assert_eq!(body.pointer("/data/ttl_hours"), Some(&json!(8)));
+    assert_eq!(body.pointer("/data/ttl_overridden"), Some(&json!(true)));
+    assert_eq!(body.pointer("/data/idle_minutes"), Some(&json!(15)));
+    assert_eq!(body.pointer("/data/idle_overridden"), Some(&json!(true)));
+
+    // A token minted after the change carries the overridden TTL.
+    let (status, login) = oneshot_json(
+        router.clone(),
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        json!({ "username": "ttl", "password": "secret-pass" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login: {login}");
+    let token = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("login token");
+    let claims = TokenManager::new(common::JWT_SECRET).verify(token).unwrap();
+    assert_eq!(
+        claims.exp - claims.iat,
+        8 * 3600,
+        "new tokens use the overridden TTL"
+    );
+
+    // Out-of-range values are refused.
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "PUT",
+        "/api/v1/auth/session-policy",
+        Some(&admin),
+        json!({ "ttl_hours": 0, "idle_minutes": 15 }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "ttl 0 refused: {body}");
+    assert!(
+        body.pointer("/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("session_ttl_hours")),
+        "{body}"
+    );
+
+    // null clears the overrides and returns to the defaults.
+    let (status, body) = oneshot_json(
+        router.clone(),
+        "PUT",
+        "/api/v1/auth/session-policy",
+        Some(&admin),
+        json!({ "ttl_hours": null, "idle_minutes": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reset: {body}");
+    assert_eq!(body.pointer("/data/ttl_hours"), Some(&json!(24)));
+    assert_eq!(body.pointer("/data/ttl_overridden"), Some(&json!(false)));
+    assert_eq!(body.pointer("/data/idle_minutes"), Some(&json!(0)));
+    let overrides: i64 = exec::fetch_scalar_i64(
+        &pool,
+        "SELECT COUNT(*) FROM platform_settings WHERE key IN
+            ('session_ttl_hours', 'session_idle_minutes')",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(overrides, 0, "reset deletes the override rows");
+}
+
+/// Changing the policy is a platform-admin action; any signed-in user may read
+/// the effective values (the SPA needs the idle value).
+#[tokio::test]
+async fn session_policy_write_requires_platform_admin() {
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let router = settings_app(pool).await;
+
+    let (status, _, _) = oneshot_with_headers(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/session-policy",
+        None,
+        Some(&member_bearer()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = oneshot_json(
+        router,
+        "PUT",
+        "/api/v1/auth/session-policy",
+        Some(&member_bearer()),
+        json!({ "ttl_hours": 8, "idle_minutes": 15 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ─────────────────── recent SSO events (settings card) ───────────────────
+
+/// Platform administrators see platform-wide SSO events (not only their own
+/// actor rows), and the card never includes local password logins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oidc_events_are_platform_wide_but_exclude_local_logins() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    let hash = manager::password::hash_password("secret-pass").unwrap();
+    exec::execute(
+        &pool,
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin,
+                            is_super_admin, is_ops, is_active, auth_source)
+         VALUES ('local-1', 'local', ?, 'local', 0, 0, 0, 1, 'local')",
+        &[hash.into()],
+    )
+    .await
+    .unwrap();
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    // One SSO sign-in (provision event), a second for the same identity
+    // (login event), and one local login.
+    let (_, _) = complete_flow(&idp, &router, "sub-events", "events@sso", "Events").await;
+    let (_, _) = complete_flow(&idp, &router, "sub-events", "events@sso", "Events").await;
+    let (status, _) = oneshot_json(
+        router.clone(),
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        json!({ "username": "local", "password": "secret-pass" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // `admin-1` is a platform admin but NOT a super admin — the audit-log API
+    // would restrict them to their own rows; this endpoint must not.
+    let (status, _, body) = oneshot_with_headers(
+        router.clone(),
+        "GET",
+        "/api/v1/auth/oidc/events?page=1&page_size=50",
+        None,
+        Some(&admin_bearer()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "events: {body}");
+    let items = body
+        .pointer("/data/items")
+        .and_then(Value::as_array)
+        .unwrap();
+    let actions: Vec<&str> = items
+        .iter()
+        .filter_map(|item| item.get("action").and_then(Value::as_str))
+        .collect();
+    assert!(actions.contains(&"auth.oidc_login"), "{actions:?}");
+    assert!(actions.contains(&"auth.oidc_provision"), "{actions:?}");
+    assert!(
+        !actions.contains(&"auth.login"),
+        "local password logins stay out of the SSO card: {actions:?}"
+    );
+
+    // The backend writes the Detail sentence (the UI never composes it).
+    let login_event = items
+        .iter()
+        .find(|item| item.get("action").and_then(Value::as_str) == Some("auth.oidc_login"))
+        .expect("login event");
+    let detail = login_event
+        .pointer("/after/detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        detail.starts_with("mapped to account "),
+        "login detail: {detail:?}"
+    );
+    let total = body
+        .pointer("/data/total")
+        .and_then(Value::as_i64)
+        .expect("total");
+    assert!(total >= 2, "both SSO events are counted: {total}");
+
+    // Pagination: page 2 with one row per page returns exactly the older row.
+    let (status, _, page2) = oneshot_with_headers(
+        router,
+        "GET",
+        "/api/v1/auth/oidc/events?page=2&page_size=1",
+        None,
+        Some(&admin_bearer()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "page 2: {page2}");
+    assert_eq!(page2.pointer("/data/page"), Some(&json!(2)));
+    assert_eq!(
+        page2
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
 }
 
 // ─────────────────── back-channel logout (session revocation) ───────────────────

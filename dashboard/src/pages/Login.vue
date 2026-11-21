@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/auth'
 import UiButton from '@/components/ui/UiButton.vue'
+import BrandMark from '@/components/brand/BrandMark.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -20,6 +21,9 @@ const loading = ref(false)
 // and the round trip lands on /auth/sso/callback.
 const ssoEnabled = ref(false)
 const ssoStarting = ref(false)
+
+/** Set by the SPA's client-side idle sign-out. */
+const signedOutForIdle = computed(() => route.query.reason === 'idle')
 
 onMounted(async () => {
   try {
@@ -60,13 +64,15 @@ async function handleLogin() {
     <div class="w-full max-w-sm space-y-6">
       <div class="text-center space-y-1">
         <div class="flex justify-center mb-3">
-          <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-semibold tracking-wide text-primary-foreground">
-            Bz
-          </span>
+          <BrandMark size="md" />
         </div>
         <h1 class="text-lg font-semibold tracking-tight">Buz</h1>
         <p class="type-meta">Sign in to your instance</p>
       </div>
+
+      <p v-if="signedOutForIdle" class="notice-info text-center text-sm">
+        Signed out after inactivity.
+      </p>
 
       <form @submit.prevent="handleLogin" class="space-y-4">
         <div class="space-y-1.5">

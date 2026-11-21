@@ -16,7 +16,12 @@
 // journey does not use would otherwise trip `-D warnings` dead_code.
 #![allow(dead_code)]
 
-use axum::{body::Body, http::header::AUTHORIZATION, http::Request, http::StatusCode, Router};
+use axum::{
+    body::{Body, Bytes},
+    http::header::AUTHORIZATION,
+    http::{HeaderMap, Request, StatusCode},
+    Router,
+};
 use http_body_util::BodyExt;
 use shared::auth::{Role, TokenManager};
 #[cfg(feature = "postgres")]
@@ -311,6 +316,32 @@ impl TestApp {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or_default();
         (status, json)
+    }
+
+    /// One raw request through the real router: status, headers, body bytes.
+    /// For endpoints that do not answer JSON (binary uploads/downloads) and
+    /// for assertions on response headers (ETag, content type, cache policy).
+    pub async fn call_raw(
+        &self,
+        method: &str,
+        uri: &str,
+        bearer: Option<&str>,
+        headers: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> (StatusCode, HeaderMap, Bytes) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(b) = bearer {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {b}"));
+        }
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let req = builder.body(Body::from(body.unwrap_or_default())).unwrap();
+        let resp = self.router.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes)
     }
 
     pub async fn get(&self, uri: &str, bearer: Option<&str>) -> (StatusCode, serde_json::Value) {

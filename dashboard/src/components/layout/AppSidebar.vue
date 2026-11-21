@@ -12,6 +12,7 @@ import {
   Users,
   LayoutDashboard as OverviewIcon,
   Package,
+  Palette,
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { computed, onMounted, ref } from 'vue'
@@ -20,6 +21,7 @@ import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import { safeNavigate, navLog } from '@/utils/navigation'
 import { healthApi } from '@/api/health'
+import BrandMark from '@/components/brand/BrandMark.vue'
 
 const ui = useUiStore()
 const auth = useAuthStore()
@@ -58,6 +60,7 @@ const allEntries: NavEntry[] = [
   { kind: 'link', name: 'api-tokens', label: 'API tokens', icon: KeyRound, to: '/api-tokens', adminOnly: true },
   { kind: 'link', name: 'audit-logs', label: 'Audit logs', icon: ScrollText, to: '/audit-logs', adminOnly: true },
   { kind: 'link', name: 'sso-settings', label: 'SSO', icon: Shield, to: '/settings/sso', adminOnly: true },
+  { kind: 'link', name: 'branding-settings', label: 'Branding', icon: Palette, to: '/settings/branding', adminOnly: true },
 ]
 
 const entries = computed(() =>
@@ -161,11 +164,7 @@ function onLogoClick(e: MouseEvent) {
         :title="ui.isCollapsed ? 'Buz' : undefined"
         @click="onLogoClick"
       >
-        <span
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary text-xs font-semibold tracking-wide text-primary-foreground"
-        >
-          Bz
-        </span>
+        <BrandMark />
         <span v-if="!ui.isCollapsed" class="min-w-0">
           <span class="block truncate text-sm font-semibold tracking-tight">Buz</span>
           <span class="block truncate text-xs text-muted-foreground">Orchestration</span>

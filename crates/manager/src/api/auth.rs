@@ -100,8 +100,13 @@ pub async fn setup(
     tracing::info!("First platform admin created via web setup: {username}");
 
     let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
+    let ttl_hours = crate::services::platform_settings::session_ttl_hours(
+        &state.pool,
+        state.config.auth.jwt_ttl_hours,
+    )
+    .await;
     let token = token_mgr
-        .create_token(&user_id, Role::Admin, state.config.auth.jwt_ttl_hours)
+        .create_token(&user_id, Role::Admin, ttl_hours)
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
     Ok(Json(ApiResponse::success(LoginResponse {
@@ -162,8 +167,13 @@ pub async fn login(
     };
 
     let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
+    let ttl_hours = crate::services::platform_settings::session_ttl_hours(
+        &state.pool,
+        state.config.auth.jwt_ttl_hours,
+    )
+    .await;
     let token = token_mgr
-        .create_token(&user.id, role, state.config.auth.jwt_ttl_hours)
+        .create_token(&user.id, role, ttl_hours)
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
     audit::record(
@@ -605,6 +615,7 @@ pub async fn oidc_callback(
                 "username": user.username,
                 "subject": identity.subject,
                 "email": identity.email,
+                "detail": format!("created account {}", user.username),
             }),
         )
     } else {
@@ -613,6 +624,9 @@ pub async fn oidc_callback(
             serde_json::json!({
                 "username": user.username,
                 "subject": identity.subject,
+                // Kept for the SSO events card's readable User/Detail columns.
+                "email": identity.email,
+                "detail": format!("mapped to account {}", user.username),
             }),
         )
     };
@@ -742,8 +756,13 @@ pub async fn oidc_exchange(
     let user = crate::rbac::load_auth_user(&state.pool, &user_id).await?;
     let role = role_for(user.is_platform_admin, user.is_ops);
     let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
+    let ttl_hours = crate::services::platform_settings::session_ttl_hours(
+        &state.pool,
+        state.config.auth.jwt_ttl_hours,
+    )
+    .await;
     let token = token_mgr
-        .create_token(&user.id, role, state.config.auth.jwt_ttl_hours)
+        .create_token(&user.id, role, ttl_hours)
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
     let mut response = Json(ApiResponse::success(LoginResponse {
@@ -845,6 +864,7 @@ pub async fn oidc_backchannel_logout(
                         .after(Some(serde_json::json!({
                             "subject": subject,
                             "reason": "provider back-channel logout",
+                            "detail": "sessions revoked by the provider",
                         }))),
                 )
                 .await;

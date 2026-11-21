@@ -16,7 +16,7 @@ pub use crate::store::platform_settings::{
     KEY_PLUGIN_REVIEWED_MANIFEST, KEY_PLUGIN_REVIEW_REQUIRED, KEY_PLUGIN_SYNC_TIMEOUT,
     KEY_SANDBOX_CONFIG_POLL_SECONDS, KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL,
     KEY_SANDBOX_CONFIG_RETENTION_DAYS, KEY_SANDBOX_CONFIG_STALE_SECONDS,
-    KEY_SCHEDULER_STARVATION_SECONDS,
+    KEY_SCHEDULER_STARVATION_SECONDS, KEY_SESSION_IDLE_MINUTES, KEY_SESSION_TTL_HOURS,
 };
 
 pub const DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS: u64 = 30;
@@ -58,6 +58,8 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_SCHEDULER_STARVATION_SECONDS => Some(SettingKind::Number),
         KEY_JOB_LOG_RETENTION_DAYS => Some(SettingKind::Number),
         KEY_GRANTS_REQUIRE_APPROVAL => Some(SettingKind::Bool),
+        KEY_SESSION_TTL_HOURS => Some(SettingKind::Number),
+        KEY_SESSION_IDLE_MINUTES => Some(SettingKind::Number),
         _ => None,
     }
 }
@@ -178,6 +180,24 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                         )
                     }
                 }
+                KEY_SESSION_TTL_HOURS => {
+                    if (1..=720).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err("session_ttl_hours must be between 1 and 720 hours".into())
+                    }
+                }
+                KEY_SESSION_IDLE_MINUTES => {
+                    // 0 = no client-side idle sign-out.
+                    if parsed <= 1440 {
+                        Ok(())
+                    } else {
+                        Err(
+                            "session_idle_minutes must be 0 (disabled) or at most 1440 minutes"
+                                .into(),
+                        )
+                    }
+                }
                 _ => Err(format!("unknown numeric setting '{key}'")),
             }
         }
@@ -214,4 +234,29 @@ pub async fn effective(pool: &DbPool, key: &str, default: &str) -> String {
         .get(key)
         .cloned()
         .unwrap_or_else(|| default.to_string())
+}
+
+/// Effective user-JWT lifetime in hours. Malformed or out-of-range overrides
+/// fall back to the manager.toml default — writes are validated, this is the
+/// defensive read for rows written by another build.
+pub async fn session_ttl_hours(pool: &DbPool, fallback_hours: i64) -> i64 {
+    crate::store::platform_settings::get(pool, KEY_SESSION_TTL_HOURS)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|hours| (1..=720).contains(hours))
+        .unwrap_or(fallback_hours)
+}
+
+/// Effective client-side idle timeout in minutes (0 = disabled). Applies to
+/// the SPA only; it does not shorten the JWT's lifetime.
+pub async fn session_idle_minutes(pool: &DbPool) -> i64 {
+    crate::store::platform_settings::get(pool, KEY_SESSION_IDLE_MINUTES)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|minutes| (0..=1440).contains(minutes))
+        .unwrap_or(0)
 }

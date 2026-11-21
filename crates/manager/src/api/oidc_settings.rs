@@ -68,6 +68,9 @@ pub async fn import_file_seed(
         redirect_uri: String::new(), // derived during validation below
         scopes: config.scopes.clone(),
         auto_provision: config.auto_provision,
+        // The file seed predates both knobs — their web defaults apply.
+        token_auth: oidc::TokenAuth::Auto,
+        groups_claim: "groups".into(),
         source: "database",
         client_secret,
     };
@@ -104,16 +107,22 @@ pub async fn import_file_seed(
             }
         }
     };
+    let scopes_json = serde_json::to_string(&effective.scopes).unwrap_or_else(|_| "[]".into());
     let result = crate::store::oidc_settings::upsert(
         pool,
-        effective.enabled,
-        &effective.issuer,
-        &effective.client_id,
-        &ciphertext,
-        (!config.redirect_uri.trim().is_empty()).then_some(config.redirect_uri.trim()),
-        &serde_json::to_string(&effective.scopes).unwrap_or_else(|_| "[]".into()),
-        effective.auto_provision,
-        "file-import",
+        &crate::store::oidc_settings::OidcSettingsUpsert {
+            enabled: effective.enabled,
+            issuer: &effective.issuer,
+            client_id: &effective.client_id,
+            client_secret_ciphertext: &ciphertext,
+            redirect_uri_override: (!config.redirect_uri.trim().is_empty())
+                .then_some(config.redirect_uri.trim()),
+            scopes_json: &scopes_json,
+            auto_provision: effective.auto_provision,
+            token_auth: effective.token_auth.as_str(),
+            groups_claim: &effective.groups_claim,
+            updated_by: "file-import",
+        },
     )
     .await;
     if let Err(error) = result {
@@ -157,6 +166,14 @@ pub struct UpdateOidcSettingsRequest {
     pub scopes: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub auto_provision: bool,
+    /// Token-endpoint client authentication: `auto` (discovery negotiation,
+    /// default), `client_secret_basic`, or `client_secret_post`.
+    #[serde(default)]
+    pub token_auth: Option<String>,
+    /// id_token claim mirrored for display/audit (default `groups`). It never
+    /// grants permissions.
+    #[serde(default)]
+    pub groups_claim: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -196,6 +213,19 @@ pub async fn update_settings(
     let scopes = req
         .scopes
         .unwrap_or_else(|| vec!["openid".into(), "profile".into(), "email".into()]);
+    let token_auth = match req.token_auth.as_deref().map(str::trim) {
+        None | Some("") => oidc::TokenAuth::Auto,
+        Some(value) => oidc::TokenAuth::parse(value).ok_or_else(|| {
+            AppError::ValidationFailed(format!(
+                "unknown token endpoint auth method '{value}' — use auto, \
+                 client_secret_basic, or client_secret_post"
+            ))
+        })?,
+    };
+    let groups_claim = match req.groups_claim.as_deref().map(str::trim) {
+        None | Some("") => "groups".to_string(),
+        Some(value) => value.to_string(),
+    };
     let effective = EffectiveOidc {
         enabled: req.enabled,
         issuer: req.issuer.trim().trim_end_matches('/').to_string(),
@@ -204,6 +234,8 @@ pub async fn update_settings(
         redirect_uri: String::new(), // resolved below
         scopes,
         auto_provision: req.auto_provision,
+        token_auth,
+        groups_claim,
         source: "database",
     };
     let redirect_uri = match req.redirect_uri_override.as_deref().map(str::trim) {
@@ -224,16 +256,21 @@ pub async fn update_settings(
         crate::crypto::encrypt(&effective.client_secret, &state.config.auth.jwt_secret)
             .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?
     };
+    let scopes_json = serde_json::to_string(&effective.scopes).unwrap_or_else(|_| "[]".into());
     crate::store::oidc_settings::upsert(
         &state.pool,
-        effective.enabled,
-        &effective.issuer,
-        &effective.client_id,
-        &ciphertext,
-        req.redirect_uri_override.as_deref().map(str::trim),
-        &serde_json::to_string(&effective.scopes).unwrap_or_else(|_| "[]".into()),
-        effective.auto_provision,
-        &auth.username,
+        &crate::store::oidc_settings::OidcSettingsUpsert {
+            enabled: effective.enabled,
+            issuer: &effective.issuer,
+            client_id: &effective.client_id,
+            client_secret_ciphertext: &ciphertext,
+            redirect_uri_override: req.redirect_uri_override.as_deref().map(str::trim),
+            scopes_json: &scopes_json,
+            auto_provision: effective.auto_provision,
+            token_auth: effective.token_auth.as_str(),
+            groups_claim: &effective.groups_claim,
+            updated_by: &auth.username,
+        },
     )
     .await?;
 
@@ -252,6 +289,8 @@ pub async fn update_settings(
                 "issuer": effective.issuer,
                 "client_id": effective.client_id,
                 "auto_provision": effective.auto_provision,
+                "token_auth": effective.token_auth.as_str(),
+                "groups_claim": effective.groups_claim,
                 "secret_changed": req.client_secret.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false),
             }))),
     )
@@ -364,6 +403,8 @@ async fn settings_payload(
         "post_logout_redirect_uri": EffectiveOidc::derived_post_logout_redirect_uri(&state.config.server.public_base_url).ok(),
         "scopes": effective.scopes,
         "auto_provision": effective.auto_provision,
+        "token_auth": effective.token_auth.as_str(),
+        "groups_claim": effective.groups_claim,
         "updated_by": row.as_ref().map(|r| r.updated_by.clone()).unwrap_or_default(),
         "active": state.oidc_runtime().await.is_some(),
         "validation": match effective.validate() {

@@ -52,7 +52,10 @@ async fn fresh_database_applies_baseline_and_records_it() {
     .await
     .unwrap();
     assert_eq!(indexed, 1, "definition-name uniqueness must be enforced");
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        recorded_versions(&pool).await,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
 }
 
 /// A recorded version is not replayed: seed the version table on an otherwise
@@ -71,7 +74,8 @@ async fn recorded_version_is_not_replayed() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8)",
+        "INSERT INTO schema_migrations (version) VALUES
+            (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)",
     )
     .execute(&pool)
     .await
@@ -83,7 +87,10 @@ async fn recorded_version_is_not_replayed() {
         !table_exists(&pool, "pipelines").await,
         "an applied baseline must not be replayed"
     );
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        recorded_versions(&pool).await,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
 }
 
 /// `seq` replaces implicit `rowid` ordering: inserts get a monotonically
@@ -159,7 +166,10 @@ async fn second_run_changes_nothing() {
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
 
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        recorded_versions(&pool).await,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
 }
 
 /// v8 upgrade path: a v7 database with `owner_group` slugs and the global
@@ -262,5 +272,8 @@ async fn v8_backfills_owner_group_and_normalizes_bindings() {
             "legacy column still present: {legacy}"
         );
     }
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        recorded_versions(&pool).await,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
 }

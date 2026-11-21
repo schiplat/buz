@@ -36,6 +36,12 @@ pub const KEY_JOB_LOG_RETENTION_DAYS: &str = "job_log_retention_days";
 /// When on, resource-profile grant/revoke requests create a pending change
 /// (two-person flow) instead of applying directly.
 pub const KEY_GRANTS_REQUIRE_APPROVAL: &str = "grants_require_approval";
+/// User-JWT lifetime in hours (local and SSO sign-ins alike). Missing row =
+/// `[auth] jwt_ttl_hours` from manager.toml.
+pub const KEY_SESSION_TTL_HOURS: &str = "session_ttl_hours";
+/// Browser inactivity before the SPA signs itself out, in minutes (0 = off).
+/// A convenience, **not** server-side revocation: the JWT keeps its TTL.
+pub const KEY_SESSION_IDLE_MINUTES: &str = "session_idle_minutes";
 
 /// Every key the Manager interprets, in the order the override query binds
 /// them. Rows for retired keys are ignored (forward compatibility).
@@ -54,17 +60,19 @@ pub const OVERRIDE_KEYS: &[&str] = &[
     KEY_SCHEDULER_STARVATION_SECONDS,
     KEY_GRANTS_REQUIRE_APPROVAL,
     KEY_JOB_LOG_RETENTION_DAYS,
+    KEY_SESSION_TTL_HOURS,
+    KEY_SESSION_IDLE_MINUTES,
 ];
 
 /// Placeholder count in the override query must match [`OVERRIDE_KEYS`].
-const _: () = assert!(OVERRIDE_KEYS.len() == 14);
+const _: () = assert!(OVERRIDE_KEYS.len() == 16);
 
 /// All known-key overrides that have a row.
 pub async fn overrides(pool: &DbPool) -> Result<Vec<(String, String)>, AppError> {
     let binds: Vec<SqlValue> = OVERRIDE_KEYS.iter().map(|k| SqlValue::from(*k)).collect();
     Ok(exec::fetch_all(
         pool,
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &binds,
     )
     .await?

@@ -1,12 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { BookOpen, Check, Clock, Copy, Database, Link2, Plug, RotateCcw, ShieldCheck } from '@lucide/vue'
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  Clock,
+  Copy,
+  Database,
+  Link2,
+  Plug,
+  RotateCcw,
+  ShieldCheck,
+} from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import { useAppDialog } from '@/composables/useAppDialog'
-import { oidcSettingsApi, type DiscoveryProbe, type OidcSettings } from '@/api/oidcSettings'
+import {
+  oidcSettingsApi,
+  type DiscoveryProbe,
+  type OidcEvent,
+  type OidcSettings,
+  type TokenAuthMethod,
+} from '@/api/oidcSettings'
 import { oidcIdentitiesApi } from '@/api/oidcIdentities'
+import { sessionPolicyApi, type SessionPolicy } from '@/api/sessionPolicy'
 
 // SSO settings, database-only configuration (see platform/oidc-sso.md).
 // Composition per the approved v4 design: a status strip, then a two-column
@@ -30,6 +49,36 @@ const clientSecret = ref('') // write-only: empty = keep the stored one
 const redirectOverride = ref('')
 const scopesInput = ref('openid, profile, email')
 const autoProvision = ref(true)
+const tokenAuth = ref<TokenAuthMethod>('auto')
+const groupsClaim = ref('groups')
+
+// Access policy (global: local and SSO sign-ins alike). The idle value is
+// enforced by the SPA only — the copy must not imply server-side revocation.
+const policy = ref<SessionPolicy | null>(null)
+const policyTtl = ref(24)
+const policyIdle = ref(0)
+const savingAccess = ref(false)
+const accessNotice = ref('')
+const accessError = ref('')
+
+// Recent SSO events (platform-wide for platform admins; no local logins).
+const events = ref<OidcEvent[]>([])
+const eventsTotal = ref(0)
+const eventsPage = ref(1)
+const eventsPageSize = ref(20)
+const eventsLoading = ref(false)
+const eventsError = ref('')
+
+const eventsPageCount = computed(() =>
+  Math.max(1, Math.ceil(eventsTotal.value / eventsPageSize.value) || 1),
+)
+
+const eventsRangeLabel = computed(() => {
+  if (eventsTotal.value === 0) return '0 of 0'
+  const start = (eventsPage.value - 1) * eventsPageSize.value + 1
+  const end = Math.min(eventsPage.value * eventsPageSize.value, eventsTotal.value)
+  return `${start}–${end} of ${eventsTotal.value}`
+})
 
 const savedOnce = ref(false)
 const active = ref(false)
@@ -56,6 +105,18 @@ onUnmounted(() => window.clearInterval(timer))
 const oidcMeta = ref<OidcSettings | null>(null)
 
 const firstTime = computed(() => !savedOnce.value)
+
+// A probe only proves the discovery document is reachable. `issuer_match` is
+// the check the runtime itself enforces — when it is false, SSO stays inactive
+// even though "discovery OK", because the provider is advertising a different
+// issuer (e.g. `localhost` vs `127.0.0.1`).
+const probeHealthy = computed(
+  () => probe.value?.ok === true && probe.value.issuer_match !== false,
+)
+// Enabled but no runtime: the configuration was rejected (or the provider is
+// down at save/startup time). The UI must say so instead of leaving a bare
+// "Inactive" next to a switched-on toggle.
+const runtimeInactive = computed(() => enabled.value && !active.value)
 
 const probeAge = computed(() => {
   if (lastProbeAt.value === null) return ''
@@ -88,6 +149,8 @@ function apply(settings: OidcSettings) {
   redirectOverride.value = settings.redirect_uri_override ?? ''
   scopesInput.value = settings.scopes.join(', ')
   autoProvision.value = settings.auto_provision
+  tokenAuth.value = settings.token_auth ?? 'auto'
+  groupsClaim.value = settings.groups_claim ?? 'groups'
   active.value = settings.active
   updatedBy.value = settings.updated_by
   validationError.value =
@@ -111,7 +174,138 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  await loadPolicy()
+  await loadEvents()
 })
+
+async function loadPolicy() {
+  try {
+    policy.value = await sessionPolicyApi.get()
+    policyTtl.value = policy.value.ttl_hours
+    policyIdle.value = policy.value.idle_minutes
+    accessError.value = ''
+  } catch (e: any) {
+    accessError.value = e.message || 'Failed to load the access policy'
+  }
+}
+
+async function savePolicy() {
+  savingAccess.value = true
+  accessError.value = ''
+  accessNotice.value = ''
+  try {
+    policy.value = await sessionPolicyApi.update({
+      ttl_hours: policyTtl.value,
+      idle_minutes: policyIdle.value,
+    })
+    policyTtl.value = policy.value.ttl_hours
+    policyIdle.value = policy.value.idle_minutes
+    accessNotice.value = 'Access policy saved.'
+    window.setTimeout(() => {
+      accessNotice.value = ''
+    }, 2500)
+  } catch (e: any) {
+    accessError.value = e.message || 'Saving the access policy failed'
+  } finally {
+    savingAccess.value = false
+  }
+}
+
+async function resetPolicy() {
+  savingAccess.value = true
+  accessError.value = ''
+  accessNotice.value = ''
+  try {
+    policy.value = await sessionPolicyApi.update({ ttl_hours: null, idle_minutes: null })
+    policyTtl.value = policy.value.ttl_hours
+    policyIdle.value = policy.value.idle_minutes
+    accessNotice.value = 'Reset to the defaults.'
+  } catch (e: any) {
+    accessError.value = e.message || 'Reset failed'
+  } finally {
+    savingAccess.value = false
+  }
+}
+
+async function loadEvents() {
+  eventsLoading.value = true
+  eventsError.value = ''
+  try {
+    const result = await oidcSettingsApi.events(eventsPage.value, eventsPageSize.value)
+    events.value = result.items
+    eventsTotal.value = result.total
+    if (eventsPage.value > eventsPageCount.value) {
+      eventsPage.value = eventsPageCount.value
+    }
+  } catch (e: any) {
+    eventsError.value = e.message || 'Failed to load SSO events'
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+watch([eventsPage, eventsPageSize], () => {
+  void loadEvents()
+})
+
+const EVENT_LABELS: Record<string, string> = {
+  'auth.oidc_login': 'Signed in',
+  'auth.oidc_provision': 'Account created',
+  'auth.oidc_identity_approve': 'Approved',
+  'auth.oidc_identity_reject': 'Rejected',
+  'auth.oidc_backchannel_logout': 'Sessions revoked',
+}
+
+const EVENT_CHIPS: Record<string, string> = {
+  'auth.oidc_login': 'chip-success',
+  'auth.oidc_provision': 'chip-success',
+  'auth.oidc_identity_approve': 'chip-success',
+  'auth.oidc_identity_reject': 'chip-danger',
+  'auth.oidc_backchannel_logout': 'chip-warning',
+}
+
+function eventLabel(action: string): string {
+  return EVENT_LABELS[action] ?? action
+}
+
+function eventChip(action: string): string {
+  return EVENT_CHIPS[action] ?? 'chip-neutral'
+}
+
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * The identity the event is about — email first, like the host project's
+ * User column. For approve/reject this is the identity in the queue, not the
+ * administrator who acted on it.
+ */
+function eventUser(event: OidcEvent): string {
+  const after = event.after as Record<string, unknown> | null
+  return (
+    asText(after?.email) || asText(after?.username) || event.resource_name || '—'
+  )
+}
+
+/**
+ * One human sentence per event, written by the backend at audit time (the
+ * same posture as the host project's `detail` field). The UI never composes
+ * event text — and never shows the opaque IdP subject (Signet uses a UUID).
+ */
+function eventDetail(event: OidcEvent): string {
+  const after = event.after as Record<string, unknown> | null
+  // `reason` is the older backend-written sentence for back-channel rows
+  // recorded before `detail` existed — still backend text, never composed here.
+  return asText(after?.detail) || asText(after?.reason) || '—'
+}
+
+function formatEventTime(raw: string): string {
+  if (!raw) return '—'
+  // Audit timestamps are UTC text; show them in the viewer's local time.
+  const parsed = new Date(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`)
+  return Number.isNaN(parsed.getTime()) ? raw.slice(0, 19).replace('T', ' ') : parsed.toLocaleString()
+}
 
 async function testConnection() {
   testing.value = true
@@ -141,6 +335,8 @@ async function save() {
       redirect_uri_override: redirectOverride.value.trim() || null,
       scopes: scopes.value,
       auto_provision: autoProvision.value,
+      token_auth: tokenAuth.value,
+      groups_claim: groupsClaim.value.trim() || 'groups',
     })
     apply(settings)
     probe.value = null
@@ -208,6 +404,9 @@ async function setPolicy(value: boolean) {
       redirect_uri_override: meta?.redirect_uri_override ?? null,
       scopes: meta?.scopes ?? scopes.value,
       auto_provision: value,
+      // Carry the last-saved values so this targeted save never resets them.
+      token_auth: meta?.token_auth ?? tokenAuth.value,
+      groups_claim: meta?.groups_claim ?? groupsClaim.value,
     })
     autoProvision.value = settings.auto_provision
     policyNotice.value = 'Policy updated — applies immediately.'
@@ -225,7 +424,7 @@ async function setPolicy(value: boolean) {
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="space-y-6">
     <PageHeader
       title="Single sign-on (OIDC)"
       description="Connect any standard OIDC provider. End-to-end verified with Signet."
@@ -254,11 +453,11 @@ async function setPolicy(value: boolean) {
       <!-- status strip: full-width once configured … -->
       <div
         v-if="!firstTime"
-        class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card p-4"
+        class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card px-5 py-4"
       >
         <span
-          class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-xs font-medium"
-          :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
+          class="inline-flex items-center gap-1.5"
+          :class="active ? 'chip-success' : 'chip-neutral'"
         >
           <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
           {{ active ? 'Active' : 'Inactive' }}
@@ -271,13 +470,21 @@ async function setPolicy(value: boolean) {
           Sign-in enabled
         </label>
         <span
-          v-if="probe?.ok && lastProbeAt"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-0.5 text-xs font-medium text-success"
+          v-if="probeHealthy && lastProbeAt"
+          class="chip-success gap-1.5"
         >
           <Check class="h-3 w-3" />
           Connection OK · {{ probeAge }}
         </span>
-        <span class="inline-flex items-center gap-1.5 rounded-lg bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+        <span
+          v-else-if="probe?.ok && lastProbeAt"
+          class="chip-warning gap-1.5"
+          :title="`The provider reports ${probe.discovered_issuer}`"
+        >
+          <AlertTriangle class="h-3 w-3" />
+          Issuer mismatch · {{ probeAge }}
+        </span>
+        <span class="chip-neutral gap-1.5">
           <Database class="h-3 w-3" />
           Source: database
         </span>
@@ -288,20 +495,27 @@ async function setPolicy(value: boolean) {
         </UiButton>
       </div>
 
+      <p v-if="runtimeInactive" class="notice-warning text-sm">
+        Sign-in is switched on, but the runtime is inactive. The provider's
+        discovery document must report the issuer above character-for-character
+        (<span class="font-mono">{{ issuer }}</span>) — run Test connection to
+        see what it actually reports.
+      </p>
+
       <p v-if="!loading && error" class="field-error">{{ error }}</p>
 
       <!-- two-column composition: main column + 320px sidebar -->
-      <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <!-- main column -->
-        <div class="flex min-w-0 flex-col gap-5">
+        <div class="flex min-w-0 flex-col gap-6">
           <!-- first setup: the strip aligns with the column instead of spanning -->
           <div
             v-if="firstTime"
-            class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card p-4"
+            class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card px-5 py-4"
           >
             <span
-              class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-xs font-medium"
-              :class="active ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'"
+              class="inline-flex items-center gap-1.5"
+              :class="active ? 'chip-success' : 'chip-neutral'"
             >
               <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
               {{ active ? 'Active' : 'Inactive' }}
@@ -313,7 +527,7 @@ async function setPolicy(value: boolean) {
               </span>
               Sign-in enabled
             </label>
-            <span class="inline-flex items-center gap-1.5 rounded-lg bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+            <span class="chip-neutral gap-1.5">
               <Database class="h-3 w-3" />
               No configuration yet
             </span>
@@ -325,11 +539,11 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Plug class="h-4 w-4" />
               </span>
-              <h2>Provider connection</h2>
+              <h2 class="type-heading">Provider connection</h2>
             </div>
             <div class="space-y-4 px-5 pb-5 pt-3">
-              <div class="space-y-1.5">
-                <label class="type-label">Issuer</label>
+              <div class="space-y-2">
+                <label class="type-field-label">Issuer</label>
                 <input
                   v-model="issuer"
                   type="text"
@@ -340,16 +554,16 @@ async function setPolicy(value: boolean) {
               </div>
 
               <div class="grid gap-4 sm:grid-cols-2">
-                <div class="space-y-1.5">
-                  <label class="type-label">Client ID</label>
+                <div class="space-y-2">
+                  <label class="type-field-label">Client ID</label>
                   <input
                     v-model="clientId"
                     type="text"
                     class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                   />
                 </div>
-                <div class="space-y-1.5">
-                  <label class="type-label">Client secret</label>
+                <div class="space-y-2">
+                  <label class="type-field-label">Client secret</label>
                   <input
                     v-if="oidcMeta?.client_secret_configured && !replacingSecret"
                     type="password"
@@ -378,14 +592,46 @@ async function setPolicy(value: boolean) {
                 </div>
               </div>
 
-              <div class="space-y-1.5">
-                <label class="type-label">Scopes</label>
+              <div class="space-y-2">
+                <label class="type-field-label">Scopes</label>
                 <input
                   v-model="scopesInput"
                   type="text"
                   class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
                 />
                 <p class="type-meta">Must include <span class="font-mono">openid</span>.</p>
+              </div>
+
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div class="space-y-2">
+                  <label class="type-field-label" for="sso-token-auth">Token endpoint auth</label>
+                  <select id="sso-token-auth" v-model="tokenAuth" class="field-select w-full">
+                    <option value="auto">Auto (from discovery)</option>
+                    <option value="client_secret_basic">Client secret — Basic</option>
+                    <option value="client_secret_post">Client secret — POST body</option>
+                  </select>
+                  <p class="type-meta">
+                    <template v-if="tokenAuth === 'auto'">
+                      Negotiated from discovery<template v-if="probe?.client_auth">
+                        — currently <span class="font-mono">{{ probe.client_auth }}</span></template
+                      >.
+                    </template>
+                    <template v-else>Overrides discovery for every token request.</template>
+                  </p>
+                </div>
+                <div class="space-y-2">
+                  <label class="type-field-label" for="sso-groups-claim">Groups claim</label>
+                  <input
+                    id="sso-groups-claim"
+                    v-model="groupsClaim"
+                    type="text"
+                    placeholder="groups"
+                    class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+                  />
+                  <p class="type-meta">
+                    Mirrored for display and audit only — never grants permissions.
+                  </p>
+                </div>
               </div>
 
               <p v-if="validationError" class="field-error">{{ validationError }}</p>
@@ -407,13 +653,29 @@ async function setPolicy(value: boolean) {
               <!-- probe result (persistent until the next test or save) -->
               <div
                 v-if="probe"
-                class="rounded-lg border p-4"
-                :class="probe.ok ? 'notice-success' : 'notice-danger'"
+                class="mt-4 rounded-xl p-4"
+                :class="
+                  !probe.ok
+                    ? 'bg-destructive/10'
+                    : probe.issuer_match === false
+                      ? 'bg-warning/10'
+                      : 'bg-muted/40'
+                "
               >
                 <template v-if="probe.ok">
-                  <p class="flex items-center gap-1.5 text-sm font-medium text-success">
+                  <p
+                    v-if="probe.issuer_match !== false"
+                    class="flex items-center gap-1.5 text-sm font-medium text-success"
+                  >
                     <Check class="h-3.5 w-3.5" />
                     Discovery OK
+                  </p>
+                  <p
+                    v-else
+                    class="flex items-center gap-1.5 text-sm font-medium text-warning"
+                  >
+                    <AlertTriangle class="h-3.5 w-3.5" />
+                    Issuer mismatch — sign-in stays inactive until they match
                   </p>
                   <div class="mt-2 grid grid-cols-[110px_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1 text-xs">
                     <span class="text-muted-foreground">Issuer match</span>
@@ -430,11 +692,11 @@ async function setPolicy(value: boolean) {
                 </template>
                 <template v-else>
                   <p class="text-sm font-medium">Discovery failed</p>
-                  <p class="type-meta mt-1">{{ probe.error }}</p>
+                  <p class="mt-1 text-xs text-muted-foreground">{{ probe.error }}</p>
                 </template>
               </div>
 
-              <p v-if="notice" class="text-sm text-success">{{ notice }}</p>
+              <p v-if="notice" class="notice-success text-sm">{{ notice }}</p>
               <p v-if="error" class="field-error">{{ error }}</p>
             </div>
           </div>
@@ -446,8 +708,8 @@ async function setPolicy(value: boolean) {
                 <Link2 class="h-4 w-4" />
               </span>
               <div>
-                <h2>Register at your provider</h2>
-                <p class="type-meta">Copy these into your provider's app registration.</p>
+                <h2 class="type-heading">Register at your provider</h2>
+                <p class="type-heading-desc">Copy these into your provider's app registration.</p>
               </div>
             </div>
             <div class="px-5 pb-4 pt-2">
@@ -502,10 +764,10 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <ShieldCheck class="h-4 w-4" />
               </span>
-              <h2>Sign-in policy</h2>
+              <h2 class="type-heading">Sign-in policy</h2>
             </div>
             <div class="px-4 pb-4 pt-2">
-              <p class="type-meta">
+              <p class="type-heading-desc">
                 What a colleague sees on their first SSO sign-in. New identities only — picking a policy saves it right away.
               </p>
 
@@ -523,7 +785,7 @@ async function setPolicy(value: boolean) {
                 <span>
                   <span class="inline-flex items-center gap-2 text-sm font-medium">
                     Create on first sign-in
-                    <span class="rounded-lg bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recommended</span>
+                    <span class="chip-neutral">Recommended</span>
                   </span>
                   <span class="mt-0.5 block text-xs text-muted-foreground">
                     They sign in immediately — a plain account, no teams, no admin. Grant roles afterwards.
@@ -582,7 +844,7 @@ async function setPolicy(value: boolean) {
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Link2 class="h-4 w-4" />
               </span>
-              <h2>Register at your provider</h2>
+              <h2 class="type-heading">Register at your provider</h2>
             </div>
             <div class="space-y-3.5 px-4 pb-4 pt-3">
               <div v-for="uri in registrationUris" :key="uri.key">
@@ -610,6 +872,77 @@ async function setPolicy(value: boolean) {
               </div>
             </div>
           </div>
+
+          <!-- access policy (global: local and SSO sign-ins) -->
+          <div class="surface-card mt-6">
+            <div class="flex items-center gap-2.5 px-4 pt-4">
+              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
+                <Clock class="h-4 w-4" />
+              </span>
+              <h2 class="type-heading">Access policy</h2>
+            </div>
+            <div class="px-4 pb-4 pt-2">
+              <p class="type-heading-desc">
+                Applies to every sign-in, local and SSO. Changing the lifetime affects tokens
+                issued afterwards — existing sessions keep theirs.
+              </p>
+
+              <div class="mt-4 space-y-2">
+                <label class="type-field-label" for="sso-session-ttl">Session lifetime (hours)</label>
+                <input
+                  id="sso-session-ttl"
+                  v-model.number="policyTtl"
+                  type="number"
+                  min="1"
+                  max="720"
+                  class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+                />
+                <p class="type-meta">
+                  Default {{ policy?.ttl_default_hours ?? 24 }} h
+                  <template v-if="policy?.ttl_overridden"> · currently overridden</template>.
+                </p>
+              </div>
+
+              <div class="mt-4 space-y-2">
+                <label class="type-field-label" for="sso-session-idle">Idle timeout (minutes)</label>
+                <input
+                  id="sso-session-idle"
+                  v-model.number="policyIdle"
+                  type="number"
+                  min="0"
+                  max="1440"
+                  class="flex h-9 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:border-foreground/35 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
+                />
+                <p class="type-meta">
+                  0 = off. Signs this browser out after inactivity; the token itself stays valid
+                  until its session lifetime ends.
+                </p>
+              </div>
+
+              <div class="mt-4 flex flex-wrap items-center gap-3">
+                <UiButton type="button" :disabled="savingAccess" @click="savePolicy">
+                  {{ savingAccess ? 'Saving…' : 'Save policy' }}
+                </UiButton>
+                <button
+                  type="button"
+                  class="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+                  :disabled="savingAccess"
+                  @click="resetPolicy"
+                >
+                  Reset to defaults
+                </button>
+              </div>
+
+              <p
+                v-if="accessNotice"
+                class="mt-2 flex items-center gap-1.5 text-xs font-medium text-success"
+              >
+                <Check class="h-3 w-3" />
+                {{ accessNotice }}
+              </p>
+              <p v-if="accessError" class="field-error mt-2">{{ accessError }}</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -617,6 +950,86 @@ async function setPolicy(value: boolean) {
       <p v-if="firstTime" class="type-meta">
         New sign-ins get a plain account automatically — you can require approval later.
       </p>
+
+      <!-- recent authentication events (super's UiDataTable recipe:
+           no card padding, one 20px gutter, 11px column headers) -->
+      <div class="surface-card overflow-hidden">
+        <div class="px-5 pt-5">
+          <h2 class="type-heading">Recent authentication events</h2>
+          <p class="type-heading-desc mt-1">
+            SSO sign-ins, provisioning, approvals, rejections, and provider sign-outs.
+          </p>
+        </div>
+
+        <p v-if="eventsError" class="field-error mx-5 mt-4">{{ eventsError }}</p>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border/40">
+                <th class="w-40 px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground/80">
+                  Time
+                </th>
+                <th class="w-44 px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground/80">
+                  Event
+                </th>
+                <th class="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground/80">
+                  User
+                </th>
+                <th class="w-36 px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground/80">
+                  IP
+                </th>
+                <th class="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground/80">
+                  Detail
+                </th>
+              </tr>
+            </thead>
+            <tbody v-if="eventsLoading && events.length === 0">
+              <tr v-for="n in 3" :key="n" class="border-b border-border/40 last:border-0">
+                <td colspan="5" class="px-5 py-3">
+                  <div class="h-4 w-full animate-pulse rounded bg-muted/40"></div>
+                </td>
+              </tr>
+            </tbody>
+            <tbody v-else-if="events.length === 0">
+              <tr>
+                <td colspan="5" class="px-5 py-12 text-center text-sm text-muted-foreground">
+                  No authentication events yet
+                </td>
+              </tr>
+            </tbody>
+            <tbody v-else>
+              <tr
+                v-for="event in events"
+                :key="event.id"
+                class="border-b border-border/40 last:border-0 hover:bg-muted/40"
+              >
+                <td class="whitespace-nowrap px-5 py-3 text-xs tabular-nums text-muted-foreground">
+                  {{ formatEventTime(event.created_at) }}
+                </td>
+                <td class="px-5 py-3">
+                  <span :class="eventChip(event.action)">{{ eventLabel(event.action) }}</span>
+                </td>
+                <td class="px-5 py-3 text-xs">{{ eventUser(event) }}</td>
+                <td class="px-5 py-3 text-xs text-muted-foreground">{{ event.ip || '—' }}</td>
+                <td class="px-5 py-3 text-xs text-muted-foreground">
+                  <span class="block max-w-[28rem] truncate">
+                    {{ eventDetail(event) }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <TablePagination
+          v-model:page="eventsPage"
+          v-model:pageSize="eventsPageSize"
+          :total="eventsTotal"
+          :page-count="eventsPageCount"
+          :range-label="eventsRangeLabel"
+        />
+      </div>
     </template>
   </div>
 </template>

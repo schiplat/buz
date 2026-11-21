@@ -2,10 +2,12 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Router,
 };
+use shared::error::AppError;
 
 use crate::state::AppState;
 
 pub mod auth;
+pub mod oidc_events;
 pub mod oidc_identities;
 pub mod oidc_settings;
 pub mod pipeline_yaml_files;
@@ -18,6 +20,7 @@ pub(crate) use pipelines::{
 };
 pub mod api_tokens;
 pub mod audit_logs;
+pub mod branding;
 pub mod environments;
 pub mod git_hooks;
 pub mod git_webhook;
@@ -32,6 +35,7 @@ pub mod plugin_sources;
 pub mod plugins;
 pub mod sandboxd_config;
 pub mod secrets;
+pub mod session_policy;
 pub mod settings;
 pub mod teams;
 pub mod trigger_events;
@@ -109,6 +113,11 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/verify", get(auth::verify))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
+        // Session policy (GET: any signed-in user; PUT: platform admin)
+        .route(
+            "/auth/session-policy",
+            get(session_policy::get_policy).put(session_policy::update_policy),
+        )
         // OIDC single sign-on (public browser flow; see platform/oidc-sso.md)
         .route("/auth/oidc/providers", get(auth::oidc_providers))
         .route("/auth/oidc/start", get(auth::oidc_start))
@@ -136,6 +145,9 @@ pub fn router(state: AppState) -> Router {
             "/auth/oidc/identities/pending/{id}",
             delete(oidc_identities::reject_pending),
         )
+        // Recent SSO authentication events (platform admin; SSO-only scope,
+        // see the module doc for the visibility decision)
+        .route("/auth/oidc/events", get(oidc_events::list_events))
         // SSO configuration (platform admin; DB override > file seed)
         .route(
             "/auth/oidc/settings",
@@ -329,6 +341,14 @@ pub fn router(state: AppState) -> Router {
             get(api_tokens::list).post(api_tokens::create),
         )
         .route("/api-tokens/{id}", delete(api_tokens::revoke))
+        // Instance branding: public read (the sign-in page needs the logo
+        // before authentication), platform-admin write.
+        .route("/branding", get(branding::get_branding))
+        .route("/branding/logo", get(branding::get_logo))
+        .route(
+            "/admin/branding",
+            put(branding::update_branding).delete(branding::reset_branding),
+        )
         // Platform settings (admin-editable; DB overrides manager.toml)
         .route("/admin/settings", get(settings::get_settings))
         .route(
@@ -396,5 +416,18 @@ pub fn router(state: AppState) -> Router {
             post(git_webhook::handle),
         )
         .route("/hooks/{path}", post(webhook::handle))
+        // Unknown API paths answer a JSON 404 — never the SPA. Without this
+        // fallback the outer frontend handler serves `index.html` with 200,
+        // so a renamed or absent route looks like a successful response and
+        // clients parse HTML as data (version skew between a new SPA and an
+        // older Manager produced exactly that).
+        .fallback(api_not_found)
         .with_state(state)
+}
+
+/// `404` for anything under `/api/v1` that is not a route, in the API's own
+/// envelope. The fallback must live on the nested router: a fallback on the
+/// outer router is what the SPA uses for client-side routes.
+async fn api_not_found() -> Result<(), AppError> {
+    Err(AppError::NotFound("no such API endpoint".into()))
 }

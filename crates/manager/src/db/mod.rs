@@ -473,7 +473,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8];
+const MIGRATIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// Highest SQLite schema version this build applies. The SQLite → Postgres
 /// migration tool requires its source to be at this version: the copy
@@ -533,6 +533,8 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
         6 => apply_v6_session_revocation(pool).await,
         7 => apply_v7_pending_identities(pool).await,
         8 => apply_v8_normalize_bindings(pool).await,
+        9 => apply_v9_branding(pool).await,
+        10 => apply_v10_oidc_settings_claim_auth(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
 }
@@ -792,6 +794,49 @@ async fn rebuild_hosts_v8(conn: &mut sqlx::SqliteConnection) -> anyhow::Result<(
     )
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+/// v9: instance branding (custom logo, `platform/branding.md`).
+///
+/// Single-row table. Absent row = the built-in mark is used, so the default
+/// look is untouched; a saved row holds the administrator-uploaded logo as
+/// base64 text (portable across SQLite/Postgres, small enough to inline).
+async fn apply_v9_branding(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS branding (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            logo_mime TEXT NOT NULL DEFAULT '',
+            logo_base64 TEXT NOT NULL DEFAULT '',
+            logo_bytes BIGINT NOT NULL DEFAULT 0,
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v10: two web-editable OIDC knobs (`platform/oidc-sso.md`).
+///
+/// `token_auth` overrides how Buz authenticates at the provider's token
+/// endpoint (`auto` keeps discovery negotiation); `groups_claim` names the
+/// id_token claim mirrored into `external_identities.groups_json`. Neither
+/// grants permissions — the claim is display/audit only.
+async fn apply_v10_oidc_settings_claim_auth(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(
+        pool,
+        "oidc_settings",
+        "token_auth TEXT NOT NULL DEFAULT 'auto'",
+    )
+    .await;
+    add_column_if_missing(
+        pool,
+        "oidc_settings",
+        "groups_claim TEXT NOT NULL DEFAULT 'groups'",
+    )
+    .await;
     Ok(())
 }
 

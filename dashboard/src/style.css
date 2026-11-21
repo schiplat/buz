@@ -187,6 +187,24 @@
   @apply text-xs leading-relaxed text-muted-foreground;
 }
 
+/* Section/card heading (14px semibold, normal case). Dense settings surfaces
+   use this step instead of the 16px base h2 — see the typography scale. */
+@utility type-heading {
+  @apply text-sm font-semibold tracking-tight text-foreground;
+}
+
+/* Supporting copy directly under a heading: 14px muted. Hints below a control
+   stay `type-meta` (12px) so the two roles stay visually distinct. */
+@utility type-heading-desc {
+  @apply text-sm text-muted-foreground;
+}
+
+/* Form field label: same weight/size as a heading, foreground colour, normal
+   case. Uppercase eyebrow labels are for table columns and chips, not fields. */
+@utility type-field-label {
+  @apply text-sm font-semibold tracking-tight text-foreground;
+}
+
 @utility type-label {
   @apply text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground;
 }

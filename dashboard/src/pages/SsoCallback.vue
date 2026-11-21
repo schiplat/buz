@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import UiButton from '@/components/ui/UiButton.vue'
+import BrandMark from '@/components/brand/BrandMark.vue'
 
 // Landing point of the OIDC callback: the Manager handed the browser a
 // one-shot ticket cookie and redirected here. Exchange it for the session
@@ -67,11 +68,7 @@ function describeError(code: string): string {
   <div class="flex min-h-screen items-center justify-center bg-background">
     <div class="w-full max-w-sm space-y-4 text-center">
       <div class="flex justify-center">
-        <span
-          class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-semibold tracking-wide text-primary-foreground"
-        >
-          Bz
-        </span>
+        <BrandMark size="md" />
       </div>
       <div v-if="status === 'exchanging'" class="space-y-1">
         <p class="text-sm font-medium">Completing sign-in…</p>

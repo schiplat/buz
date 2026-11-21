@@ -17,9 +17,40 @@ export interface OidcSettings {
   post_logout_redirect_uri: string | null
   scopes: string[]
   auto_provision: boolean
+  /** Token-endpoint client authentication; `auto` follows discovery. */
+  token_auth: TokenAuthMethod
+  /** id_token claim mirrored for display/audit (never authorization). */
+  groups_claim: string
   updated_by: string
   active: boolean
   validation: { ok: boolean; error?: string }
+}
+
+/** One page of the "Recent authentication events" table. */
+export interface OidcEventPage {
+  items: OidcEvent[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type TokenAuthMethod = 'auto' | 'client_secret_basic' | 'client_secret_post'
+
+/** One row of the "Recent SSO events" card (audit-log shape). */
+export interface OidcEvent {
+  id: string
+  created_at: string
+  actor_user_id: string
+  actor_username: string
+  action: string
+  resource_type: string
+  resource_id: string
+  resource_name: string
+  team_id: string | null
+  before: unknown
+  after: Record<string, unknown> | null
+  meta: unknown
+  ip: string
 }
 
 export interface DiscoveryProbe {
@@ -45,6 +76,8 @@ export interface OidcSettingsUpdate {
   redirect_uri_override?: string | null
   scopes: string[]
   auto_provision: boolean
+  token_auth?: TokenAuthMethod
+  groups_claim?: string
 }
 
 export const oidcSettingsApi = {
@@ -63,5 +96,12 @@ export const oidcSettingsApi = {
   async test(issuer: string): Promise<DiscoveryProbe> {
     const resp = await apiClient.post('/auth/oidc/settings/test', { issuer })
     return resp.data as DiscoveryProbe
+  },
+  /** Recent SSO lifecycle events (platform-wide for platform admins). */
+  async events(page = 1, pageSize = 20): Promise<OidcEventPage> {
+    const resp = await apiClient.get('/auth/oidc/events', {
+      params: { page, page_size: pageSize },
+    })
+    return resp.data as OidcEventPage
   },
 }

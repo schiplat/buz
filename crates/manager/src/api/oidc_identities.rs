@@ -191,9 +191,15 @@ pub async fn bind_pending(
             .on(Resource::user(&user_id, &username))
             .after(Some(serde_json::json!({
                 "subject": pending.subject,
+                "email": pending.email,
                 "issuer": if runtime_issuer.is_empty() { pending.issuer.clone() } else { runtime_issuer },
                 "created_user": created,
                 "password_login_disabled": password_disabled,
+                "detail": format!(
+                    "{} account {}",
+                    if created { "created" } else { "linked" },
+                    username
+                ),
             }))),
     )
     .await;
@@ -229,6 +235,10 @@ pub async fn reject_pending(
                 "subject": pending.subject,
                 "email": pending.email,
                 "attempts": pending.attempts,
+                "detail": format!(
+                    "sign-in refused ({} attempt(s))",
+                    pending.attempts
+                ),
             }))),
     )
     .await;

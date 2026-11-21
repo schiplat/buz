@@ -47,9 +47,29 @@ pub struct IdTokenClaims {
     #[serde(default)]
     pub preferred_username: Option<String>,
     #[serde(default)]
-    pub groups: Option<Vec<String>>,
-    #[serde(default)]
     pub nonce: Option<String>,
+    /// Every claim not modeled above. The groups claim is configurable
+    /// (`EffectiveOidc::groups_claim`), so it is read from this map instead
+    /// of a fixed field. This also tolerates providers that send a single
+    /// string rather than an array without failing the whole decode.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl IdTokenClaims {
+    /// The configured groups claim as a list. Arrays keep their string
+    /// elements; a single string is one group; anything else is empty.
+    fn claim_groups(&self, claim: &str) -> Vec<String> {
+        match self.extra.get(claim) {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_string)
+                .collect(),
+            Some(serde_json::Value::String(value)) => vec![value.clone()],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// The resolved identity of one sign-in. `subject` is the account key.
@@ -89,6 +109,11 @@ pub struct EffectiveOidc {
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub auto_provision: bool,
+    /// Token-endpoint client authentication (`Auto` = discovery negotiation).
+    pub token_auth: TokenAuth,
+    /// id_token claim mirrored into `external_identities.groups_json`.
+    /// Display/audit only — never an authorization input.
+    pub groups_claim: String,
     /// Where each saved value came from: `database` once an administrator
     /// has saved settings, otherwise `file`.
     pub source: &'static str,
@@ -177,6 +202,17 @@ impl EffectiveOidc {
         if !self.scopes.iter().any(|s| s == "openid") {
             return Err("scopes must include 'openid'".into());
         }
+        let claim = self.groups_claim.trim();
+        if claim.is_empty() {
+            return Err("groups claim must not be empty".into());
+        }
+        if claim.len() > 128 || claim.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(
+                "groups claim must be a single claim name (no whitespace, max 128 \
+                        characters)"
+                    .into(),
+            );
+        }
         Ok(())
     }
 }
@@ -201,6 +237,8 @@ pub fn resolve_effective(
             redirect_uri: String::new(),
             scopes: vec!["openid".into(), "profile".into(), "email".into()],
             auto_provision: true,
+            token_auth: TokenAuth::Auto,
+            groups_claim: "groups".into(),
             source: "database",
         });
     };
@@ -227,6 +265,11 @@ pub fn resolve_effective(
         redirect_uri,
         scopes,
         auto_provision: row.auto_provision,
+        token_auth: TokenAuth::parse(&row.token_auth).unwrap_or_default(),
+        groups_claim: match row.groups_claim.trim() {
+            "" => "groups".to_string(),
+            claim => claim.to_string(),
+        },
         source: "database",
     })
 }
@@ -281,12 +324,10 @@ pub async fn probe_discovery(issuer: &str) -> Result<DiscoveryProbe, String> {
             .end_session_endpoint
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty()),
-        client_auth: match TokenAuth::from_discovery(
+        client_auth: TokenAuth::from_discovery(
             discovery.token_endpoint_auth_methods_supported.as_deref(),
-        ) {
-            TokenAuth::ClientSecretPost => "client_secret_post",
-            TokenAuth::ClientSecretBasic => "client_secret_basic",
-        },
+        )
+        .as_str(),
     })
 }
 
@@ -309,10 +350,14 @@ struct DiscoveryDocument {
     token_endpoint_auth_methods_supported: Option<Vec<String>>,
 }
 
-/// The negotiated token-endpoint client authentication (see
-/// [`DiscoveryDocument::token_endpoint_auth_methods_supported`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenAuth {
+/// Token-endpoint client authentication. `Auto` uses the provider's discovery
+/// document; the other variants are an explicit administrator override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenAuth {
+    /// Negotiate from `token_endpoint_auth_methods_supported`.
+    #[default]
+    Auto,
     /// `client_id`/`client_secret` in the form body.
     ClientSecretPost,
     /// `client_id`/`client_secret` in an `Authorization: Basic` header.
@@ -320,12 +365,38 @@ enum TokenAuth {
 }
 
 impl TokenAuth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TokenAuth::Auto => "auto",
+            TokenAuth::ClientSecretPost => "client_secret_post",
+            TokenAuth::ClientSecretBasic => "client_secret_basic",
+        }
+    }
+
+    /// Parse a stored/settings value; unknown strings are `None`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" | "" => Some(TokenAuth::Auto),
+            "client_secret_post" => Some(TokenAuth::ClientSecretPost),
+            "client_secret_basic" => Some(TokenAuth::ClientSecretBasic),
+            _ => None,
+        }
+    }
+
     fn from_discovery(methods: Option<&[String]>) -> Self {
         let declared = methods.map(|m| !m.is_empty()).unwrap_or(false);
         if declared && !methods.unwrap().iter().any(|m| m == "client_secret_post") {
             TokenAuth::ClientSecretBasic
         } else {
             TokenAuth::ClientSecretPost
+        }
+    }
+
+    /// The method actually sent: the explicit override, or the negotiated one.
+    fn resolve(self, methods: Option<&[String]>) -> Self {
+        match self {
+            TokenAuth::Auto => TokenAuth::from_discovery(methods),
+            explicit => explicit,
         }
     }
 }
@@ -350,6 +421,9 @@ pub struct OidcRuntime {
     /// Provision a plain Buz user on first sign-in of an unbound identity
     /// (the handler refuses unbound identities when false).
     pub auto_provision: bool,
+    token_auth: TokenAuth,
+    /// id_token claim mirrored for display/audit (never authorization).
+    groups_claim: String,
     http: reqwest::Client,
     cached: RwLock<Option<(Instant, CachedEndpoints)>>,
 }
@@ -378,6 +452,8 @@ impl OidcRuntime {
             redirect_uri: effective.redirect_uri.trim().to_string(),
             scopes: effective.scopes.clone(),
             auto_provision: effective.auto_provision,
+            token_auth: effective.token_auth,
+            groups_claim: effective.groups_claim.trim().to_string(),
             http: reqwest::Client::builder()
                 // Provider endpoints only; never follow redirects — discovery
                 // and JWKS URLs come from admin config and must answer directly.
@@ -456,9 +532,9 @@ impl OidcRuntime {
             end_session_endpoint: discovery
                 .end_session_endpoint
                 .filter(|url| !url.trim().is_empty()),
-            token_auth: TokenAuth::from_discovery(
-                discovery.token_endpoint_auth_methods_supported.as_deref(),
-            ),
+            token_auth: self
+                .token_auth
+                .resolve(discovery.token_endpoint_auth_methods_supported.as_deref()),
         };
         *self.cached.write().await = Some((Instant::now(), endpoints.clone()));
         Ok(endpoints)
@@ -570,6 +646,7 @@ impl OidcRuntime {
         if claims.nonce.as_deref() != Some(expected_nonce) {
             return Err(AppError::AuthFailed("oidc nonce mismatch".into()));
         }
+        let groups = claims.claim_groups(&self.groups_claim);
         Ok(OidcIdentity {
             subject: claims.sub,
             email: claims.email.filter(|e| !e.trim().is_empty()),
@@ -577,7 +654,7 @@ impl OidcRuntime {
                 .name
                 .or(claims.preferred_username)
                 .filter(|n| !n.trim().is_empty()),
-            groups: claims.groups.unwrap_or_default(),
+            groups,
         })
     }
 

@@ -345,6 +345,8 @@ async fn postgres_statements_are_declared() {
 const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT COUNT(*) FROM audit_logs {where_sql}",
     "SELECT id, created_at, actor_user_id, actor_username, action, resource_type, resource_id, resource_name, team_id, before_json, after_json, meta_json, ip FROM audit_logs {where_sql}",
+    "SELECT id, created_at, actor_user_id, actor_username, action, resource_type, resource_id, resource_name, team_id, before_json, after_json, meta_json, ip FROM audit_logs WHERE action IN ({placeholders}) ORDER BY created_at DESC LIMIT ? OFFSET ?",
+    "SELECT COUNT(*) FROM audit_logs WHERE action IN ({placeholders})",
     "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 WHERE id = ? AND status NOT IN ('cancelled', 'success', 'failed', 'timeout')",
     "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {clause} {debug_filter} GROUP BY substr(j.created_at, 1, 10), j.status",
     "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {debug_filter}",
