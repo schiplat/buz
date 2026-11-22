@@ -133,7 +133,16 @@ const scopes = computed(() =>
 )
 
 const registrationUris = computed(() => [
-  { key: 'callback', label: 'Callback', what: 'sign-in', value: oidcMeta.value?.redirect_uri_effective ?? '' },
+  {
+    key: 'callback',
+    label: 'Callback',
+    what: 'sign-in',
+    // Empty until the first save; `derived_redirect_uri` is what the Manager
+    // would store, so the operator can register it before saving.
+    value: oidcMeta.value?.redirect_uri_effective || oidcMeta.value?.derived_redirect_uri || '',
+  },
+  // Both are derived from server.public_base_url server-side, so they are
+  // present even with no saved configuration.
   { key: 'backchannel', label: 'Back-channel logout', what: 'instant revocation', value: oidcMeta.value?.backchannel_logout_uri ?? '' },
   { key: 'landing', label: 'Post-logout landing', what: 'unified sign-out', value: oidcMeta.value?.post_logout_redirect_uri ?? '' },
 ])
@@ -387,6 +396,14 @@ async function copyUri(key: string, value: string) {
 /// are never carried along. Failure reverts the selection; success shows a
 /// brief confirmation inside the card.
 async function setPolicy(value: boolean) {
+  // Picking a policy saves immediately, so it only works once there is a saved
+  // configuration to patch: before the first save there is no issuer or client
+  // to send, and the PUT would be rejected. The radio is a preview then — the
+  // value rides along with the next Save.
+  if (firstTime.value) {
+    autoProvision.value = value
+    return
+  }
   if (savingPolicy.value || value === autoProvision.value) return
   const previous = autoProvision.value
   autoProvision.value = value
@@ -450,9 +467,8 @@ async function setPolicy(value: boolean) {
     </div>
 
     <template v-else>
-      <!-- status strip: full-width once configured … -->
+      <!-- status strip: one layout whether or not a configuration is saved -->
       <div
-        v-if="!firstTime"
         class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card px-5 py-4"
       >
         <span
@@ -484,12 +500,22 @@ async function setPolicy(value: boolean) {
           <AlertTriangle class="h-3 w-3" />
           Issuer mismatch · {{ probeAge }}
         </span>
-        <span class="chip-neutral gap-1.5">
+        <span v-if="!firstTime" class="chip-neutral gap-1.5">
           <Database class="h-3 w-3" />
           Source: database
         </span>
+        <span v-else class="chip-neutral gap-1.5">
+          <Database class="h-3 w-3" />
+          No configuration yet
+        </span>
         <span v-if="updatedBy" class="text-xs text-muted-foreground">Saved by {{ updatedBy }}</span>
-        <UiButton variant="ghost" size="sm" class="ml-auto" @click="clearConfiguration">
+        <UiButton
+          v-if="!firstTime"
+          variant="ghost"
+          size="sm"
+          class="ml-auto"
+          @click="clearConfiguration"
+        >
           <RotateCcw class="h-3.5 w-3.5" />
           Clear configuration
         </UiButton>
@@ -508,31 +534,6 @@ async function setPolicy(value: boolean) {
       <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <!-- main column -->
         <div class="flex min-w-0 flex-col gap-6">
-          <!-- first setup: the strip aligns with the column instead of spanning -->
-          <div
-            v-if="firstTime"
-            class="flex flex-wrap items-center gap-x-3 gap-y-2 surface-card px-5 py-4"
-          >
-            <span
-              class="inline-flex items-center gap-1.5"
-              :class="active ? 'chip-success' : 'chip-neutral'"
-            >
-              <span class="h-1.5 w-1.5 rounded-full" :class="active ? 'bg-success' : 'bg-muted-foreground'" />
-              {{ active ? 'Active' : 'Inactive' }}
-            </span>
-            <label class="inline-flex items-center gap-2 text-sm font-medium">
-              <span class="relative inline-flex h-5 w-[34px]">
-                <input v-model="enabled" type="checkbox" class="peer h-full w-full cursor-pointer appearance-none rounded-lg bg-muted-foreground/30 transition-colors checked:bg-success" />
-                <span class="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-all peer-checked:translate-x-[14px]"></span>
-              </span>
-              Sign-in enabled
-            </label>
-            <span class="chip-neutral gap-1.5">
-              <Database class="h-3 w-3" />
-              No configuration yet
-            </span>
-          </div>
-
           <!-- provider connection -->
           <div class="surface-card">
             <div class="flex items-center gap-2.5 px-5 pt-4">
@@ -701,8 +702,8 @@ async function setPolicy(value: boolean) {
             </div>
           </div>
 
-          <!-- registration (configured state: main column, wide rows) -->
-          <div v-if="!firstTime" class="surface-card">
+          <!-- registration: always in the main column, with the wide rows -->
+          <div class="surface-card">
             <div class="flex items-center gap-2.5 px-5 pt-4">
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <Link2 class="h-4 w-4" />
@@ -758,8 +759,8 @@ async function setPolicy(value: boolean) {
 
         <!-- sidebar (320px) -->
         <div class="min-w-0">
-          <!-- sign-in policy (configured state only) -->
-          <div v-if="!firstTime" class="surface-card">
+          <!-- sign-in policy (always present; the defaults are the recommendation) -->
+          <div class="surface-card">
             <div class="flex items-center gap-2.5 px-4 pt-4">
               <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
                 <ShieldCheck class="h-4 w-4" />
@@ -768,7 +769,14 @@ async function setPolicy(value: boolean) {
             </div>
             <div class="px-4 pb-4 pt-2">
               <p class="type-heading-desc">
-                What a colleague sees on their first SSO sign-in. New identities only — picking a policy saves it right away.
+                <template v-if="firstTime">
+                  What a colleague gets on their first SSO sign-in. New identities only — this
+                  rides along with your first Save.
+                </template>
+                <template v-else>
+                  What a colleague sees on their first SSO sign-in. New identities only — picking
+                  a policy saves it right away.
+                </template>
               </p>
 
               <label
@@ -835,41 +843,6 @@ async function setPolicy(value: boolean) {
               <p class="mt-3 border-t border-border/40 pt-3 text-xs text-muted-foreground">
                 SSO accounts have no local password. Your admin login stays as break-glass.
               </p>
-            </div>
-          </div>
-
-          <!-- registration (first-time: narrow sidebar variant) -->
-          <div v-else class="surface-card">
-            <div class="flex items-center gap-2.5 px-4 pt-4">
-              <span class="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg bg-muted/40 text-muted-foreground">
-                <Link2 class="h-4 w-4" />
-              </span>
-              <h2 class="type-heading">Register at your provider</h2>
-            </div>
-            <div class="space-y-3.5 px-4 pb-4 pt-3">
-              <div v-for="uri in registrationUris" :key="uri.key">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium">{{ uri.label }}</span>
-                  <span class="text-xs text-muted-foreground">{{ uri.what }}</span>
-                  <button
-                    v-if="uri.value"
-                    type="button"
-                    class="ml-auto flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-                    :class="copiedKey === uri.key ? 'bg-success/10 text-success' : ''"
-                    :title="copiedKey === uri.key ? 'Copied' : 'Copy'"
-                    @click="copyUri(uri.key, uri.value)"
-                  >
-                    <Check v-if="copiedKey === uri.key" class="h-3 w-3" />
-                    <Copy v-else class="h-3 w-3" />
-                  </button>
-                </div>
-                <code
-                  class="mt-1.5 block surface-inset px-2.5 py-1.5 font-mono text-xs leading-relaxed"
-                  :class="uri.value ? 'break-all text-foreground' : 'text-muted-foreground/70'"
-                >
-                  {{ uri.value || 'available after the issuer is saved' }}
-                </code>
-              </div>
             </div>
           </div>
 
@@ -945,11 +918,6 @@ async function setPolicy(value: boolean) {
           </div>
         </div>
       </div>
-
-      <!-- first-time: the delayed-policy note lives under the grid -->
-      <p v-if="firstTime" class="type-meta">
-        New sign-ins get a plain account automatically — you can require approval later.
-      </p>
 
       <!-- recent authentication events (super's UiDataTable recipe:
            no card padding, one 20px gutter, 11px column headers) -->

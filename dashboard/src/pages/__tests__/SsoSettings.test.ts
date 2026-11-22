@@ -208,4 +208,51 @@ describe('SsoSettings', () => {
     expect(payload.token_auth).toBe('client_secret_post')
     expect(payload.groups_claim).toBe('roles')
   })
+
+  // The page used to branch on `updated_by === ''`: a never-configured instance
+  // rendered only "Provider connection" and pushed "Register at your provider"
+  // into the 320px sidebar while hiding "Sign-in policy" entirely, so two
+  // releases looked like different pages. One layout now, with defaults.
+  it('renders every card with defaults before the first save', async () => {
+    vi.mocked(oidcSettingsApi.get).mockResolvedValue(
+      settings({
+        enabled: false,
+        issuer: '',
+        client_id: '',
+        client_secret_configured: false,
+        active: false,
+        updated_by: '',
+        // The Manager derives these from server.public_base_url even with no
+        // saved configuration — they are what the operator registers.
+        redirect_uri_effective:
+          'https://buz.example.com/api/v1/auth/oidc/callback',
+        backchannel_logout_uri:
+          'https://buz.example.com/api/v1/auth/oidc/backchannel-logout',
+        post_logout_redirect_uri:
+          'https://buz.example.com/auth/sso/logged-out',
+      }),
+    )
+    const root = await mountPage()
+
+    expect(root.textContent).toContain('Provider connection')
+    expect(root.textContent).toContain('Register at your provider')
+    expect(root.textContent).toContain('Sign-in policy')
+    expect(root.textContent).toContain('Access policy')
+    expect(root.textContent).toContain('No configuration yet')
+
+    // The registration card lists the derived URIs the provider needs, even
+    // before anything is saved — that is the whole point of showing it.
+    expect(root.textContent).toContain('/api/v1/auth/oidc/callback')
+    expect(root.textContent).not.toContain('available after the issuer is saved')
+
+    // Picking a policy before the first save is a preview, not a request: the
+    // PUT would carry an empty issuer and be rejected.
+    const queue = [...root.querySelectorAll('input[type="radio"]')][1] as HTMLInputElement
+    queue.checked = true
+    queue.dispatchEvent(new Event('change', { bubbles: true }))
+    await flush()
+
+    expect(oidcSettingsApi.update).not.toHaveBeenCalled()
+    expect(root.textContent).toContain('rides along with your first Save')
+  })
 })
