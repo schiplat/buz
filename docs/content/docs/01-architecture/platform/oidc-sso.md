@@ -223,9 +223,15 @@ IdP: admin disables the user / user logs out / password reset / MFA reset /
   their own lifecycle, revoked from Buz rather than by the IdP. Disabling the
   user (`is_active = 0`) still blocks them.
 - The endpoint is public: the signed logout token is the credential. Unknown
-  subjects and `sid`-only tokens answer `200` (no account enumeration);
-  malformed or forged tokens answer `400`. Revocation is idempotent and
-  audited (`auth.oidc_backchannel_logout`, system actor).
+  subjects answer `200` (no account enumeration); `sid`-only tokens answer
+  `501` (Buz keeps no session rows, so a provider session id cannot be mapped
+  to anything revoke-able — and a `200` would record a success that did not
+  happen); malformed or forged tokens answer `400`. Revocation is idempotent
+  and audited (`auth.oidc_backchannel_logout`, system actor). Register Buz
+  with subject-based logout only; a token carrying **both** `sub` and `sid`
+  is processed by its subject and revokes every Buz session of that account —
+  the strongest thing Buz can do, and more than the one session the provider
+  named.
 - The 300 s freshness window bounds replay; a replayed token inside the window
   re-stamps the same instant and changes nothing.
 
@@ -339,7 +345,7 @@ the login page can render the button conditionally.
 | Concern | Rule |
 |---|---|
 | Identity key | `(provider, subject)` from validated id_token; never email/username matching |
-| Token exchange | Confidential client only; client_secret stays server-side; PKCE S256 always |
+| Token exchange | Confidential client only; client_secret stays server-side; PKCE S256 always; client auth = `client_secret_basic` by default (RFC 6749 §2.3.1), form credentials only when the provider declares `client_secret_post` and not Basic — overridable per instance |
 | Replay | `state` single-use + hashed at rest; `nonce` echoed in id_token and verified |
 | Clock | ±60 s skew on `exp`/`iat`; JWKS cached with `kid` rotation support |
 | Session handoff | 60 s single-use ticket in an `HttpOnly` cookie; `Cache-Control: no-store` on exchange |
@@ -364,7 +370,9 @@ the login page can render the button conditionally.
   persists no session rows (a `sid` claim / session table was deliberately
   not added). The idle timeout is client-side only; the revocation primitives
   are the JWT TTL (~session lifetime) and the account-wide
-  `sessions_revoked_epoch`.
+  `sessions_revoked_epoch`. Consequences: an IdP-side logout ends **all** Buz
+  sessions of that account at once (every device), and a `sid`-only logout
+  token is refused with `501` (above) rather than silently ignored.
 - Group claims are stored but inert in Phase 1.
 
 ## Phasing

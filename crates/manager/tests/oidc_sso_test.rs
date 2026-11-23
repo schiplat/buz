@@ -130,25 +130,41 @@ async fn token_endpoint(
         return fail("unsupported_grant_type");
     }
     // Client authentication per what this mock declares: basic-only suites
-    // require the Basic header and reject body credentials; everything else
-    // accepts the form shape (a provider declaring both accepts either).
-    let basic_only = idp.auth_methods.iter().any(|m| m == "client_secret_basic")
-        && !idp.auth_methods.iter().any(|m| m == "client_secret_post");
+    // require the Basic header and reject body credentials; post-only suites
+    // require the form shape and reject a header. A silent declaration is the
+    // RFC 6749 §2.3.1 "nothing said" case, so this mock accepts both shapes
+    // there — round-trip journeys stay agnostic to the negotiation default,
+    // and the `auto_negotiation_resolves_to_basic_by_default` unit test is
+    // what pins that default.
+    let declares = |name: &str| idp.auth_methods.iter().any(|m| m == name);
+    let basic_only = declares("client_secret_basic") && !declares("client_secret_post");
+    let post_only = declares("client_secret_post") && !declares("client_secret_basic");
+    let body_ok = form.get("client_id").map(String::as_str) == Some(CLIENT_ID)
+        && form.get("client_secret").map(String::as_str) == Some(CLIENT_SECRET);
+    let header_ok =
+        basic_credentials(&headers).is_some_and(|(u, p)| u == CLIENT_ID && p == CLIENT_SECRET);
     if basic_only {
-        let credentials_ok =
-            basic_credentials(&headers).is_some_and(|(u, p)| u == CLIENT_ID && p == CLIENT_SECRET);
-        if !credentials_ok {
+        if !header_ok {
             return fail("invalid_client");
         }
-        if form.contains_key("client_id") || form.contains_key("client_secret") {
+        if body_ok {
+            // §2.3.1: the secret must not appear in both places at once.
+            return fail("invalid_request");
+        }
+    } else if post_only {
+        if !body_ok {
             return fail("invalid_client");
+        }
+        if header_ok {
+            return fail("invalid_request");
         }
     } else {
-        if form.get("client_id").map(String::as_str) != Some(CLIENT_ID) {
+        // Silent or both-declared: either shape is acceptable.
+        if !body_ok && !header_ok {
             return fail("invalid_client");
         }
-        if form.get("client_secret").map(String::as_str) != Some(CLIENT_SECRET) {
-            return fail("invalid_client");
+        if body_ok && header_ok {
+            return fail("invalid_request");
         }
     }
     if form.get("redirect_uri").map(String::as_str) != Some(REDIRECT_URI) {
@@ -2065,6 +2081,87 @@ async fn backchannel_logout_rejects_tokens_that_do_not_verify() {
         .await;
         assert_eq!(status, StatusCode::OK);
     }
+}
+
+/// A verified `sid`-only logout token is refused with `501`: Buz keeps no
+/// session rows, so a provider session id has nothing to map to, and answering
+/// `200` would record a success that did not happen. The user's existing
+/// sessions are untouched — a revocation that never targeted them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sid_only_logout_token_answers_not_implemented_and_revokes_nothing() {
+    let (idp, issuer) = MockIdp::start().await;
+    let runtime = build_mock_runtime(&services_effective(&issuer, true))
+        .await
+        .expect("runtime builds against the mock");
+    let pool = common::test_db(4).await;
+    seed_users(&pool).await;
+    bind_identity(&pool, "sub-bound", "admin-1").await;
+    let router = sso_app(Some(runtime), pool.clone()).await;
+
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let token = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("login token")
+        .to_string();
+
+    // The same subject with a sid: `sub` wins, account-wide revocation, 200.
+    let mut both = valid_logout_claims(&issuer, "sub-bound");
+    both["sid"] = json!("session-abc");
+    let status = oneshot_form(
+        router.clone(),
+        BACKCHANNEL_PATH,
+        &[("logout_token", &sign_logout_token(both))],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "sub+sid is processed by its subject"
+    );
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "account-wide revoke fired"
+    );
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+    let (_, login) = complete_flow(&idp, &router, "sub-bound", "boss@sso", "Boss").await;
+    let token = login
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .expect("fresh token")
+        .to_string();
+
+    // sid alone: nothing to map it to — 501, and no revocation of any kind.
+    let sid_only = json!({
+        "iss": issuer,
+        "aud": CLIENT_ID,
+        "sid": "session-xyz",
+        "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "events": { "http://schemas.openid.net/event/backchannel-logout": {} },
+    });
+    let status = oneshot_form(
+        router.clone(),
+        BACKCHANNEL_PATH,
+        &[("logout_token", &sign_logout_token(sid_only))],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "sid-only must not be acknowledged as a success"
+    );
+    let (status, _, _) =
+        oneshot_with_headers(router.clone(), "GET", "/api/v1/auth/me", None, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the sid-only event must not revoke the account"
+    );
 }
 
 /// An unknown subject is acknowledged (no account enumeration) and revokes

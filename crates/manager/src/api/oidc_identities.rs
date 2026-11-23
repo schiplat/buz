@@ -136,20 +136,21 @@ pub async fn bind_pending(
             password_disabled,
         )
     } else {
-        // New plain SSO user: requested username or derived from the claims,
-        // deconflicted the same way JIT provisioning deconflicts.
+        // New plain SSO user: requested username or derived from the claims.
+        // The derivation is the shared one (`services::username`) so an
+        // approved identity gets exactly the name JIT provisioning would have
+        // given — one policy, two callers, no drift.
         let base = match req.create_username.as_deref().map(str::trim) {
-            Some(name) if !name.is_empty() => name.to_lowercase(),
-            _ => derive_username_base(&pending.email, &pending.display_name, &pending.subject),
-        };
-        let sanitized: String = base
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-            .collect();
-        let base = if sanitized.is_empty() {
-            "sso-user".to_string()
-        } else {
-            sanitized.chars().take(48).collect()
+            Some(name) if !name.is_empty() => crate::services::username::sanitize_username(name)
+                .unwrap_or_else(|| crate::services::username::subject_fallback(&pending.subject)),
+            _ => crate::services::username::sanitize_username(
+                &crate::services::username::username_base(
+                    Some(pending.email.as_str()),
+                    Some(pending.display_name.as_str()),
+                    &pending.subject,
+                ),
+            )
+            .unwrap_or_else(|| crate::services::username::subject_fallback(&pending.subject)),
         };
         let mut username = base.clone();
         let mut suffix = 2u32;
@@ -246,16 +247,4 @@ pub async fn reject_pending(
     Ok(Json(ApiResponse::success(serde_json::json!({
         "dismissed": true,
     }))))
-}
-
-/// Username base from the recorded claims: email local-part, then display
-/// name, then the subject — mirrors JIT provisioning's preference order.
-fn derive_username_base(email: &str, display_name: &str, subject: &str) -> String {
-    email
-        .split('@')
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| (!display_name.is_empty()).then(|| display_name.to_string()))
-        .unwrap_or_else(|| format!("sso-{}", &subject[..subject.len().min(12)]))
 }

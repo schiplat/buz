@@ -342,10 +342,13 @@ struct DiscoveryDocument {
     #[serde(default)]
     end_session_endpoint: Option<String>,
     /// How the provider accepts client authentication at the token endpoint.
-    /// Absent/empty → the RFC 6749 default for confidential clients
+    /// Absent/empty → the RFC 6749 §2.3.1 default for confidential clients
     /// (`client_secret_basic`); a declared list narrows the choice. Buz sends
-    /// form credentials when `client_secret_post` is declared, Basic auth
-    /// otherwise — providers that support both accept either.
+    /// Basic auth whenever `client_secret_basic` is declared OR nothing is
+    /// declared, and form credentials only when the provider positively
+    /// declares `client_secret_post` without also declaring Basic — RFC 6749
+    /// §2.3.1 forbids sending the secret in both places at once, so silence is
+    /// resolved toward the standard's default rather than guessed past it.
     #[serde(default)]
     token_endpoint_auth_methods_supported: Option<Vec<String>>,
 }
@@ -383,9 +386,24 @@ impl TokenAuth {
         }
     }
 
+    /// Negotiate against the provider's `token_endpoint_auth_methods_supported`.
+    ///
+    /// RFC 6749 §2.3.1 makes `client_secret_basic` the default for a
+    /// confidential client, so **absent or empty** resolves to Basic — the
+    /// opposite of what this used to do. A declared list is consulted as-is:
+    /// Basic when it contains `client_secret_basic`, form credentials only when
+    /// the provider declares `client_secret_post` and nothing better.
+    ///
+    /// Basic is also the safe half when both are declared: §2.3. leaves the
+    /// two methods as alternatives, and a provider that accepts either accepts
+    /// the header.
     fn from_discovery(methods: Option<&[String]>) -> Self {
-        let declared = methods.map(|m| !m.is_empty()).unwrap_or(false);
-        if declared && !methods.unwrap().iter().any(|m| m == "client_secret_post") {
+        let Some(methods) = methods else {
+            // No declaration — the standard's default, not a guess.
+            return TokenAuth::ClientSecretBasic;
+        };
+        let declares = |name: &str| methods.iter().any(|method| method.trim() == name);
+        if declares("client_secret_basic") || !declares("client_secret_post") {
             TokenAuth::ClientSecretBasic
         } else {
             TokenAuth::ClientSecretPost
@@ -867,6 +885,58 @@ mod tests {
         assert_eq!(
             sha256_hex("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    // RFC 6749 §2.3.1: client_secret_basic is the default for a confidential
+    // client, so silence resolves to Basic and only a positive
+    // `client_secret_post` declaration (without Basic) yields form
+    // credentials. This pins the table the settings page's Auto mode follows.
+    #[test]
+    fn auto_negotiation_resolves_to_basic_by_default() {
+        let v = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Absent, empty, and basic-declared all negotiate Basic.
+        assert_eq!(
+            TokenAuth::from_discovery(None),
+            TokenAuth::ClientSecretBasic
+        );
+        assert_eq!(
+            TokenAuth::from_discovery(Some(&[])),
+            TokenAuth::ClientSecretBasic
+        );
+        assert_eq!(
+            TokenAuth::from_discovery(Some(&v(&["client_secret_basic"]))),
+            TokenAuth::ClientSecretBasic
+        );
+        // Declared both: Basic wins (§2.3.1 alternatives; the header keeps the
+        // secret out of the body).
+        assert_eq!(
+            TokenAuth::from_discovery(Some(&v(&["client_secret_post", "client_secret_basic"]))),
+            TokenAuth::ClientSecretBasic
+        );
+        // Only a positive post declaration (and no Basic) yields the form.
+        assert_eq!(
+            TokenAuth::from_discovery(Some(&v(&["client_secret_post"]))),
+            TokenAuth::ClientSecretPost
+        );
+        // A list that names neither supported method cannot be honoured; the
+        // standard's default is the least surprising answer.
+        assert_eq!(
+            TokenAuth::from_discovery(Some(&v(&["private_key_jwt"]))),
+            TokenAuth::ClientSecretBasic
+        );
+    }
+
+    #[test]
+    fn explicit_override_beats_negotiation() {
+        let post_only = vec!["client_secret_post".to_string()];
+        assert_eq!(
+            TokenAuth::ClientSecretBasic.resolve(Some(&post_only)),
+            TokenAuth::ClientSecretBasic
+        );
+        assert_eq!(
+            TokenAuth::Auto.resolve(Some(&post_only)),
+            TokenAuth::ClientSecretPost
         );
     }
 }

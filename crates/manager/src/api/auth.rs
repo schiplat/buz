@@ -679,28 +679,30 @@ pub async fn oidc_callback(
 /// Derive a free username from the identity claims: email local-part, then
 /// display name, then a generic base — sanitized, bounded, deconflicted with
 /// numeric suffixes against the UNIQUE users.username column.
+///
+/// The derivation itself lives in [`crate::services::username`] so the admin
+/// approval path (creating an account for a queued identity) yields exactly the
+/// name this path would have: one policy, two callers.
 async fn provision_oidc_user(
     state: &AppState,
     issuer: &str,
     identity: &crate::services::oidc::OidcIdentity,
 ) -> Result<AuthUser, AppError> {
-    let raw_source = identity
-        .email
-        .as_deref()
-        .and_then(|e| e.split('@').next())
-        .filter(|s| !s.is_empty())
-        .or(identity.display_name.as_deref())
-        .unwrap_or("sso-user");
-    let sanitized: String = raw_source
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        .collect();
-    let base = if sanitized.is_empty() {
-        "sso-user".to_string()
-    } else {
-        sanitized.chars().take(48).collect()
-    };
+    let raw_source = crate::services::username::username_base(
+        identity.email.as_deref(),
+        identity.display_name.as_deref(),
+        &identity.subject,
+    );
+    let base = crate::services::username::sanitize_username(&raw_source)
+        .or_else(|| {
+            // Every character of the preferred source was stripped; the
+            // subject still identifies the account, so keep a trace of it
+            // rather than collapsing to a bare constant.
+            crate::services::username::sanitize_username(
+                &crate::services::username::subject_fallback(&identity.subject),
+            )
+        })
+        .unwrap_or_else(|| "sso-user".to_string());
 
     let mut username = base.clone();
     let mut suffix = 2u32;
@@ -794,8 +796,10 @@ pub struct BackchannelLogoutForm {
 /// sessions (`OpenID Connect Back-Channel Logout 1.0`). Public by design: the
 /// signed logout token is the credential.
 ///
-/// Answers `200` for every verified token, including subjects Buz does not
-/// know (no account enumeration) and `sid`-only tokens (nothing to map);
+/// Answers `200` for every verified token naming a subject — including
+/// subjects Buz does not know (no account enumeration); `501` for a verified
+/// `sid`-only token (Buz keeps no session rows, so a provider session id has
+/// nothing to map to, and `200` would record a success that did not happen);
 /// `400` for anything that does not verify. Revocation is idempotent —
 /// repeated deliveries simply re-stamp the same instant.
 pub async fn oidc_backchannel_logout(
@@ -823,9 +827,21 @@ pub async fn oidc_backchannel_logout(
         }
     };
     let Some(subject) = subject else {
-        // A valid token we cannot act on (sid-only): acknowledged, not an
-        // error — the provider did its job.
-        return StatusCode::OK;
+        // sid-only logout token. Buz keeps no session rows (no `sid` is ever
+        // minted or stored — `platform/oidc-sso.md`, Known limitations), so
+        // there is nothing here it could revoke for that one session. The
+        // honest answer is *not implemented*, not `200`: a 200 tells the
+        // provider the session is dead at every RP, which is untrue for Buz,
+        // and the provider has no other signal to fall back on.
+        // A provider that sends both `sub` and `sid` is handled by the
+        // subject path below (account-wide revocation, which is the strongest
+        // thing Buz can do); only the sid-*alone* form lands here.
+        tracing::warn!(
+            "back-channel logout: sid-only logout token ignored — Buz keeps no \
+             session rows, so this session cannot be revoked individually \
+             (answering 501 so the provider does not record a false success)"
+        );
+        return StatusCode::NOT_IMPLEMENTED;
     };
 
     let binding =

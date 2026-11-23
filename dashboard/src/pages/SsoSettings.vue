@@ -615,7 +615,7 @@ async function setPolicy(value: boolean) {
                     <template v-if="tokenAuth === 'auto'">
                       Negotiated from discovery<template v-if="probe?.client_auth">
                         — currently <span class="font-mono">{{ probe.client_auth }}</span></template
-                      >.
+                      >. Nothing declared falls back to Basic (RFC 6749 §2.3.1).
                     </template>
                     <template v-else>Overrides discovery for every token request.</template>
                   </p>
@@ -749,7 +749,7 @@ async function setPolicy(value: boolean) {
                 </summary>
                 <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
                   <li>Callback missing → sign-in fails.</li>
-                  <li>Back-channel missing → an IdP-side disable waits for JWT expiry (24 h).</li>
+                  <li>Back-channel missing → an IdP-side disable waits for JWT expiry (the session lifetime).</li>
                   <li>Landing missing → the browser stays on the provider page after sign-out.</li>
                 </ul>
               </details>
